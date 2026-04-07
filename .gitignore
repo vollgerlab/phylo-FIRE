@@ -1,0 +1,9 @@
+fastas/
+aligned/
+trees/
+*.log
+*.out
+*.err
+__pycache__/
+.snakemake/
+.pixi/

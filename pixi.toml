@@ -12,7 +12,7 @@ test = { cmd = [
     "snakemake",
     "--config", "peak_ids=config/test_peak_ids.txt",
     "--config", "input_table=resources/test/test-union-peaks.bed.gz",
-    "-j", "4",
+    "-j", "8",
 ], depends-on = ["clean"] }
 dry-run = { cmd = [
     "snakemake",
@@ -25,7 +25,7 @@ replot = { cmd = [
     "--config", "peak_ids=config/test_peak_ids.txt",
     "--config", "input_table=resources/test/test-union-peaks.bed.gz",
     "--forcerun", "plot",
-    "-j", "4",
+    "-j", "8",
 ] }
 # Per-paralog-group MSA test using a fixture pre-extracted by PARE's
 # `extract_paralog_msas` rule. Exercises the `preextracted_dir` ingestion path.
@@ -34,7 +34,7 @@ replot = { cmd = [
 test-paralog = { cmd = [
     "snakemake",
     "--config", "preextracted_dir=resources/test/preextracted_pg_9",
-    "-j", "4",
+    "-j", "8",
 ], depends-on = ["clean"] }
 fmt = "snakefmt workflow/Snakefile"
 

@@ -1,6 +1,4 @@
-fastas/
-aligned/
-trees/
+results/
 *.log
 *.out
 *.err

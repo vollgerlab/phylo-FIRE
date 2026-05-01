@@ -1,0 +1,31 @@
+# SLURM profile for CHPC Redwood (redwood15.chpc.utah.edu)
+# Requires: snakemake-executor-plugin-slurm
+executor: slurm
+jobs: 200
+latency-wait: 60
+max-jobs-per-second: 20
+
+default-resources:
+  - mem_mb=8192
+  - runtime=120
+  - slurm_partition=redwood
+  - slurm_account=stergachislab
+
+set-resources:
+  extract_fastas:
+    mem_mb: 32768
+    runtime: 480
+    threads: 16
+  mafft:
+    mem_mb: 8192
+    runtime: 60
+    threads: 4
+  iqtree:
+    mem_mb: 16384
+    runtime: 240
+    threads: 8
+
+rerun-incomplete: true
+show-failed-logs: true
+keep-going: true
+restart-times: 1

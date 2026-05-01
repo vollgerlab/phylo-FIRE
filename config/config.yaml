@@ -1,0 +1,20 @@
+# Input table (bgzipped BED from union-peaks.Rmd pipeline)
+input_table: "Tables/union-peaks-cons.bed.gz"
+
+# Filter criteria for which peaks to process
+# Set peak_ids to a file of consensus_peak_ids (one per line) to process specific peaks
+# Or set haplotype_distinct to filter by class (e.g., "Haplotype-selective")
+peak_ids: null
+haplotype_distinct: null
+
+# Only use primary samples
+primary_only: true
+
+# Minimum number of unique sequences to build a tree
+min_seqs: 2
+
+# MAFFT parameters
+mafft_maxiterate: 1000
+
+# bgzip threads for decompression
+bgzip_threads: 16

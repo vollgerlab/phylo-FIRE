@@ -1,0 +1,145 @@
+import shlex
+from snakemake.utils import min_version
+
+min_version("8.0")
+
+configfile: "config/config.yaml"
+
+
+def count_unique_seqs(fa_path: str) -> int:
+    """Count unique sequences in a FASTA (handles multi-line format)."""
+    seqs: set[str] = set()
+    parts: list[str] = []
+    with open(fa_path) as fh:
+        for line in fh:
+            line = line.rstrip()
+            if line.startswith(">"):
+                if parts:
+                    seqs.add("".join(parts))
+                parts = []
+            else:
+                parts.append(line)
+    if parts:
+        seqs.add("".join(parts))
+    return len(seqs)
+
+
+# ── aggregate (resolves after checkpoint) ─────────────────────────────────────
+
+
+def aggregate_outputs(wildcards):
+    """Return all tree and plot paths once extract_fastas checkpoint has completed."""
+    checkpoints.extract_fastas.get(**wildcards)
+    peak_ids, = glob_wildcards("results/fastas/{peak_id}.fa")
+    return (
+        expand("results/trees/{peak_id}.treefile", peak_id=peak_ids)
+        + expand("results/plots/{peak_id}.html", peak_id=peak_ids)
+        + expand("results/plots/{peak_id}.pdf",  peak_id=peak_ids)
+    )
+
+
+# ── rules ──────────────────────────────────────────────────────────────────────
+
+
+rule all:
+    input:
+        aggregate_outputs,
+
+
+checkpoint extract_fastas:
+    """One-pass extraction of per-peak FASTA + actuation TSV from the union-peaks table."""
+    input:
+        table=config["input_table"],
+    output:
+        done=touch("results/fastas/.done"),
+    threads: config.get("bgzip_threads", 16)
+    resources:
+        mem_mb=32768,
+        runtime=480,
+    run:
+        parts = [
+            f"bgzip -cd -@ {threads} {shlex.quote(str(input.table))}",
+            "| python workflow/scripts/extract_fastas.py",
+            "--outdir results/fastas",
+            f"--min-seqs {config.get('min_seqs', 2)}",
+        ]
+        if config.get("primary_only", True):
+            parts.append("--primary-only")
+        if config.get("peak_ids"):
+            parts.append(f"--peak-ids {shlex.quote(str(config['peak_ids']))}")
+        if config.get("haplotype_distinct"):
+            parts.append(f"--haplotype-distinct {shlex.quote(str(config['haplotype_distinct']))}")
+        shell(" ".join(parts))
+
+
+rule mafft:
+    """Align sequences for a single peak with MAFFT."""
+    input:
+        fa="results/fastas/{peak_id}.fa",
+    output:
+        fa=temp("results/aligned/{peak_id}.fa"),
+    params:
+        maxiterate=config.get("mafft_maxiterate", 1000),
+    threads: 4
+    resources:
+        mem_mb=8192,
+        runtime=60,
+    shell:
+        """
+        mafft --maxiterate {params.maxiterate} --reorder --auto --adjustdirection \
+            --thread {threads} {input.fa} > {output.fa}
+        """
+
+
+rule iqtree:
+    """Infer a maximum-likelihood tree for a single aligned peak with IQ-TREE."""
+    input:
+        fa="results/aligned/{peak_id}.fa",
+    output:
+        treefile="results/trees/{peak_id}.treefile",
+    params:
+        prefix=lambda wc: f"results/trees/{wc.peak_id}",
+        # Enable ultrafast bootstrap only when the alignment has >=4 unique sequences;
+        # IQ-TREE deduplicates internally and refuses bootstrap on fewer distinct taxa.
+        bootstrap=lambda wc, input: (
+            "-B 1000" if count_unique_seqs(str(input.fa)) >= 4 else ""
+        ),
+    shadow: "minimal"
+    threads: 4
+    resources:
+        mem_mb=16384,
+        runtime=120,
+    shell:
+        # --redo: overwrite prior partial runs; ModelFinder runs automatically (no -m flag)
+        """
+        iqtree -s {input.fa} --prefix {params.prefix} \
+            -T {threads} {params.bootstrap} --redo
+        """
+
+
+rule plot:
+    """Interactive tree + FIRE actuation + MSA plot (HTML + PDF from one rule).
+
+    The aligned FASTA is temp() but Snakemake keeps it until this rule finishes.
+    HTML: interactive, zoom/pan, MSA toggle button, toolbar exports SVG.
+    PDF: static via kaleido (same Plotly figure, scale=2).
+    """
+    input:
+        tree="results/trees/{peak_id}.treefile",
+        actuation="results/fastas/{peak_id}.tsv",
+        alignment="results/aligned/{peak_id}.fa",
+    output:
+        html="results/plots/{peak_id}.html",
+        pdf="results/plots/{peak_id}.pdf",
+    params:
+        peak_id=lambda wc: wc.peak_id,
+    shell:
+        """
+        python workflow/scripts/plot_tree_actuation_html.py \
+            --tree      {input.tree} \
+            --actuation {input.actuation} \
+            --alignment {input.alignment} \
+            --html      {output.html} \
+            --pdf       {output.pdf} \
+            --peak-id   {params.peak_id}
+        """

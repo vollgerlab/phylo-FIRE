@@ -1,97 +1,116 @@
-# Phylogenetic Tree Pipeline for Consensus Peaks
+# phylo-FIRE
 
-## Overview
-Build phylogenetic trees for consensus peaks across all HPRC fiber-seq samples.
-For each consensus peak, collect the DNA sequence from every sample/haplotype,
-align with MAFFT, and infer a tree with IQ-TREE.
+Snakemake pipeline for building per-peak phylogenetic trees across HPRC fiber-seq samples.
+For each consensus FIRE peak, sequences are extracted from all 90 haplotypes (45 individuals),
+aligned with MAFFT, and used to infer a maximum-likelihood tree with IQ-TREE. Each tree is
+exported alongside a FIRE actuation heatmap showing per-sample accessibility.
 
-## Pipeline Steps
+## Pipeline overview
 
-### Step 0: Extract FASTAs (one-pass)
-- Read the union peaks table once with `bgzip -cd -@ 16`
-- Filter to primary samples with non-NA sequences
-- For each consensus_peak_id, write a FASTA: `>Individual_ID_Haplotype\nsequence`
-- Sanitize peak IDs for filenames (`#` → `_`)
-- Skip peaks with <3 unique sequences (no meaningful tree)
-- Output: `fastas/{peak_id}.fa`
-
-### Step 1: MAFFT Alignment
-- `mafft --maxiterate 1000 fastas/{peak_id}.fa > aligned/{peak_id}.fa`
-- For simple/many sequences: `--retree 2` (faster progressive method)
-- Output: `aligned/{peak_id}.fa`
-
-### Step 2: IQ-TREE
-- `iqtree -s aligned/{peak_id}.fa`
-- Uses ModelFinder automatically for best-fit model
-- Output: `trees/{peak_id}.fa.treefile` (NEWICK format)
-
-## Directory Structure
 ```
-phylo-trees/
-├── Snakefile
-├── README.md
-├── config.yaml
-├── test_peak_ids.txt          # 10 test peaks
-├── test/
-│   └── test-union-peaks.bed.gz  # subset for testing
-├── scripts/
-│   └── extract_fastas.py      # one-pass FASTA extraction
-├── fastas/                    # per-peak FASTA files
-├── aligned/                   # MAFFT aligned FASTAs
-└── trees/                     # IQ-TREE output
+union-peaks BED (bgzipped, ~3 GB)
+        |
+        v
+[checkpoint] extract_fastas.py   -- one-pass stream; writes fastas/{peak_id}.fa
+                                     and fastas/{peak_id}.tsv (per-sample actuation)
+        |
+        v (per peak, parallel)
+rule mafft        aligned/{peak_id}.fa     -- MAFFT --auto --maxiterate 1000
+rule iqtree       trees/{peak_id}.treefile -- IQ-TREE ModelFinder + bootstrap (if >=4 unique seqs)
+rule plot         plots/{peak_id}.pdf      -- tree + FIRE actuation heatmap
 ```
 
-## Test Dataset
-`test_peak_ids.txt` contains 10 consensus peaks:
+Intermediate aligned FASTAs are marked `temp()` and deleted after IQ-TREE completes.
+IQ-TREE auxiliary files (`.log`, `.iqtree`, `.bionj`, etc.) are isolated in a shadow
+directory and discarded; only the `.treefile` is kept.
+
+## Quick start
+
+```bash
+pixi install              # set up the environment
+pixi run dry-run          # preview the DAG (no execution)
+pixi run test             # clean build + run on 10 test peaks
+```
+
+## Running on the full dataset
+
+```bash
+# All haplotype-selective peaks
+snakemake --profile profiles/slurm \
+    --config haplotype_distinct="Haplotype-selective" -j 200
+
+# A specific list of peaks
+snakemake --profile profiles/slurm \
+    --config peak_ids=my_peaks.txt -j 200
+
+# Both filters combined
+snakemake --profile profiles/slurm \
+    --config peak_ids=my_peaks.txt haplotype_distinct="Haplotype-selective" -j 200
+```
+
+## Outputs
+
+| Path | Description |
+|------|-------------|
+| `fastas/{peak_id}.fa` | Unaligned FASTA (one entry per primary sample/haplotype) |
+| `fastas/{peak_id}.tsv` | Per-sample FIRE actuation fraction (`fire_cov_OV_cov`, 0-1) |
+| `trees/{peak_id}.treefile` | Newick ML tree from IQ-TREE |
+| `plots/{peak_id}.pdf` | Tree + actuation heatmap (white-to-dark-red, 10% bins) |
+
+## Configuration (`config.yaml`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `input_table` | `Tables/union-peaks-cons.bed.gz` | bgzipped union-peaks BED |
+| `peak_ids` | `null` | Path to a file of consensus_peak_ids (one per line) |
+| `haplotype_distinct` | `null` | Filter peaks by classification (e.g. `Haplotype-selective`) |
+| `primary_only` | `true` | Restrict to primary samples |
+| `min_seqs` | `2` | Minimum unique sequences to build a tree |
+| `mafft_maxiterate` | `1000` | MAFFT iterative refinement cycles |
+| `bgzip_threads` | `16` | Threads for bgzip decompression |
+
+## Input table
+
+The input is the bgzipped BED produced by the `union-peaks.Rmd` pipeline. Key columns used:
+
+| Column | Index | Description |
+|--------|-------|-------------|
+| `consensus_peak_id` | 4 | Unique peak identifier (e.g. `chr8_8453862_8454062`) |
+| `fire_cov_OV_cov` | 9 | FIRE actuation fraction (fire_coverage / coverage, 0-1) |
+| `seq` | 23 | DNA sequence at this peak for this haplotype (NA if unmapped) |
+| `Individual_ID` | 25 | Sample individual (e.g. `HG00438`) |
+| `Haplotype` | 26 | `1` or `2` |
+| `is_primary_sample` | 36 | `TRUE` for the preferred sample per individual |
+| `haplotype_distinct` | 37 | Peak classification: Shared, Haplotype-selective, etc. |
+
+Peak IDs containing `#` (assembly-coordinate peaks) are sanitized to `_` for filenames.
+
+## Test dataset
+
+`test/test-union-peaks.bed.gz` contains 900 rows covering 10 peaks (90 haplotypes each):
+
 - 4 Haplotype-selective (genetic variants between haplotypes)
 - 3 Epigenetically haplotype-selective
-- 3 Shared (control, expect similar sequences)
+- 3 Shared (expect similar sequences; useful as controls)
 
-## Usage
-```bash
-# Test run (10 peaks)
-snakemake --config peak_ids=test_peak_ids.txt input_table=test/test-union-peaks.bed.gz -j 4
+`test_peak_ids.txt` lists all 10 peak IDs. All 10 produce trees; peaks with fewer than 4
+unique sequences run without ultrafast bootstrap.
 
-# Full run (all haplotype-selective peaks)
-snakemake --config haplotype_distinct=Haplotype-selective -j 50 --profile profiles/slurm
+## Data locations (relative to `/mmfs1/gscratch/stergachislab/HPRC/mrv-figures/`)
 
-# Specific peaks from a file
-snakemake --config peak_ids=my_peaks.txt -j 50 --profile profiles/slurm
-```
-
-## Input Table Structure
-The input is a bgzipped BED from the `union-peaks.Rmd` pipeline (see `Tables/union-peaks-README.md`
-for full column docs). Key columns for this pipeline:
-
-| Column | Description |
-|--------|-------------|
-| consensus_peak_id | Unique ID per consensus peak (e.g. `chr8_8453862_8454062` or `HG00438#1#CM089167.1_120346427_120346657`) |
-| Individual_ID | Individual (e.g. `HG00438`) |
-| Haplotype | `1` or `2` |
-| seq | DNA sequence at this peak for this sample/haplotype (can be NA) |
-| haplotype_distinct | Classification: Shared, Haplotype-selective, Epigenetically haplotype-selective, Genetically haplotype-specific, Complex, chrX, chrY, Untestable |
-| is_primary_sample | TRUE for the preferred sample per individual (PacBio > ONT; deep HG002 > shallow) |
-| is_peak | Whether this site passes peak thresholds in this sample |
-
-- 90 haplotypes from 45 individuals (39 primary, 6 non-primary duplicates)
-- Each consensus_peak_id has one row per sample-haplotype (~90 rows)
-- The `seq` column can be NA when the peak has no assembly mapping for that sample
-
-## File Locations (relative to repo root `/mmfs1/gscratch/stergachislab/HPRC/mrv-figures/`)
-- Full union table: `Tables/union-peaks-cons.bed.gz` (~3GB, ~65M rows)
-- Peak-only table: `Tables/peaks-cons.bed.gz` (~700MB, ~7.7M rows)
-- This pipeline: `phylo-trees/`
-- Test subset: `phylo-trees/test/test-union-peaks.bed.gz` (900 rows, 10 peaks)
-- Extraction script (partially written): `phylo-trees/scripts/extract_fastas.py`
-
-## Conventions
-- Use `bgzip -cd -@ 16` for decompression (fast, multithreaded)
-- Use pixi for environment management (see `pixi.toml` at repo root)
-- Snakemake: use `rule all` with explicit outputs, `temp()` for intermediates, parameterize threads via `resources:`
-- Filename sanitization: replace `#` with `_` in consensus_peak_ids for filesystem safety
+| File | Size | Description |
+|------|------|-------------|
+| `Tables/union-peaks-cons.bed.gz` | ~3 GB | Full union-peaks table (~65 M rows) |
+| `Tables/peaks-cons.bed.gz` | ~700 MB | Peaks-only subset (~7.7 M rows) |
+| `phylo-trees/test/test-union-peaks.bed.gz` | small | 900-row test subset |
 
 ## Dependencies
-- bgzip/tabix (htslib)
-- MAFFT (alignment)
-- IQ-TREE (tree inference)
-- Python 3 (FASTA extraction)
+
+Managed via `pixi.toml` (conda-forge/bioconda):
+
+- `bgzip` / `htslib` (decompression)
+- `mafft` (multiple sequence alignment)
+- `iqtree` (ML tree inference; installs as `iqtree`, version 3+)
+- `biopython` (tree parsing and drawing)
+- `matplotlib` (visualization)
+- `snakemake >= 8.0` with `snakemake-executor-plugin-slurm`

@@ -7,13 +7,14 @@ platforms = ["linux-64", "osx-arm64"]
 version = "0.1.0"
 
 [tasks]
-clean = { cmd = "rm -rf results" }
+# Snakemake handles its own incremental builds; if you need to force a rebuild
+# use `--forcerun <rule>` or `--forceall`, not a manual `rm -rf results`.
 test = { cmd = [
     "snakemake",
     "--config", "peak_ids=config/test_peak_ids.txt",
     "--config", "input_table=resources/test/test-union-peaks.bed.gz",
     "-j", "8",
-], depends-on = ["clean"] }
+] }
 dry-run = { cmd = [
     "snakemake",
     "--config", "peak_ids=config/test_peak_ids.txt",
@@ -35,7 +36,7 @@ test-paralog = { cmd = [
     "snakemake",
     "--config", "preextracted_dir=resources/test/preextracted_pg_9",
     "-j", "8",
-], depends-on = ["clean"] }
+] }
 fmt = "snakefmt workflow/Snakefile"
 
 [dependencies]

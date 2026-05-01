@@ -12,6 +12,7 @@ FIRE peaks, then renders each tree alongside a FIRE actuation heatmap.
 pixi install              # first-time setup
 pixi run test             # clean run on 10 test peaks (deletes results/ first)
 pixi run dry-run          # DAG preview
+pixi run replot           # force re-run of the plot rule on existing trees
 pixi run fmt              # snakefmt workflow/Snakefile
 ```
 

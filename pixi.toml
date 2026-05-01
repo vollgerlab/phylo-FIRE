@@ -27,6 +27,15 @@ replot = { cmd = [
     "--forcerun", "plot",
     "-j", "4",
 ] }
+# Per-paralog-group MSA test using a fixture pre-extracted by PARE's
+# `extract_paralog_msas` rule. Exercises the `preextracted_dir` ingestion path.
+# pg_9 = chr1 NOTCH2NL paralog group (NOTCH2NLA / B / C / R; 276 sequences,
+# 71 unique). Build artifacts: results/{trees,plots}/pg_9.{treefile,html,pdf}.
+test-paralog = { cmd = [
+    "snakemake",
+    "--config", "preextracted_dir=resources/test/preextracted_pg_9",
+    "-j", "4",
+], depends-on = ["clean"] }
 fmt = "snakefmt workflow/Snakefile"
 
 [dependencies]

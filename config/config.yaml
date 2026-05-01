@@ -1,6 +1,11 @@
 # Input table (bgzipped BED from union-peaks.Rmd pipeline)
 input_table: "Tables/union-peaks-cons.bed.gz"
 
+# Optional: bypass the bgzip|extract_fastas step entirely and pull
+# {peak_id}.fa / {peak_id}.tsv pairs from a pre-extracted directory
+# (e.g. PARE's `paralog_msas/` output). When set, `input_table` is ignored.
+preextracted_dir: null
+
 # Filter criteria for which peaks to process
 # Set peak_ids to a file of consensus_peak_ids (one per line) to process specific peaks
 # Or set haplotype_distinct to filter by class (e.g., "Haplotype-selective")

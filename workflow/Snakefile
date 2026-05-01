@@ -1,4 +1,5 @@
 import shlex
+from pathlib import Path
 from snakemake.utils import min_version
 
 min_version("8.0")
@@ -46,10 +47,46 @@ rule all:
         aggregate_outputs,
 
 
+def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
+    """Symlink {peak_id}.fa / {peak_id}.tsv from src_dir into dst_dir.
+
+    Used when an upstream pipeline (e.g. PARE) has already produced per-group
+    FASTA + actuation TSV files in this directory layout. Returns the number
+    of FASTA pairs linked.
+    """
+    src_dir = Path(src_dir).resolve()
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for fa in sorted(src_dir.glob("*.fa")):
+        peak = fa.stem
+        tsv = src_dir / f"{peak}.tsv"
+        if not tsv.exists():
+            continue
+        for src, dst in ((fa, dst_dir / fa.name), (tsv, dst_dir / tsv.name)):
+            if dst.is_symlink() or dst.exists():
+                dst.unlink()
+            dst.symlink_to(src)
+        n += 1
+    return n
+
+
+def _extract_fastas_input(wildcards):
+    """Either the bgzipped union BED, or the pre-extracted directory."""
+    pre = config.get("preextracted_dir")
+    if pre:
+        return str(Path(pre).resolve())
+    return config["input_table"]
+
+
 checkpoint extract_fastas:
-    """One-pass extraction of per-peak FASTA + actuation TSV from the union-peaks table."""
+    """One-pass extraction of per-peak FASTA + actuation TSV from the union-peaks table.
+
+    If `preextracted_dir` is set, this becomes a noop wrapper that symlinks
+    pre-extracted FASTA/TSV pairs into `results/fastas/` (e.g. per-paralog-group
+    files emitted by PARE's `extract_paralog_msas` rule).
+    """
     input:
-        table=config["input_table"],
+        src=_extract_fastas_input,
     output:
         done=touch("results/fastas/.done"),
     threads: config.get("bgzip_threads", 16)
@@ -57,19 +94,23 @@ checkpoint extract_fastas:
         mem_mb=32768,
         runtime=480,
     run:
-        parts = [
-            f"bgzip -cd -@ {threads} {shlex.quote(str(input.table))}",
-            "| python workflow/scripts/extract_fastas.py",
-            "--outdir results/fastas",
-            f"--min-seqs {config.get('min_seqs', 2)}",
-        ]
-        if config.get("primary_only", True):
-            parts.append("--primary-only")
-        if config.get("peak_ids"):
-            parts.append(f"--peak-ids {shlex.quote(str(config['peak_ids']))}")
-        if config.get("haplotype_distinct"):
-            parts.append(f"--haplotype-distinct {shlex.quote(str(config['haplotype_distinct']))}")
-        shell(" ".join(parts))
+        if config.get("preextracted_dir"):
+            n = _ingest_preextracted(Path(input.src), Path("results/fastas"))
+            print(f"linked {n} pre-extracted FASTA/TSV pairs from {input.src}")
+        else:
+            parts = [
+                f"bgzip -cd -@ {threads} {shlex.quote(str(input.src))}",
+                "| python workflow/scripts/extract_fastas.py",
+                "--outdir results/fastas",
+                f"--min-seqs {config.get('min_seqs', 2)}",
+            ]
+            if config.get("primary_only", True):
+                parts.append("--primary-only")
+            if config.get("peak_ids"):
+                parts.append(f"--peak-ids {shlex.quote(str(config['peak_ids']))}")
+            if config.get("haplotype_distinct"):
+                parts.append(f"--haplotype-distinct {shlex.quote(str(config['haplotype_distinct']))}")
+            shell(" ".join(parts))
 
 
 rule mafft:

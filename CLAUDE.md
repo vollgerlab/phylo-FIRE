@@ -10,20 +10,35 @@ FIRE peaks, then renders each tree alongside a FIRE actuation heatmap.
 
 ```bash
 pixi install              # first-time setup
-pixi run test             # clean run on 10 test peaks (deletes results/ first)
+pixi run test             # 10 test peaks via test-union-peaks.bed.gz
+pixi run test-paralog     # NOTCH2NL paralog group via PARE-style preextracted dir
 pixi run dry-run          # DAG preview
 pixi run replot           # force re-run of the plot rule on existing trees
 pixi run fmt              # snakefmt workflow/Snakefile
 ```
 
+There is **no `clean` task**: snakemake handles its own state via
+`--forcerun <rule>`, `--rerun-incomplete`, or `--forceall`. Don't manually
+`rm -rf results/`.
+
 ## Pipeline architecture
 
 Three Snakemake steps driven by a checkpoint:
 
-1. `checkpoint extract_fastas` -- one-pass stream of the bgzipped BED via `bgzip -cd | python`.
-   Writes `results/fastas/{peak_id}.fa` (sequences) and `results/fastas/{peak_id}.tsv` (actuation values).
-   The checkpoint sentinel is `results/fastas/.done`; downstream rules are discovered via
-   `glob_wildcards("results/fastas/{peak_id}.fa")` after it completes.
+1. `checkpoint extract_fastas` -- runs in one of two modes:
+
+   - **Default**: one-pass stream of the bgzipped BED via `bgzip -cd | python`.
+     Writes `results/fastas/{peak_id}.fa` (sequences) and `results/fastas/{peak_id}.tsv`
+     (actuation values).
+   - **`preextracted_dir`**: when `config["preextracted_dir"]` is set, the
+     checkpoint becomes a noop wrapper that symlinks pre-extracted `.fa`+`.tsv`
+     pairs from there into `results/fastas/`. This is the contract for
+     ingesting PARE's per-paralog-group output (see "Cross-repo: PARE" below).
+     `config["input_table"]` is ignored when `preextracted_dir` is set.
+
+   In both cases the checkpoint sentinel is `results/fastas/.done`; downstream
+   rules are discovered via `glob_wildcards("results/fastas/{peak_id}.fa")`
+   after it completes.
 
 2. `rule mafft` -- per-peak alignment (`--auto --maxiterate 1000 --reorder --adjustdirection`).
    Output is `temp()` (deleted after plot finishes). `--adjustdirection` adds `_R_` prefix to
@@ -68,6 +83,7 @@ workflow/
 resources/
     test/
         test-union-peaks.bed.gz   900-row subset (10 peaks)
+        preextracted_pg_9/        PARE-emitted NOTCH2 paralog group (pg_9.fa + pg_9.tsv)
 profiles/
     slurm/config.yaml         SLURM executor profile (CHPC Redwood)
 results/                      all pipeline outputs (gitignored)
@@ -76,6 +92,31 @@ results/                      all pipeline outputs (gitignored)
     trees/   {peak_id}.treefile
     plots/   {peak_id}.html  {peak_id}.pdf
 ```
+
+## Cross-repo: PARE
+
+The PARE pipeline (https://github.com/vollgerlab/PARE) lives at
+`/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/PARE/` and emits per-
+paralog-group FASTA + actuation TSV under `results/paralog_msas/` in
+exactly the on-disk format `extract_fastas` would produce. To run a tree
+per paralog group instead of per peak:
+
+```bash
+pixi run -- snakemake \
+    --config preextracted_dir=/scratch/.../PARE/results/paralog_msas \
+    -j 32
+```
+
+The `pg_9.fa` test fixture (`resources/test/preextracted_pg_9/`) is
+PARE's chr1 NOTCH2 paralog group: NOTCH2 + NOTCH2NLA + NOTCH2NLB +
+NOTCH2NLC, 276 sequences, 71 unique. Headers carry `{peak_id}__{gene}__{ind}_{hap}`
+(e.g. `chr1_145345837_145346088__NOTCH2NLA__HG01891_1`) so leaf labels
+in the rendered tree are paralog-readable. PARE prefers the
+protein-coding gene name over alternate-TSS LOC* lncRNAs in its
+gene-annotation pipeline; see PARE's `CLAUDE.md` for the full story.
+
+`pixi run test-paralog` exercises the full pipeline on this fixture
+(~90 s wallclock), producing `results/{trees,plots}/pg_9.{treefile,html,pdf}`.
 
 ## Input table columns referenced
 

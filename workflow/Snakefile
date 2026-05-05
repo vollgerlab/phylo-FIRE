@@ -53,9 +53,22 @@ def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
     Used when an upstream pipeline (e.g. PARE) has already produced per-group
     FASTA + actuation TSV files in this directory layout. Returns the number
     of FASTA pairs linked.
+
+    Clears any stale `.fa` / `.tsv` entries in dst_dir first so that switching
+    to a different `preextracted_dir` doesn't leave behind broken symlinks
+    that `glob_wildcards` would still pick up.
     """
     src_dir = Path(src_dir).resolve()
     dst_dir.mkdir(parents=True, exist_ok=True)
+    # Drop any prior .fa / .tsv entries so a swap of preextracted_dir
+    # doesn't leave stale symlinks behind. Done explicitly here (not via
+    # snakemake) because the checkpoint's only declared output is .done;
+    # the per-file symlinks aren't tracked.
+    for stale in list(dst_dir.glob("*.fa")) + list(dst_dir.glob("*.tsv")):
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
     n = 0
     for fa in sorted(src_dir.glob("*.fa")):
         peak = fa.stem

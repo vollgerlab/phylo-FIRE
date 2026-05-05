@@ -82,8 +82,8 @@ workflow/
     rules/                    (reserved for future rule modules)
 resources/
     test/
-        test-union-peaks.bed.gz   900-row subset (10 peaks)
-        preextracted_pg_9/        PARE-emitted NOTCH2 paralog group (pg_9.fa + pg_9.tsv)
+        test-union-peaks.bed.gz    900-row subset (10 peaks)
+        preextracted_pg_64/        PARE-emitted NOTCH2 family promoter (pg_64.fa + pg_64.tsv)
 profiles/
     slurm/config.yaml         SLURM executor profile (CHPC Redwood)
 results/                      all pipeline outputs (gitignored)
@@ -107,16 +107,28 @@ pixi run -- snakemake \
     -j 32
 ```
 
-The `pg_9.fa` test fixture (`resources/test/preextracted_pg_9/`) is
-PARE's chr1 NOTCH2 paralog group: NOTCH2 + NOTCH2NLA + NOTCH2NLB +
-NOTCH2NLC, 276 sequences, 71 unique. Headers carry `{peak_id}__{gene}__{ind}_{hap}`
+The `pg_64.fa` test fixture (`resources/test/preextracted_pg_64/`) is
+PARE's canonical chr1 NOTCH2 family promoter: NOTCH2 (1p11) + NOTCH2NLA
+(1q21) + NOTCH2NLB (1q21) + NOTCH2NLC (1q21). 4 consensus peaks x 6
+primary haplotype-samples = 24 sequences. Headers carry
+`{peak_id}__{gene}__{ind}_{hap}`
 (e.g. `chr1_145345837_145346088__NOTCH2NLA__HG01891_1`) so leaf labels
 in the rendered tree are paralog-readable. PARE prefers the
 protein-coding gene name over alternate-TSS LOC* lncRNAs in its
 gene-annotation pipeline; see PARE's `CLAUDE.md` for the full story.
 
+The fixture is *small by design* -- one homologous regulatory element
+across four paralog loci, not a tile of every regulatory element in
+the NOTCH2NL paralog landscape. PARE's `target_peak_coverage` filter
+(80% threshold on the lifted projection's overlap with the target
+peak's interval) prevents N x M edge proliferation between paralog
+loci that each contain multiple tiling peaks; without it, a previous
+incarnation of this fixture (pg_9) had 46 cps and 276 sequences
+from collapsing 13 distinct regulatory elements across 4 paralogs
+into one giant group.
+
 `pixi run test-paralog` exercises the full pipeline on this fixture
-(~90 s wallclock), producing `results/{trees,plots}/pg_9.{treefile,html,pdf}`.
+(~30 s wallclock), producing `results/{trees,plots}/pg_64.{treefile,html,pdf}`.
 
 ## Input table columns referenced
 

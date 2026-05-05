@@ -39,6 +39,15 @@ test-paralog = { cmd = [
     "--config", "preextracted_dir=resources/test/preextracted_pg_64",
     "-j", "8",
 ] }
+# All-haps version of the pg_64 fixture: same 4 paralog peaks but pulled
+# from the full HPRCv2 union BED (45 individuals -> 78 primary haps after
+# filtering to is_primary_sample). 305 sequences vs 24 in the small fixture.
+# Useful for validating that the tree + heatmap renderers scale.
+test-paralog-all-haps = { cmd = [
+    "snakemake",
+    "--config", "preextracted_dir=resources/test/preextracted_pg_64_all_haps",
+    "-j", "8",
+] }
 fmt = "snakefmt workflow/Snakefile"
 
 [dependencies]

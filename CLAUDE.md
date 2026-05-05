@@ -82,8 +82,9 @@ workflow/
     rules/                    (reserved for future rule modules)
 resources/
     test/
-        test-union-peaks.bed.gz    900-row subset (10 peaks)
-        preextracted_pg_64/        PARE-emitted NOTCH2 family promoter (pg_64.fa + pg_64.tsv)
+        test-union-peaks.bed.gz             900-row subset (10 peaks)
+        preextracted_pg_64/                 small NOTCH2 family promoter fixture (24 seqs, 6 haps)
+        preextracted_pg_64_all_haps/        full-cohort version (305 seqs, 78 haps)
 profiles/
     slurm/config.yaml         SLURM executor profile (CHPC Redwood)
 results/                      all pipeline outputs (gitignored)
@@ -129,6 +130,13 @@ into one giant group.
 
 `pixi run test-paralog` exercises the full pipeline on this fixture
 (~30 s wallclock), producing `results/{trees,plots}/pg_64.{treefile,html,pdf}`.
+
+A second fixture `resources/test/preextracted_pg_64_all_haps/` carries
+the *same* 4 NOTCH2-family peaks but pulled from the full HPRCv2 union
+BED (45 individuals; 78 primary haps after `is_primary_sample` filter;
+305 sequences total once NA-seq haps are dropped). Run with
+`pixi run test-paralog-all-haps`. Useful for validating that the tree
+and heatmap renderers scale to the production-shape input.
 
 ## Input table columns referenced
 

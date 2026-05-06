@@ -4,6 +4,9 @@
 Reads from stdin. Key columns (0-indexed):
   4  consensus_peak_id
   9  fire_cov_OV_cov  (FIRE actuation fraction, 0-1)
+  11 asm_chr          (PanSN-format per-sample assembly contig, e.g. HG02886#1#CMxxxx.1)
+  12 asm_start        (peak start in asm coords)
+  13 asm_end          (peak end in asm coords)
   23 seq
   25 Individual_ID
   26 Haplotype
@@ -23,6 +26,9 @@ COL_PEAK_ID = 4
 COL_COVERAGE = 6
 COL_FIRE_COVERAGE = 7
 COL_ACTUATION = 9
+COL_ASM_CHR = 11
+COL_ASM_START = 12
+COL_ASM_END = 13
 COL_SEQ = 23
 COL_INDIVIDUAL_ID = 25
 COL_HAPLOTYPE = 26
@@ -39,7 +45,7 @@ def sanitize(peak_id: str) -> str:
 
 def flush_peak(
     peak_id: str,
-    entries: list[tuple[str, str, str, str, str]],
+    entries: list[tuple[str, str, str, str, str, str, str, str]],
     peak_hd_values: set[str],
     outdir: Path,
     min_seqs: int,
@@ -48,7 +54,8 @@ def flush_peak(
 ) -> None:
     """Write one FASTA + actuation TSV if the peak passes the filters.
 
-    entries: list of (fasta_header, sequence, actuation_str, coverage_str, fire_coverage_str) tuples
+    entries: list of (fasta_header, sequence, actuation, coverage, fire_coverage,
+                      asm_chr, asm_start, asm_end) tuples
     """
     if not entries:
         return
@@ -68,9 +75,12 @@ def flush_peak(
 
     tsv_path = outdir / f"{safe_id}.tsv"
     with tsv_path.open("w") as fh:
-        fh.write("sample\tactuation\tcoverage\tfire_coverage\n")
-        for header, _, actuation, coverage, fire_coverage in entries:
-            fh.write(f"{header}\t{actuation}\t{coverage}\t{fire_coverage}\n")
+        fh.write("sample\tactuation\tcoverage\tfire_coverage\tasm_chr\tasm_start\tasm_end\n")
+        for header, _, actuation, coverage, fire_coverage, asm_chr, asm_start, asm_end in entries:
+            fh.write(
+                f"{header}\t{actuation}\t{coverage}\t{fire_coverage}\t"
+                f"{asm_chr}\t{asm_start}\t{asm_end}\n"
+            )
 
     written.append(safe_id)
 
@@ -117,7 +127,7 @@ def main() -> None:
 
     written: list[str] = []
     current_peak_id: str | None = None
-    current_entries: list[tuple[str, str, str, str, str]] = []
+    current_entries: list[tuple[str, str, str, str, str, str, str, str]] = []
     current_hd_values: set[str] = set()
     n_skipped_allowlist = 0
     n_rows = 0
@@ -173,7 +183,13 @@ def main() -> None:
         actuation = fields[COL_ACTUATION]
         coverage = fields[COL_COVERAGE]
         fire_coverage = fields[COL_FIRE_COVERAGE]
-        current_entries.append((f"{individual_id}_{haplotype}", seq, actuation, coverage, fire_coverage))
+        asm_chr = fields[COL_ASM_CHR]
+        asm_start = fields[COL_ASM_START]
+        asm_end = fields[COL_ASM_END]
+        current_entries.append((
+            f"{individual_id}_{haplotype}", seq, actuation, coverage, fire_coverage,
+            asm_chr, asm_start, asm_end,
+        ))
 
     # Flush the final peak
     if current_peak_id is not None:

@@ -23,3 +23,8 @@ mafft_maxiterate: 1000
 
 # bgzip threads for decompression
 bgzip_threads: 16
+
+# Optional: per-leaf PCLAI ancestry stripe in the plot. Path to the merged
+# bgzipped + tabix-indexed HPRC R2 PCLAI BED (chm13 + asm coord spaces in
+# one file) produced by `pixi run setup-pclai`. Set to null to disable.
+pclai_bed: "resources/pclai/hprc_r2.bed.gz"

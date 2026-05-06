@@ -10,6 +10,7 @@ FIRE peaks, then renders each tree alongside a FIRE actuation heatmap.
 
 ```bash
 pixi install              # first-time setup
+pixi run setup-pclai      # one-time: bulk-fetch HPRC R2 PCLAI BEDs → resources/pclai/hprc_r2_asm.bed.gz
 pixi run test             # 10 test peaks via test-union-peaks.bed.gz
 pixi run test-paralog     # NOTCH2NL paralog group via PARE-style preextracted dir
 pixi run dry-run          # DAG preview
@@ -50,8 +51,11 @@ Three Snakemake steps driven by a checkpoint:
    the aligned FASTA has >=4 distinct sequences (IQ-TREE refuses bootstrap otherwise).
 
 4. `rule plot` -- produces `results/plots/{peak_id}.html` and `results/plots/{peak_id}.pdf`
-   via `workflow/scripts/plot_tree_actuation_html.py`: midpoint-rooted, ladderized tree on the
-   left; FIRE actuation heatmap in the center; MSA with per-cell consensus coloring on the right.
+   via `workflow/scripts/plot_tree_actuation_html.py`. Layout left → right:
+   midpoint-rooted ladderized tree, leaf labels, **PCLAI ancestry stripe**, FIRE
+   actuation heatmap, MSA with per-cell consensus coloring (toggleable).
+   The PCLAI column is shown only when `config["pclai_bed"]` points at a valid
+   bgzipped + tabix-indexed BED; otherwise it collapses to zero width.
 
 ## Key implementation decisions
 
@@ -66,6 +70,15 @@ Three Snakemake steps driven by a checkpoint:
   row has the target classification. All qualifying sequences go into the tree regardless.
 - **Streaming extraction**: `extract_fastas.py` processes one peak at a time (constant memory),
   relying on the BED being sorted by genomic coordinate so rows for a peak are consecutive.
+- **PCLAI lookup is CHM13-coord** (not asm). The plot script parses `peak_id` as
+  `{chrom}_{start}_{end}` and runs **one tabix query per peak**; each returned row's
+  source sample/hap is encoded in BED col 4 (`HG00097/h1/...`). This wins over
+  per-leaf asm-coord lookup because: (1) one query vs. N queries, (2) works for
+  `preextracted_dir` mode (PARE) without any upstream changes, (3) no PanSN/accession
+  heterogeneity. Tradeoff: HG002-only consensus peaks like `chr8_MATERNAL_8587817_8588089`
+  silently fall through (chrom doesn't exist in CHM13 PCLAI) — small fraction in practice.
+  `extract_fastas.py` still emits `asm_chr`/`asm_start`/`asm_end` in the per-peak `.tsv`
+  for forward-compat / debugging; the plot ignores them.
 
 ## File layout
 
@@ -81,6 +94,10 @@ workflow/
         plot_tree_actuation_html.py  interactive HTML + PDF tree/MSA/actuation plot
     rules/                    (reserved for future rule modules)
 resources/
+    pclai/                        gitignored: built by `pixi run setup-pclai`
+        hprc_r2_chm13.bed.gz      merged HPRC R2 PCLAI chm13-coord BED (~126 MB, 11.7M rows)
+        hprc_r2_chm13.bed.gz.tbi
+        raw_chm13/                per-sample-hap source BEDs (cache; safe to delete)
     test/
         test-union-peaks.bed.gz             900-row subset (10 peaks)
         preextracted_pg_64/                 small NOTCH2 family promoter fixture (24 seqs, 6 haps)
@@ -134,9 +151,12 @@ into one giant group.
 A second fixture `resources/test/preextracted_pg_64_all_haps/` carries
 the *same* 4 NOTCH2-family peaks but pulled from the full HPRCv2 union
 BED (45 individuals; 78 primary haps after `is_primary_sample` filter;
-305 sequences total once NA-seq haps are dropped). Run with
-`pixi run test-paralog-all-haps`. Useful for validating that the tree
-and heatmap renderers scale to the production-shape input.
+305 sequences total once NA-seq haps are dropped). The fixture file
+basenames are deliberately `pg_64_all_haps.{fa,tsv}` (not `pg_64`) so
+the all-haps build artifacts at `results/{trees,plots}/pg_64_all_haps.{...}`
+do not overwrite the small `pg_64.{...}` outputs from `test-paralog`.
+Run with `pixi run test-paralog-all-haps`. Useful for validating that
+the tree and heatmap renderers scale to the production-shape input.
 
 ## Input table columns referenced
 
@@ -144,11 +164,47 @@ and heatmap renderers scale to the production-shape input.
 |--------|-------|----------|
 | `consensus_peak_id` | 4 | grouping key, output filename |
 | `fire_cov_OV_cov` | 9 | actuation fraction for heatmap |
+| `asm_chr` | 11 | PanSN per-sample asm contig (e.g. `HG02886#1#CMxxxx.1`); used for PCLAI lookup |
+| `asm_start` | 12 | peak start in asm coords (PCLAI tabix range) |
+| `asm_end` | 13 | peak end in asm coords (PCLAI tabix range) |
 | `seq` | 23 | DNA sequence (skip if NA) |
 | `Individual_ID` | 25 | FASTA header / tree leaf prefix |
-| `Haplotype` | 26 | FASTA header / tree leaf suffix |
+| `Haplotype` | 26 | FASTA header / tree leaf suffix; matches PCLAI's `#N#` directly |
 | `is_primary_sample` | 36 | filter when `primary_only: true` |
 | `haplotype_distinct` | 37 | optional peak-level filter |
+
+## PCLAI ancestry overlay
+
+`pixi run setup-pclai` (one-time) bulk-downloads the HPRC R2 PCLAI v1.1
+**chm13-coord** BEDs (463 sample-haps including CHM13 itself, source index at
+`hprc_intermediate_assembly/data_tables/annotation/pclai/`), concatenates them,
+sorts, bgzips, and tabix-indexes the merged file. Output:
+`resources/pclai/hprc_r2_chm13.bed.gz` (~126 MB, 11.7M rows, gitignored).
+
+Each leaf's stripe color is HPRC's pre-baked `itemRgb` for the PCLAI window
+with the largest overlap of the peak interval — same palette HPRC uses, so
+visualizations stay consistent across tools. Lookup is one tabix query per
+peak; rows are then matched to leaves via the `{sample}/h{hap}` prefix in
+BED col 4.
+
+The merged BED column layout (BED9+1):
+- col 1: CHM13 reference chrom (`chr1` … `chrY`, `chrM`)
+- col 4: `{sample}/h{hap}/{chrom}_w{NNNN}_(pc1,pc2)` — sample/hap identity
+  and per-window PC coordinates embedded here
+- col 5: confidence score (higher = better)
+- col 9: itemRgb for the PCLAI palette
+- col 10: centroid PC `(pc1,pc2)` — one of 4 buckets
+
+Why CHM13 over asm coords: phylo-FIRE peak_ids are CHM13-coord-native, so a
+single tabix query per peak returns one row per sample-haplotype that overlaps
+the locus — no per-leaf assembly lookups, no PanSN/accession naming
+heterogeneity, no PARE changes needed for paralog mode.
+
+CHM13-only peaks work cleanly. HG002-only consensus peaks
+(e.g. `chr8_MATERNAL_8587817_8588089`) parse to a chrom that doesn't exist in
+CHM13 PCLAI and silently fall through to no stripe. If you ever need PCLAI
+on those, the asm-coord variant of the BED handles them — point `pclai_bed`
+at a different file and update the plot script's lookup accordingly.
 
 ## SLURM notes
 

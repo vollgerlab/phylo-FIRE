@@ -40,22 +40,26 @@ replot = { cmd = [
 ] }
 # Per-paralog-group MSA test using a fixture pre-extracted by PARE's
 # `extract_paralog_msas` rule. Exercises the `preextracted_dir` ingestion path.
-# pg_64 = canonical chr1 NOTCH2 family promoter: NOTCH2 (1p11) + NOTCH2NLA
-# (1q21) + NOTCH2NLB (1q21) + NOTCH2NLC (1q21). 4 consensus peaks x 6 primary
-# haplotype-samples = 24 sequences. Build artifacts:
-# results/{trees,plots}/pg_64.{treefile,html,pdf}.
+# pg_31 = canonical chr1 NOTCH2NL promoter family: NOTCH2 (1p11) +
+# NOTCH2NLA / NOTCH2NLB / NOTCH2NLC promoters (1q21) + NBPF26. 5 consensus
+# peaks (the 4 NOTCH2/NL promoters plus NBPF26, which the current PARE run
+# detects as a paralog edge); small fixture has 6 haps from 3 individuals
+# (HG01123, HG01891, HG02486) -> 24 sequences (NBPF26 coverage is sparse).
+# Build artifacts: results/{trees,plots}/pg_31.{treefile,html,pdf}.
+# Renamed from pg_64 in 2026-05; group ID shifted because the chr1 SD belt
+# rerun added NBPF26 as a 5th member, and union-find IDs aren't stable
+# across PARE runs.
 test-paralog = { cmd = [
     "snakemake",
-    "--config", "preextracted_dir=resources/test/preextracted_pg_64",
+    "--config", "preextracted_dir=resources/test/preextracted_pg_31",
     "-j", "8",
 ] }
-# All-haps version of the pg_64 fixture: same 4 paralog peaks but pulled
+# All-haps version of the pg_31 fixture: same 5 paralog peaks but pulled
 # from the full HPRCv2 union BED (45 individuals -> 78 primary haps after
-# filtering to is_primary_sample). 305 sequences vs 24 in the small fixture.
-# Useful for validating that the tree + heatmap renderers scale.
+# filtering to is_primary_sample). 319 sequences vs 24 in the small fixture.
 test-paralog-all-haps = { cmd = [
     "snakemake",
-    "--config", "preextracted_dir=resources/test/preextracted_pg_64_all_haps",
+    "--config", "preextracted_dir=resources/test/preextracted_pg_31_all_haps",
     "-j", "8",
 ] }
 fmt = "snakefmt workflow/Snakefile"

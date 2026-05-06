@@ -100,8 +100,8 @@ resources/
         raw_chm13/                per-sample-hap source BEDs (cache; safe to delete)
     test/
         test-union-peaks.bed.gz             900-row subset (10 peaks)
-        preextracted_pg_64/                 small NOTCH2 family promoter fixture (24 seqs, 6 haps)
-        preextracted_pg_64_all_haps/        full-cohort version (305 seqs, 78 haps)
+        preextracted_pg_31/                 small NOTCH2NL promoter fixture (24 seqs, 6 haps)
+        preextracted_pg_31_all_haps/        full-cohort version (319 seqs, 78 haps)
 profiles/
     slurm/config.yaml         SLURM executor profile (CHPC Redwood)
 results/                      all pipeline outputs (gitignored)
@@ -125,36 +125,47 @@ pixi run -- snakemake \
     -j 32
 ```
 
-The `pg_64.fa` test fixture (`resources/test/preextracted_pg_64/`) is
-PARE's canonical chr1 NOTCH2 family promoter: NOTCH2 (1p11) + NOTCH2NLA
-(1q21) + NOTCH2NLB (1q21) + NOTCH2NLC (1q21). 4 consensus peaks x 6
-primary haplotype-samples = 24 sequences. Headers carry
-`{peak_id}__{gene}__{ind}_{hap}`
+The `pg_31.fa` test fixture (`resources/test/preextracted_pg_31/`) is
+PARE's canonical chr1 NOTCH2NL promoter family: NOTCH2 (1p11) +
+NOTCH2NLA / NOTCH2NLB / NOTCH2NLC promoters (1q21) + a 5th paralog at
+chr1:120,736,956-120,737,187. The 5th cp's nearest_pc gene name is
+"NBPF26" because its actual gene (NOTCH2NLR) is annotated as a
+pseudogene/lncRNA in the RefSeq Liftoff v5.2 track and gets skipped by
+the protein-coding filter; sequence identity to the other four is
+99.5-99.7%, the same level the four "real" paralogs share with each
+other (NBPF genes carry DUF1220/Olduvai domains and are NOT
+sequence-similar to NOTCH2 family). Treat it as a NOTCH2NLR proxy.
+
+5 consensus peaks x 6 primary haplotype-samples = 24 sequences in the
+small fixture (NBPF26/NOTCH2NLR coverage is sparser than the four
+named paralogs). Headers carry `{peak_id}__{gene}__{ind}_{hap}`
 (e.g. `chr1_145345837_145346088__NOTCH2NLA__HG01891_1`) so leaf labels
-in the rendered tree are paralog-readable. PARE prefers the
-protein-coding gene name over alternate-TSS LOC* lncRNAs in its
-gene-annotation pipeline; see PARE's `CLAUDE.md` for the full story.
+in the rendered tree are paralog-readable.
 
 The fixture is *small by design* -- one homologous regulatory element
-across four paralog loci, not a tile of every regulatory element in
-the NOTCH2NL paralog landscape. PARE's `target_peak_coverage` filter
-(80% threshold on the lifted projection's overlap with the target
-peak's interval) prevents N x M edge proliferation between paralog
-loci that each contain multiple tiling peaks; without it, a previous
-incarnation of this fixture (pg_9) had 46 cps and 276 sequences
-from collapsing 13 distinct regulatory elements across 4 paralogs
-into one giant group.
+across the paralog loci, not a tile of every regulatory element in
+the NOTCH2NL landscape. PARE's `target_peak_coverage` filter (80%
+threshold on the lifted projection's overlap with the target peak's
+interval) prevents N x M edge proliferation between paralog loci that
+each contain multiple tiling peaks; without it, a previous incarnation
+of this fixture (pg_9) had 46 cps and 276 sequences from collapsing
+13 distinct regulatory elements across 4 paralogs into one giant
+group. The fixture was renamed pg_9 -> pg_64 -> pg_31 over successive
+PARE runs because PARE's union-find paralog-group IDs aren't stable
+between runs (any change to the upstream filter cascade or graph
+ordering reshuffles them); pg_31 is the chr1 SD belt rerun that
+picked up the 5th NOTCH2NLR-like paralog.
 
 `pixi run test-paralog` exercises the full pipeline on this fixture
-(~30 s wallclock), producing `results/{trees,plots}/pg_64.{treefile,html,pdf}`.
+(~30 s wallclock), producing `results/{trees,plots}/pg_31.{treefile,html,pdf}`.
 
-A second fixture `resources/test/preextracted_pg_64_all_haps/` carries
-the *same* 4 NOTCH2-family peaks but pulled from the full HPRCv2 union
-BED (45 individuals; 78 primary haps after `is_primary_sample` filter;
-305 sequences total once NA-seq haps are dropped). The fixture file
-basenames are deliberately `pg_64_all_haps.{fa,tsv}` (not `pg_64`) so
-the all-haps build artifacts at `results/{trees,plots}/pg_64_all_haps.{...}`
-do not overwrite the small `pg_64.{...}` outputs from `test-paralog`.
+A second fixture `resources/test/preextracted_pg_31_all_haps/` carries
+the *same* 5 NOTCH2NL peaks but pulled from the full HPRCv2 union BED
+(45 individuals; 78 primary haps after `is_primary_sample` filter;
+319 sequences total once NA-seq haps are dropped). The fixture file
+basenames are deliberately `pg_31_all_haps.{fa,tsv}` (not `pg_31`) so
+the all-haps build artifacts at `results/{trees,plots}/pg_31_all_haps.{...}`
+do not overwrite the small `pg_31.{...}` outputs from `test-paralog`.
 Run with `pixi run test-paralog-all-haps`. Useful for validating that
 the tree and heatmap renderers scale to the production-shape input.
 

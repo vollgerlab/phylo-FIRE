@@ -135,6 +135,7 @@ files emitted by PARE's `extract_paralog_msas` rule).
         src=_extract_fastas_input,
         peak_ids=_peak_ids_input,
         highlight=_highlight_input,
+        script=workflow.source_path("scripts/extract_fastas.py"),
     output:
         done=touch("results/fastas/.done"),
     threads: config.get("bgzip_threads", 16)
@@ -153,7 +154,7 @@ files emitted by PARE's `extract_paralog_msas` rule).
             parts = [
                 f"bgzip -cd -@ {threads} {shlex.quote(str(input.src))}",
                 "| (sed -u 1q; sort -t$'\\t' -k5,5 -S 50%)",
-                "| python workflow/scripts/extract_fastas.py",
+                f"| python {shlex.quote(str(input.script))}",
                 "--outdir results/fastas",
                 f"--min-seqs {config.get('min_seqs',2)}",
             ]
@@ -183,6 +184,7 @@ so the checkpoint's peak manifest stays independent of flank.
     input:
         fa="results/fastas/{peak_id}.fa",
         tsv="results/fastas/{peak_id}.tsv",
+        script=workflow.source_path("scripts/add_flanks.py"),
     output:
         fa=temp("results/flanked/{peak_id}.fa"),
     threads: 4
@@ -194,7 +196,7 @@ so the checkpoint's peak manifest stays independent of flank.
         agc=config.get("agc", ""),
     shell:
         """
-        python workflow/scripts/add_flanks.py \
+        python {input.script} \
             --fa      {input.fa} \
             --tsv     {input.tsv} \
             --agc     {params.agc} \
@@ -243,6 +245,7 @@ branches.
 """
     input:
         fa="results/aligned/{peak_id}.fa",
+        script=workflow.source_path("scripts/encode_indels.py"),
     output:
         nex="results/coded/{peak_id}/{peak_id}.nex",
         nuc="results/coded/{peak_id}/{peak_id}_nucleic.phy",
@@ -255,7 +258,7 @@ branches.
         out_dir=lambda wc: f"results/coded/{wc.peak_id}",
     shell:
         """
-        python workflow/scripts/encode_indels.py \
+        python {input.script} \
             --aligned {input.fa} \
             --peak-id {params.peak_id} \
             --out-dir {params.out_dir}
@@ -344,6 +347,7 @@ the three H²_p posterior densities + the selected-branch effect sizes.
         tree="results/trees/{peak_id}.treefile",
         actuation="results/fastas/{peak_id}.tsv",
         alignment="results/aligned/{peak_id}.fa",
+        script=workflow.source_path("scripts/phylo_mm.R"),
     output:
         tsv="results/phylo_mm/{peak_id}.tsv",
         pdf="results/phylo_mm/{peak_id}.pdf",
@@ -356,7 +360,7 @@ the three H²_p posterior densities + the selected-branch effect sizes.
         flank=config.get("flank", 0),
     shell:
         """
-        Rscript workflow/scripts/phylo_mm.R \
+        Rscript {input.script} \
             --tree      {input.tree} \
             --actuation {input.actuation} \
             --alignment {input.alignment} \
@@ -385,6 +389,7 @@ SNP effect is annotated above the MSA at its alignment column.
         alignment="results/aligned/{peak_id}.fa",
         pclai=_pclai_bed_for_plot,
         phylo_mm="results/phylo_mm/{peak_id}.tsv",
+        script=workflow.source_path("scripts/plot_tree_actuation_html.py"),
     output:
         html="results/plots/{peak_id}.html",
         pdf="results/plots/{peak_id}.pdf",
@@ -396,7 +401,7 @@ SNP effect is annotated above the MSA at its alignment column.
         flank=config.get("flank", 0),
     shell:
         """
-        python workflow/scripts/plot_tree_actuation_html.py \
+        python {input.script} \
             --tree        {input.tree} \
             --actuation   {input.actuation} \
             --alignment   {input.alignment} \

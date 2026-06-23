@@ -133,10 +133,13 @@ Three Snakemake steps driven by a checkpoint:
    midpoint-rooted ladderized tree, leaf labels, **PCLAI ancestry stripe**,
    FIRE actuation heatmap (light-grey gaps with dark box outlines around
    contiguous `-` runs, N/unmapped stay dark grey), MSA with per-cell
-   consensus coloring. The header surfaces H²ₚ (alpha.V=1 point estimate,
-   alpha=0.25 flank when sensitivity ≥0.05 with `⚠` flag), the LASSO-selected
-   branch count, and the standard peak stats. Each LASSO-selected branch
-   is annotated on the tree with `Δ` (marginal Welch effect), `β`
+   consensus coloring. The header surfaces H²ₚ (alpha.V=1 point estimate **with
+   its 95% HPD**, alpha=0.25 flank when sensitivity ≥0.05 with `⚠`, and
+   `⚠ unidentified` when the HPD spans >0.5 of [0,1] — i.e. the posterior is
+   nearly flat and the point estimate is meaningless, distinct from
+   prior-sensitivity), the LASSO-selected branch count, and the standard peak
+   stats. Each LASSO-selected branch is annotated on the tree with a single
+   horizontal segment (the branch) — `Δ` (marginal clade-vs-sibling effect), `β`
    (post-selection joint effect), and `p` (post-selection p-value).
    Linked variants are dashed-highlighted in the MSA. Light dotted leader
    lines connect each tree tip across all panels for row alignment.

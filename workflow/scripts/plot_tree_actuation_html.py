@@ -1106,32 +1106,14 @@ def make_figure(
         rep = members_sorted[0]
         rest = members_sorted[1:]
 
-        # Representative — thick line + vertical bracket + annotation.
+        # Representative — thick horizontal branch line + annotation. (No
+        # vertical bracket: drawing one at the MRCA's x spanning the clade's
+        # full tip y-range put a vertical line near the root cutting across
+        # many rows, mis-reading as if it were a branch. The thick horizontal
+        # segment + the coloured leader lines already mark the clade.)
         seg = _find_branch_endpoints(rep)
         if seg is not None:
             px, cx, py = seg
-            # Vertical "bracket" at the MRCA's x position, spanning the
-            # clade's y-range. This visually unites the horizontal branch
-            # line with all the coloured leader lines exiting from the
-            # clade's tips — without it, the branch is at one y while the
-            # leaders are at N tip y's, and the eye has to do the connection.
-            _want_sh = frozenset(
-                parse_leaf_meta(d)["sample_hap"] for d in rep.get("descendants", ())
-            )
-            _clade_ys = [
-                pos[id(t)]["y"] for t in tree.get_terminals()
-                if parse_leaf_meta(t.name)["sample_hap"] in _want_sh
-            ]
-            if len(_clade_ys) >= 2:
-                _y_min, _y_max = min(_clade_ys), max(_clade_ys)
-                fig.add_trace(go.Scatter(
-                    x=[cx, cx], y=[_y_min, _y_max],
-                    mode="lines",
-                    line=dict(color=color, width=1.5),
-                    hoverinfo="skip",
-                    showlegend=False,
-                    xaxis="x1", yaxis="y1",
-                ))
             sorted_sites = [_site_label(s) for s in sorted(key, key=int)] if key else []
             linked_str_full = ", ".join(sorted_sites) if sorted_sites else "none"
             if len(sorted_sites) <= 4:
@@ -1613,20 +1595,30 @@ def make_figure(
     meta = pm.get("meta", {})
     h2_main = meta.get("h2_alpha1_mean")
     h2_low  = meta.get("h2_alpha025_mean")
+    h2_lo   = meta.get("h2_alpha1_lower")
+    h2_hi   = meta.get("h2_alpha1_upper")
     # Convergence flag (alpha.V=1 posterior ESS < threshold in phylo_mm.R).
     # When the MCMC chain didn't converge, the point estimate is unreliable.
     conv_flag = " [ESS low]" if str(meta.get("h2_converged", "")).upper() == "FALSE" else ""
     if isinstance(h2_main, (int, float)):
-        if isinstance(h2_low, (int, float)) and (h2_main - h2_low) >= 0.05:
-            # Prior-sensitive: show both with a warning flag so it's obvious
-            # the data don't pin H² down.
-            summary_bits.append(
-                f"<b>H²<sub>p</sub></b>={h2_main:.2f} (α=0.25→{h2_low:.2f}) ⚠{conv_flag}"
-            )
-        else:
-            summary_bits.append(
-                f"<b>H²<sub>p</sub></b>≈{h2_main:.2f}{conv_flag}"
-            )
+        # Show the 95% HPD so a point estimate from a nearly-flat posterior
+        # isn't mistaken for real heritability. A wide HPD means the data don't
+        # identify H² (distinct from prior-sensitivity below): the point
+        # estimate is just the median of an uninformative posterior.
+        hpd_str, wide_flag = "", ""
+        if isinstance(h2_lo, (int, float)) and isinstance(h2_hi, (int, float)):
+            hpd_str = f" [{h2_lo:.2f}–{h2_hi:.2f}]"
+            if (h2_hi - h2_lo) > 0.5:
+                wide_flag = " ⚠ unidentified"
+        # Prior-sensitivity flag (α=1 vs α=0.25 disagree): a separate failure mode.
+        prior_str = (
+            f" (α=0.25→{h2_low:.2f})"
+            if isinstance(h2_low, (int, float)) and (h2_main - h2_low) >= 0.05
+            else ""
+        )
+        summary_bits.append(
+            f"<b>H²<sub>p</sub></b>≈{h2_main:.2f}{hpd_str}{prior_str}{wide_flag}{conv_flag}"
+        )
     # LASSO-selected branch count (headline).
     n_sel = meta.get("n_branches_selected")
     if isinstance(n_sel, (int, float)):

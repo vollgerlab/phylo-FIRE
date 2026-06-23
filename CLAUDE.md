@@ -139,10 +139,13 @@ Three Snakemake steps driven by a checkpoint:
    nearly flat and the point estimate is meaningless, distinct from
    prior-sensitivity), the LASSO-selected branch count, and the standard peak
    stats. Each LASSO-selected branch is annotated on the tree with a single
-   horizontal segment (the branch) — `Δ` (marginal clade-vs-sibling effect), `β`
-   (post-selection joint effect), and `p` (post-selection p-value).
-   Linked variants are dashed-highlighted in the MSA. Light dotted leader
-   lines connect each tree tip across all panels for row alignment.
+   horizontal segment (the branch) — `Δ` (marginal effect: the clade vs its
+   SIBLING when the clade is a minority of its parent, so nested sub-branches
+   that only re-report the parent signal collapse to Δ≈0; vs the REST of the
+   tree when the clade is the majority of its parent, since a tiny sibling
+   isn't a real comparison), `β` (post-selection joint effect), and `p`
+   (post-selection p-value). Linked variants are dashed-highlighted in the MSA.
+   Light dotted leader lines run from each tip to the sample-name column.
    The PCLAI column is shown only when `config["pclai_bed"]` points at a valid
    bgzipped + tabix-indexed BED; otherwise it collapses to zero width.
 

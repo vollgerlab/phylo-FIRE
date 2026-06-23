@@ -480,12 +480,17 @@ for (i in seq_along(br_meta)) {
     mean_in <- mean_out <- t_stat <- p_raw <- NA_real_
     in_clade <- tree$tip.label %in% meta$desc
     in_sib   <- tree$tip.label %in% sibling_tips(meta$node, meta$desc)
-    # Fall back to the whole rest of the tree when the sibling is too small to
-    # test (e.g. a major clade whose sibling is a single leaf): vs-sibling is
-    # only meaningful with >=2 testable sibling tips. This never reintroduces
-    # the "re-reports the parent signal" problem — that case is a small nested
-    # clade, which always has a large sibling and stays vs-sibling.
-    if (sum(in_sib & cov_ok) < 2L) in_sib <- !in_clade
+    # Compare against the SIBLING only when the clade is a MINORITY of its
+    # parent (sibling at least as large as the clade) — then the sibling is a
+    # real "parent context" and vs-sibling demotes nested sub-branches that
+    # merely re-report the parent signal. When the clade is the MAJORITY of its
+    # parent its sibling is a small offshoot (e.g. 19 tips vs a 2-tip sibling),
+    # not a meaningful comparison, so fall back to vs-rest: Δ then reflects the
+    # clade against the broader tree, matching the visual and the LASSO vs-rest
+    # β. (Top-level branches' sibling already IS the rest.)
+    if (sum(in_sib) < sum(in_clade) || sum(in_sib & cov_ok) < 2L) {
+        in_sib <- !in_clade
+    }
     in_ok  <- in_clade & cov_ok
     out_ok <- in_sib   & cov_ok
     if (length(linked) > 0L && sum(in_ok) >= 2L && sum(out_ok) >= 2L) {

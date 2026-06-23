@@ -893,15 +893,15 @@ def make_figure(
                 leaf_clade_size[_sh] = _n
                 leaf_clade_color[_sh] = _color
 
-    # ── 0b. Leaf-to-MSA leader lines ─────────────────────────────────────────
-    # Light dotted horizontal connectors from each tree tip across the entire
-    # right side of the figure (labels → paralog → PCLAI → actuation → MSA)
-    # so the eye can trace which row of every panel belongs to which leaf.
-    # Drawn as paper-coord shapes at layer="below" so they sit under every
-    # trace, label, and bar.
+    # ── 0b. Leaf-to-label leader lines ───────────────────────────────────────
+    # Light dotted horizontal connectors from each tree tip to the sample-name
+    # column, so the eye can trace each tip to its label. They stop at the names
+    # (LABEL_X[1]) rather than running on through the PCLAI / actuation / MSA
+    # panels. When labels are hidden (tiny rows) there are no names to land on,
+    # so the lines extend the full width as the only row guide.
     # Leaves inside a LASSO-selected clade get a slightly heavier coloured
-    # line matched to that clade's annotation; uncovered leaves stay light
-    # gray.
+    # line matched to that clade's annotation; uncovered leaves stay light gray.
+    _leader_x1 = LABEL_X[1] if show_labels else 1.0
     _tree_axis_min = -0.01 * max_depth
     _tree_axis_max = max_depth * 1.05
     _tree_axis_span = _tree_axis_max - _tree_axis_min
@@ -920,7 +920,7 @@ def make_figure(
         _line_width = 0.8 if _clade_color else 0.4
         fig.add_shape(
             type="line",
-            x0=_tip_paper_x, x1=1.0,
+            x0=_tip_paper_x, x1=_leader_x1,
             y0=_row_paper_y, y1=_row_paper_y,
             xref="paper", yref="paper",
             line=dict(color=_line_color, width=_line_width, dash="dot"),

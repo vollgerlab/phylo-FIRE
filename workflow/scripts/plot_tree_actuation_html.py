@@ -1078,12 +1078,11 @@ def make_figure(
         return f"{b:+.2f}" if isinstance(b, float) else "NA"
     def _marginal_delta(rec: dict) -> float | None:
         """Raw-actuation Δ = mean_in − mean_out from the coverage-weighted
-        per-branch scan. mean_out is the branch's SIBLING when the clade is a
-        minority of its parent (so a nested branch that only inherits its
-        parent's signal has Δ≈0), else the rest of the tree when the clade is
-        the majority of its parent (a tiny sibling isn't a real comparison).
-        Compare with the LASSO post-OLS β (the partial effect after other
-        selected branches).
+        per-branch scan. mean_out is conditional on the LASSO significance
+        hierarchy: the rest of the innermost LASSO-selected clade that contains
+        this branch (its incremental effect within the signal), or the rest of
+        the tree when no selected clade is above it (its overall effect). This
+        makes Δ a conditional effect that tracks the LASSO joint β.
         """
         mi, mo = rec.get("mean_in"), rec.get("mean_out")
         if isinstance(mi, float) and isinstance(mo, float):

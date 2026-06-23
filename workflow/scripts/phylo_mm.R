@@ -426,32 +426,14 @@ if (n_branches_raw == 0L) {
 X <- do.call(cbind, X_cols)
 rownames(X) <- tree$tip.label
 
-# "Against-parent" test scope: each branch is tested vs its SIBLING (the rest of
-# its parent clade), not vs the whole tree. A nested sub-clade therefore only
-# scores if it diverged from where it came from, so the marginal Δ stops
-# re-reporting the inherited parent signal (it then agrees with the LASSO joint
-# β). A top-level branch's parent is the root, so its sibling IS the rest of the
-# tree — unchanged. (linked-site anchoring stays clade-vs-rest topology; within
-# the parent the linked variant still separates the clade from its sibling.)
-parent_of <- function(node) {
-    p <- tree$edge[tree$edge[, 2] == node, 1]
-    if (length(p) == 0L) NA_integer_ else p[1]
-}
-sibling_tips <- function(node, clade_tips) {
-    par <- parent_of(node)
-    if (is.na(par) || par == root_node) {
-        setdiff(tree$tip.label, clade_tips)
-    } else {
-        setdiff(extract.clade(tree, par)$tip.label, clade_tips)
-    }
-}
-
-rows <- list()
+# ── RE-anchoring: which RE variants exactly mirror each bipartition ──────────
+# RE-anchored = `linked` non-empty. This drives the LASSO candidate set AND
+# which branches get a p-value. The COMPARISON GROUP for each branch's test is
+# decided after the LASSO (below), conditional on the significance hierarchy —
+# so we only need the linked sites here.
+linked_list <- vector("list", length(br_meta))
 for (i in seq_along(br_meta)) {
-    meta <- br_meta[[i]]
     indicator <- X[, i] == 1L
-    # Linked sites are sequence-anchored (coverage-independent); compute them
-    # over the full tip set regardless of the coverage filter below.
     linked <- character(0)
     for (col_chr in names(site_indicators)) {
         ind_site <- site_indicators[[col_chr]]
@@ -468,58 +450,8 @@ for (i in seq_along(br_meta)) {
         }
         if (match_eq || match_neg) linked <- c(linked, col_chr)
     }
-    # Coverage-weighted clade-vs-SIBLING test (WLS) on trustworthy tips only.
-    # The clade is compared against the rest of its parent clade (its sibling),
-    # not the whole tree, so nested branches test their own incremental shift.
-    # Weighting makes a 50-fiber leaf count more than a 5-fiber one, consistent
-    # with the H2_p model's `mev`. Only RE-ANCHORED bipartitions are tested
-    # (those mirrored by >=1 RE variant — `linked` non-empty): the p-value scan
-    # and LASSO use RE variants only, while the tree and H2_p use the whole
-    # flanked window. Non-anchored bipartitions still get a row (NA stats) so
-    # alignment with `br_meta`/`X` is preserved for the LASSO indexing below.
-    mean_in <- mean_out <- t_stat <- p_raw <- NA_real_
-    in_clade <- tree$tip.label %in% meta$desc
-    in_sib   <- tree$tip.label %in% sibling_tips(meta$node, meta$desc)
-    # Compare against the SIBLING only when the clade is a MINORITY of its
-    # parent (sibling at least as large as the clade) — then the sibling is a
-    # real "parent context" and vs-sibling demotes nested sub-branches that
-    # merely re-report the parent signal. When the clade is the MAJORITY of its
-    # parent its sibling is a small offshoot (e.g. 19 tips vs a 2-tip sibling),
-    # not a meaningful comparison, so fall back to vs-rest: Δ then reflects the
-    # clade against the broader tree, matching the visual and the LASSO vs-rest
-    # β. (Top-level branches' sibling already IS the rest.)
-    if (sum(in_sib) < sum(in_clade) || sum(in_sib & cov_ok) < 2L) {
-        in_sib <- !in_clade
-    }
-    in_ok  <- in_clade & cov_ok
-    out_ok <- in_sib   & cov_ok
-    if (length(linked) > 0L && sum(in_ok) >= 2L && sum(out_ok) >= 2L) {
-        sub  <- in_ok | out_ok            # restrict the test to clade ∪ sibling
-        yk   <- y[sub]; ind_k <- in_clade[sub]; wk <- w_cov[sub]
-        fit  <- tryCatch(lm(yk ~ ind_k, weights = wk), error = function(e) NULL)
-        if (!is.null(fit)) {
-            sm <- summary(fit)$coefficients
-            if (nrow(sm) >= 2L) {
-                mean_in  <- weighted.mean(y[in_ok],  w_cov[in_ok])
-                mean_out <- weighted.mean(y[out_ok], w_cov[out_ok])
-                t_stat   <- unname(sm[2, "t value"])
-                p_raw    <- sm[2, "Pr(>|t|)"]
-            }
-        }
-    }
-    rows[[length(rows) + 1L]] <- list(
-        branch_id    = meta$node,
-        n_below      = meta$n_below,
-        descendants  = paste(meta$desc, collapse = ","),
-        mean_in      = mean_in,
-        mean_out     = mean_out,
-        t_stat       = t_stat,
-        p_raw        = p_raw,
-        linked_sites = paste(linked, collapse = ",")
-    )
+    linked_list[[i]] <- linked
 }
-branch_df <- do.call(rbind, lapply(rows, as.data.frame))
-branch_df$p_fdr <- p.adjust(branch_df$p_raw, method = "BH")
 
 # ── 3. LASSO joint branch selection ───────────────────────────────────────────
 # Restrict the design matrix to **sequence-anchored bipartitions**: branches
@@ -532,7 +464,7 @@ branch_df$p_fdr <- p.adjust(branch_df$p_raw, method = "BH")
 # permissive (any branch backed by ≥1 perfect-match SNP qualifies).
 # After filtering, we deduplicate identical columns (perfectly nested
 # bipartitions that share the same indicator vector).
-linked_per_branch <- vapply(rows, function(r) nzchar(r$linked_sites), logical(1))
+linked_per_branch <- vapply(linked_list, function(l) length(l) > 0L, logical(1))
 seq_anchored <- linked_per_branch
 n_filtered_out <- sum(!seq_anchored)
 if (any(seq_anchored)) {
@@ -679,6 +611,71 @@ cat(sprintf("[phylo_mm] %s LASSO selected %d branches (lambda.min=%.4g, %d uniqu
             peak_id, length(selected_branch_ids),
             lasso_lambda_used, ncol(X_uniq), inference_method),
     file = stderr())
+
+# ── Per-branch test, conditional on the LASSO significance hierarchy ──────────
+# Comparison group ("out") for a branch B with tip set B_tips:
+#   - if a LASSO-selected clade STRICTLY contains B, the innermost such clade
+#     minus B_tips — B is tested against the rest of the significant clade it
+#     sits in (its *incremental* effect within the signal); else
+#   - the rest of the tree — B is a top-level signal (no significant clade
+#     above it), tested for its overall effect.
+# Falls back to vs-rest when the conditional remainder has <2 testable tips.
+# Using the LASSO selection as the hierarchy (rather than the p-values
+# themselves) avoids circularity, and makes the marginal Δ a CONDITIONAL effect
+# that aligns with the LASSO joint β instead of depending on an arbitrary
+# tree-sibling. Coverage-weighted WLS, min-coverage floor, RE-anchored only.
+node_to_desc <- setNames(
+    lapply(br_meta, function(m) m$desc),
+    vapply(br_meta, function(m) as.character(m$node), character(1)))
+sel_desc <- node_to_desc[as.character(selected_branch_ids)]
+comparison_tips <- function(B_tips) {
+    containing <- Filter(
+        function(s) length(s) > length(B_tips) && all(B_tips %in% s), sel_desc)
+    if (length(containing) > 0L) {
+        setdiff(containing[[which.min(vapply(containing, length, integer(1)))]],
+                B_tips)
+    } else {
+        setdiff(tree$tip.label, B_tips)
+    }
+}
+
+rows <- list()
+for (i in seq_along(br_meta)) {
+    meta   <- br_meta[[i]]
+    linked <- linked_list[[i]]
+    in_clade <- tree$tip.label %in% meta$desc
+    in_out   <- tree$tip.label %in% comparison_tips(meta$desc)
+    if (sum(in_out & cov_ok) < 2L) in_out <- !in_clade   # fall back to vs-rest
+    in_ok  <- in_clade & cov_ok
+    out_ok <- in_out   & cov_ok
+    mean_in <- mean_out <- t_stat <- p_raw <- NA_real_
+    if (length(linked) > 0L && sum(in_ok) >= 2L && sum(out_ok) >= 2L) {
+        sub <- in_ok | out_ok                # restrict the test to clade ∪ out
+        yk  <- y[sub]; ind_k <- in_clade[sub]; wk <- w_cov[sub]
+        fit <- tryCatch(lm(yk ~ ind_k, weights = wk), error = function(e) NULL)
+        if (!is.null(fit)) {
+            sm <- summary(fit)$coefficients
+            if (nrow(sm) >= 2L) {
+                mean_in  <- weighted.mean(y[in_ok],  w_cov[in_ok])
+                mean_out <- weighted.mean(y[out_ok], w_cov[out_ok])
+                t_stat   <- unname(sm[2, "t value"])
+                p_raw    <- sm[2, "Pr(>|t|)"]
+            }
+        }
+    }
+    rows[[length(rows) + 1L]] <- list(
+        branch_id    = meta$node,
+        n_below      = meta$n_below,
+        descendants  = paste(meta$desc, collapse = ","),
+        mean_in      = mean_in,
+        mean_out     = mean_out,
+        t_stat       = t_stat,
+        p_raw        = p_raw,
+        linked_sites = paste(linked, collapse = ",")
+    )
+}
+branch_df <- do.call(rbind, lapply(rows, as.data.frame))
+branch_df$p_fdr <- p.adjust(branch_df$p_raw, method = "BH")
 
 # ── Annotate branch_df with LASSO selection + inference columns ───────────────
 branch_df$selected_by_lasso <- branch_df$branch_id %in% selected_branch_ids

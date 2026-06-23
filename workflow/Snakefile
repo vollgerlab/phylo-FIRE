@@ -1,8 +1,11 @@
+import os
 import shlex
+import sys
 from pathlib import Path
 from snakemake.utils import min_version
 
 min_version("8.0")
+
 
 configfile: "config/config.yaml"
 
@@ -25,17 +28,41 @@ def count_unique_seqs(fa_path: str) -> int:
     return len(seqs)
 
 
+def count_unique_seqs_phylip(phy_path: str) -> int:
+    """Count unique sequences in a one-line-per-tip PHYLIP file."""
+    seqs: set[str] = set()
+    with open(phy_path) as fh:
+        next(fh, None)  # skip the header `<n_taxa> <n_cols>`
+        for line in fh:
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                seqs.add(parts[1])
+    return len(seqs)
+
+
 # ── aggregate (resolves after checkpoint) ─────────────────────────────────────
 
 
 def aggregate_outputs(wildcards):
-    """Return all tree and plot paths once extract_fastas checkpoint has completed."""
+    """Return tree + plot paths for the peaks listed in the run manifest.
+
+    The manifest at ``results/fastas/peak_ids.txt`` is the *authoritative* set
+    of peaks for the current run — written by ``extract_fastas.py`` (union BED
+    mode) or by ``_ingest_preextracted`` (preextracted-dir mode). Reading it
+    instead of globbing ensures stale per-peak files from previous fixtures
+    never enter the build graph.
+    """
     checkpoints.extract_fastas.get(**wildcards)
-    peak_ids, = glob_wildcards("results/fastas/{peak_id}.fa")
+    manifest = Path("results/fastas/peak_ids.txt")
+    peak_ids = [
+        line.strip() for line in manifest.read_text().splitlines() if line.strip()
+    ]
     return (
         expand("results/trees/{peak_id}.treefile", peak_id=peak_ids)
         + expand("results/plots/{peak_id}.html", peak_id=peak_ids)
-        + expand("results/plots/{peak_id}.pdf",  peak_id=peak_ids)
+        + expand("results/plots/{peak_id}.pdf", peak_id=peak_ids)
+        + expand("results/phylo_mm/{peak_id}.tsv", peak_id=peak_ids)
+        + expand("results/phylo_mm/{peak_id}.pdf", peak_id=peak_ids)
     )
 
 
@@ -52,24 +79,12 @@ def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
 
     Used when an upstream pipeline (e.g. PARE) has already produced per-group
     FASTA + actuation TSV files in this directory layout. Returns the number
-    of FASTA pairs linked.
-
-    Clears any stale `.fa` / `.tsv` entries in dst_dir first so that switching
-    to a different `preextracted_dir` doesn't leave behind broken symlinks
-    that `glob_wildcards` would still pick up.
+    of FASTA pairs linked. Also writes ``peak_ids.txt`` (the run manifest
+    that ``aggregate_outputs`` reads).
     """
     src_dir = Path(src_dir).resolve()
     dst_dir.mkdir(parents=True, exist_ok=True)
-    # Drop any prior .fa / .tsv entries so a swap of preextracted_dir
-    # doesn't leave stale symlinks behind. Done explicitly here (not via
-    # snakemake) because the checkpoint's only declared output is .done;
-    # the per-file symlinks aren't tracked.
-    for stale in list(dst_dir.glob("*.fa")) + list(dst_dir.glob("*.tsv")):
-        try:
-            stale.unlink()
-        except FileNotFoundError:
-            pass
-    n = 0
+    linked: list[str] = []
     for fa in sorted(src_dir.glob("*.fa")):
         peak = fa.stem
         tsv = src_dir / f"{peak}.tsv"
@@ -79,8 +94,9 @@ def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
             if dst.is_symlink() or dst.exists():
                 dst.unlink()
             dst.symlink_to(src)
-        n += 1
-    return n
+        linked.append(peak)
+    (dst_dir / "peak_ids.txt").write_text("\n".join(linked) + "\n")
+    return len(linked)
 
 
 def _extract_fastas_input(wildcards):
@@ -91,15 +107,34 @@ def _extract_fastas_input(wildcards):
     return config["input_table"]
 
 
+def _peak_ids_input(wildcards):
+    """Track the peak_ids file as a checkpoint input when supplied.
+
+    Without this, switching between two `peak_ids` files on the *same*
+    input_table wouldn't re-trigger extraction and the manifest would not
+    refresh.
+    """
+    pi = config.get("peak_ids")
+    return [pi] if pi else []
+
+
+def _highlight_input(wildcards):
+    """Same idea as _peak_ids_input but for the highlight TSV."""
+    hf = config.get("highlight_file")
+    return [hf] if hf else []
+
+
 checkpoint extract_fastas:
     """One-pass extraction of per-peak FASTA + actuation TSV from the union-peaks table.
 
-    If `preextracted_dir` is set, this becomes a noop wrapper that symlinks
-    pre-extracted FASTA/TSV pairs into `results/fastas/` (e.g. per-paralog-group
-    files emitted by PARE's `extract_paralog_msas` rule).
-    """
+If `preextracted_dir` is set, this becomes a noop wrapper that symlinks
+pre-extracted FASTA/TSV pairs into `results/fastas/` (e.g. per-paralog-group
+files emitted by PARE's `extract_paralog_msas` rule).
+"""
     input:
         src=_extract_fastas_input,
+        peak_ids=_peak_ids_input,
+        highlight=_highlight_input,
     output:
         done=touch("results/fastas/.done"),
     threads: config.get("bgzip_threads", 16)
@@ -111,33 +146,83 @@ checkpoint extract_fastas:
             n = _ingest_preextracted(Path(input.src), Path("results/fastas"))
             print(f"linked {n} pre-extracted FASTA/TSV pairs from {input.src}")
         else:
+            # Sort by consensus_peak_id (col 5) so each peak's rows are
+            # consecutive for the streaming extractor — the production union BED
+            # is asm-coord-sorted, not peak-sorted. `sed -u 1q` passes the
+            # header through first, then `sort` orders the data rows.
             parts = [
                 f"bgzip -cd -@ {threads} {shlex.quote(str(input.src))}",
+                "| (sed -u 1q; sort -t$'\\t' -k5,5 -S 50%)",
                 "| python workflow/scripts/extract_fastas.py",
                 "--outdir results/fastas",
-                f"--min-seqs {config.get('min_seqs', 2)}",
+                f"--min-seqs {config.get('min_seqs',2)}",
             ]
             if config.get("primary_only", True):
                 parts.append("--primary-only")
             if config.get("peak_ids"):
                 parts.append(f"--peak-ids {shlex.quote(str(config['peak_ids']))}")
             if config.get("haplotype_distinct"):
-                parts.append(f"--haplotype-distinct {shlex.quote(str(config['haplotype_distinct']))}")
+                parts.append(
+                    f"--haplotype-distinct {shlex.quote(str(config['haplotype_distinct']))}"
+                )
+            if config.get("highlight_file"):
+                parts.append(
+                    f"--highlight-file {shlex.quote(str(config['highlight_file']))}"
+                )
             shell(" ".join(parts))
+
+
+rule add_flanks:
+    """Add `config["flank"]` bp of assembly context each side of the peak.
+
+Pulls the flanked sequence per haplotype from the AGC archive keyed by the
+PanSN asm_chr in the per-peak TSV. Only instantiated when `flank > 0` (the
+`_mafft_input` switch routes mafft straight to the RE-only FASTA otherwise),
+so the checkpoint's peak manifest stays independent of flank.
+"""
+    input:
+        fa="results/fastas/{peak_id}.fa",
+        tsv="results/fastas/{peak_id}.tsv",
+    output:
+        fa=temp("results/flanked/{peak_id}.fa"),
+    threads: 4
+    resources:
+        mem_mb=4096,
+        runtime=30,
+    params:
+        flank=config.get("flank", 0),
+        agc=config.get("agc", ""),
+    shell:
+        """
+        python workflow/scripts/add_flanks.py \
+            --fa      {input.fa} \
+            --tsv     {input.tsv} \
+            --agc     {params.agc} \
+            --flank   {params.flank} \
+            --threads {threads} \
+            --out     {output.fa}
+        """
+
+
+def _mafft_input(wildcards):
+    """RE-only FASTA, or the flanked FASTA when flanking is enabled."""
+    if int(config.get("flank", 0)) > 0:
+        return f"results/flanked/{wildcards.peak_id}.fa"
+    return f"results/fastas/{wildcards.peak_id}.fa"
 
 
 rule mafft:
     """Align sequences for a single peak with MAFFT."""
     input:
-        fa="results/fastas/{peak_id}.fa",
+        fa=_mafft_input,
     output:
         fa=temp("results/aligned/{peak_id}.fa"),
-    params:
-        maxiterate=config.get("mafft_maxiterate", 1000),
     threads: 4
     resources:
         mem_mb=8192,
         runtime=60,
+    params:
+        maxiterate=config.get("mafft_maxiterate", 1000),
     shell:
         """
         mafft --maxiterate {params.maxiterate} --reorder --auto --adjustdirection \
@@ -145,67 +230,180 @@ rule mafft:
         """
 
 
-rule iqtree:
-    """Infer a maximum-likelihood tree for a single aligned peak with IQ-TREE."""
+rule encode_indels:
+    """Simmons-Ochoterena (2000) simple indel coding for the MAFFT alignment.
+
+Each distinct contiguous gap interval becomes a binary character (state 1
+if the taxon carries exactly that gap, 0 if it has continuous sequence
+there, ? if the taxon carries a larger gap that strictly contains the
+interval). Singleton gaps are dropped. The resulting partition pairs
+GTR+I+G on DNA with GTR2 on indels in IQ-TREE — without it, IQ-TREE
+treats gaps as missing data and indel-only splits collapse to zero-length
+branches.
+"""
     input:
         fa="results/aligned/{peak_id}.fa",
     output:
-        treefile="results/trees/{peak_id}.treefile",
+        nex="results/coded/{peak_id}/{peak_id}.nex",
+        nuc="results/coded/{peak_id}/{peak_id}_nucleic.phy",
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=10,
     params:
-        prefix=lambda wc: f"results/trees/{wc.peak_id}",
-        # Enable ultrafast bootstrap only when the alignment has >=4 unique sequences;
-        # IQ-TREE deduplicates internally and refuses bootstrap on fewer distinct taxa.
-        bootstrap=lambda wc, input: (
-            "-B 1000" if count_unique_seqs(str(input.fa)) >= 4 else ""
-        ),
-    shadow: "minimal"
+        peak_id=lambda wc: wc.peak_id,
+        out_dir=lambda wc: f"results/coded/{wc.peak_id}",
+    shell:
+        """
+        python workflow/scripts/encode_indels.py \
+            --aligned {input.fa} \
+            --peak-id {params.peak_id} \
+            --out-dir {params.out_dir}
+        """
+
+
+rule iqtree:
+    """Infer a maximum-likelihood tree from a partitioned (DNA + indel) matrix.
+
+Reads the partition Nexus + PHYLIPs produced by `encode_indels`. The models
+are pinned by the charpartition (`GTR+I+G` on the DNA partition, `GTR2+ASC`
+on the binary indel partition), so IQ-TREE estimates model parameters and
+branch lengths but does NOT run model selection. (If the alignment is later
+widened with flanking sequence, switch the DNA partition to ModelFinder by
+dropping its model from the charpartition.)
+"""
+    input:
+        nex="results/coded/{peak_id}/{peak_id}.nex",
+        nuc="results/coded/{peak_id}/{peak_id}_nucleic.phy",
+    output:
+        treefile="results/trees/{peak_id}.treefile",
     threads: 4
     resources:
         mem_mb=16384,
         runtime=120,
+    params:
+        prefix=lambda wc: os.path.abspath(f"results/trees/{wc.peak_id}"),
+        peak_id=lambda wc: wc.peak_id,
+        # Enable ultrafast bootstrap only when the alignment has >=4 unique sequences;
+        # IQ-TREE deduplicates internally and refuses bootstrap on fewer distinct taxa.
+        bootstrap=lambda wc, input: (
+            "-B 1000" if count_unique_seqs_phylip(str(input.nuc)) >= 4 else ""
+        ),
     shell:
-        # --redo: overwrite prior partial runs; ModelFinder runs automatically (no -m flag)
+        # IQ-TREE needs the .phy files to live alongside the .nex (the nex
+        # references them by relative basename), so cd into coded/{peak}.
+        # `--prefix` takes an absolute path so the tree lands in results/trees/.
+        # We can't use `shadow: minimal` here — it conflicts with the
+        # absolute-path prefix. Instead, IQ-TREE writes a few auxiliary
+        # files (.log/.iqtree/.bionj/.mldist/.model.gz/.ckp.gz) next to
+        # the treefile; we delete them after the run.
+        # --redo: overwrite prior partial runs. Models are fixed by the .nex
+        # charpartition (GTR+I+G on DNA, GTR2+ASC on indels), so no -m needed.
         """
-        iqtree -s {input.fa} --prefix {params.prefix} \
-            -T {threads} {params.bootstrap} --redo
+        (cd $(dirname {input.nex}) && iqtree -p {params.peak_id}.nex \
+            --prefix {params.prefix} -T {threads} {params.bootstrap} --redo)
+        # Delete every IQ-TREE aux file sharing the prefix except the treefile,
+        # so new aux extensions across IQ-TREE versions don't leak.
+        find "$(dirname {params.prefix})" -maxdepth 1 \
+            -name "$(basename {params.prefix}).*" \
+            ! -name "$(basename {params.prefix}).treefile" -delete
         """
 
 
 def _pclai_bed_for_plot(_wildcards):
     """Resolve the optional PCLAI bed path; only included as an input dep
-    when configured AND present on disk so missing-data runs don't fail."""
+    when configured AND present on disk so missing-data runs don't fail.
+
+    Warns once (to stderr) when `pclai_bed` is configured but the file is
+    missing, so a typo'd path doesn't silently drop the ancestry stripe."""
     p = config.get("pclai_bed")
     if not p:
         return []
-    return [p] if Path(p).exists() else []
+    if Path(p).exists():
+        return [p]
+    if not config.get("_pclai_warned"):
+        print(
+            f"WARNING: pclai_bed={p!r} not found; PCLAI stripe disabled",
+            file=sys.stderr,
+        )
+        config["_pclai_warned"] = True
+    return []
+
+
+rule phylo_mm:
+    """Per-peak phylogenetic analysis via workflow/scripts/phylo_mm.R.
+
+TSV header carries the 3-prior phylogenetic heritability sensitivity
+(h2_alpha{1000,1,025}), the alpha.V=1 posterior ESS + a convergence flag,
+and the LASSO branch-selection summary. Data rows are per-internal-branch:
+a Welch t-test scan of clade-vs-rest actuation (p_fdr is the headline),
+plus LASSO-selected branches with selectiveInference beta/CI. The PDF shows
+the three H²_p posterior densities + the selected-branch effect sizes.
+"""
+    input:
+        tree="results/trees/{peak_id}.treefile",
+        actuation="results/fastas/{peak_id}.tsv",
+        alignment="results/aligned/{peak_id}.fa",
+    output:
+        tsv="results/phylo_mm/{peak_id}.tsv",
+        pdf="results/phylo_mm/{peak_id}.pdf",
+    threads: 1
+    resources:
+        mem_mb=4096,
+        runtime=90,
+    params:
+        min_cov=config.get("min_coverage", 4),
+        flank=config.get("flank", 0),
+    shell:
+        """
+        Rscript workflow/scripts/phylo_mm.R \
+            --tree      {input.tree} \
+            --actuation {input.actuation} \
+            --alignment {input.alignment} \
+            --tsv       {output.tsv} \
+            --pdf       {output.pdf} \
+            --peak-id   {wildcards.peak_id} \
+            --min-cov   {params.min_cov} \
+            --flank     {params.flank}
+        """
 
 
 rule plot:
     """Interactive tree + FIRE actuation + MSA plot (HTML + PDF from one rule).
 
-    The aligned FASTA is temp() but Snakemake keeps it until this rule finishes.
-    HTML: interactive, zoom/pan, MSA toggle button, toolbar exports SVG.
-    PDF: static via kaleido (same Plotly figure, scale=2).
-    """
+The aligned FASTA is temp() but Snakemake keeps it until this rule finishes.
+HTML: interactive, zoom/pan, MSA toggle button, toolbar exports SVG.
+PDF: static via kaleido (same Plotly figure, scale=2).
+
+The optional ``phylo_mm`` TSV (from rule phylo_mm) feeds the
+statistical overlay: header summary (H²_p), and the top variable-site
+SNP effect is annotated above the MSA at its alignment column.
+"""
     input:
         tree="results/trees/{peak_id}.treefile",
         actuation="results/fastas/{peak_id}.tsv",
         alignment="results/aligned/{peak_id}.fa",
         pclai=_pclai_bed_for_plot,
+        phylo_mm="results/phylo_mm/{peak_id}.tsv",
     output:
         html="results/plots/{peak_id}.html",
         pdf="results/plots/{peak_id}.pdf",
     params:
         peak_id=lambda wc: wc.peak_id,
-        pclai_arg=lambda wc, input: f"--pclai-bed {shlex.quote(str(input.pclai[0]))}" if input.pclai else "",
+        pclai_arg=lambda wc, input: (
+            f"--pclai-bed {shlex.quote(str(input.pclai[0]))}" if input.pclai else ""
+        ),
+        flank=config.get("flank", 0),
     shell:
         """
         python workflow/scripts/plot_tree_actuation_html.py \
-            --tree      {input.tree} \
-            --actuation {input.actuation} \
-            --alignment {input.alignment} \
-            --html      {output.html} \
-            --pdf       {output.pdf} \
-            --peak-id   {params.peak_id} \
+            --tree        {input.tree} \
+            --actuation   {input.actuation} \
+            --alignment   {input.alignment} \
+            --html        {output.html} \
+            --pdf         {output.pdf} \
+            --peak-id     {params.peak_id} \
+            --phylo-mm    {input.phylo_mm} \
+            --flank       {params.flank} \
             {params.pclai_arg}
         """

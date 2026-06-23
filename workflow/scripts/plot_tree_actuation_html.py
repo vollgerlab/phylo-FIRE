@@ -39,10 +39,13 @@ import plotly.graph_objects as go
 
 # ── Colour palettes ───────────────────────────────────────────────────────────
 
-# ColorBrewer Reds 10-bin: white (0%) → dark red (100%)
+# Actuation 10-bin palette: pure white at 0-10%, then ColorBrewer Reds[9].
+# Pure-white bottom bin makes 0-10% bars effectively blank against the white
+# background — the outline still draws so the row stays locatable but the
+# colour signal only appears once actuation crosses 10%.
 ACT_COLORS = [
-    "#fff5f0", "#fee0d2", "#fcbba1", "#fc9272", "#fb6a4a",
-    "#ef3b2c", "#cb181d", "#a50f15", "#67000d", "#3d0005",
+    "#ffffff", "#fff5f0", "#fee0d2", "#fcbba1", "#fc9272",
+    "#fb6a4a", "#ef3b2c", "#cb181d", "#a50f15", "#67000d",
 ]
 ACT_LABELS = [f"{i*10}–{i*10+10}%" for i in range(10)]
 ACT_MISSING = "#d0d0d0"   # FIRE actuation missing (light grey)
@@ -85,13 +88,19 @@ INTERNAL_BRANCH = "#666666"
 def parse_leaf_meta(name: str) -> dict:
     """Parse leaf names into (locus, paralog, sample_hap).
 
-    Two formats are supported:
-      - paralog peaks:  "LOCUS__PARALOG__SAMPLE_HAP"
-      - union peaks:    "SAMPLE_HAP"  (no locus/paralog fields)
+    Three formats are supported:
+      - paralog peaks:    "LOCUS__PARALOG__SAMPLE_HAP" (PARE)
+      - tagged union:     "TAG__SAMPLE_HAP"  (e.g. extract_fastas --highlight-file)
+      - plain union:      "SAMPLE_HAP"
+    The ``paralog`` field is what drives leaf-label colour + the paralog
+    stripe, so the 2-segment form is the natural way to highlight a subset
+    of leaves without dragging in a per-leaf locus token.
     """
     parts = name.split("__")
     if len(parts) == 3:
         return {"locus": parts[0], "paralog": parts[1], "sample_hap": parts[2]}
+    if len(parts) == 2:
+        return {"locus": None, "paralog": parts[0], "sample_hap": parts[1]}
     return {"locus": None, "paralog": None, "sample_hap": name}
 
 
@@ -415,6 +424,75 @@ def query_pclai(
     return out
 
 
+def load_phylo_mm(path: Path) -> dict:
+    """Parse the per-peak phylo_mm TSV (workflow/scripts/phylo_mm.R).
+
+    Returns a dict with two keys:
+      - ``meta`` — header summary including the 3-prior H²_p sensitivity
+        (h2_alpha{1000,1,025}_{mean,lower,upper}), n_tips,
+        n_branches_tested, n_branches_selected, lasso_lambda.
+      - ``branches`` — list of per-internal-branch dicts. Each carries
+        the Welch t-test fields (branch_id, n_below, descendants,
+        mean_in, mean_out, t_stat, p_raw, p_fdr, linked_sites) plus
+        LASSO-selection fields (selected_by_lasso bool, lasso_coef,
+        beta, se, ci_lower, ci_upper, p).
+    Missing-or-malformed file → ``{"meta": {}, "branches": []}``.
+    """
+    out: dict = {"meta": {}, "branches": []}
+    try:
+        with path.open() as fh:
+            lines = [ln.rstrip("\n") for ln in fh]
+    except (OSError, AttributeError):
+        return out
+    data_lines: list[str] = []
+    for ln in lines:
+        if not ln.strip():
+            continue
+        if ln.startswith("#"):
+            kv = ln.lstrip("# ").split("=", 1)
+            if len(kv) == 2:
+                key, val = kv[0].strip(), kv[1].strip()
+                try:
+                    out["meta"][key] = float(val)
+                except ValueError:
+                    out["meta"][key] = val
+            continue
+        data_lines.append(ln)
+    if len(data_lines) < 2:
+        return out
+    header, *rows = data_lines
+    cols = header.split("\t")
+    for raw in rows:
+        f = raw.split("\t")
+        if len(f) != len(cols):
+            continue
+        rec = dict(zip(cols, f))
+        try: rec["branch_id"] = int(rec["branch_id"])
+        except (KeyError, ValueError): pass
+        try: rec["n_below"]   = int(rec["n_below"])
+        except (KeyError, ValueError): pass
+        for k in ("mean_in", "mean_out", "t_stat", "p_raw", "p_fdr",
+                  "lasso_coef", "beta", "se",
+                  "ci_lower", "ci_upper", "p"):
+            raw_val = rec.get(k, "")
+            if raw_val in ("", "NA"):
+                rec[k] = None
+            else:
+                try: rec[k] = float(raw_val)
+                except ValueError: rec[k] = None
+        rec["selected_by_lasso"] = (
+            str(rec.get("selected_by_lasso", "")).upper() == "TRUE"
+        )
+        rec["descendants"] = tuple(
+            d for d in rec.get("descendants", "").split(",") if d
+        )
+        rec["linked_sites"] = tuple(
+            s for s in rec.get("linked_sites", "").split(",") if s
+        )
+        out["branches"].append(rec)
+    return out
+
+
 def load_alignment(path: Path) -> dict[str, str]:
     """Read a FASTA into {name: sequence}.
 
@@ -499,6 +577,34 @@ def branch_xy_split(root, pos) -> tuple[list, list, dict[int, tuple[list, list]]
 
 # ── Sequence logo helpers ─────────────────────────────────────────────────────
 
+def re_band_columns(
+    alignment: dict[str, str], names: list[str], flank: int, aln_len: int
+) -> tuple[int, int] | None:
+    """Alignment-column span [lo, hi] of the regulatory element.
+
+    When `flank` bp of context was added each side (rule add_flanks), the RE
+    occupies the interior of every sequence: skip `flank` non-gap characters
+    from each end, and the remaining non-gap span is the RE. The union across
+    rows (min left column, max right column) is the RE band. Returns None when
+    flanking is off or no row has enough sequence to locate the RE.
+    """
+    if flank <= 0:
+        return None
+    lo, hi = aln_len, -1
+    for nm in names:
+        s = alignment.get(nm)
+        if not s:
+            continue
+        nongap = [i for i, c in enumerate(s) if c != "-"]
+        if len(nongap) <= 2 * flank:
+            continue   # flanks consumed the whole sequence — can't locate RE
+        left_col = nongap[flank]
+        right_col = nongap[len(nongap) - flank - 1]
+        lo = min(lo, left_col)
+        hi = max(hi, right_col)
+    return (lo, hi) if hi >= lo else None
+
+
 def logo_freqs(raw_z: list[list[int]], aln_len: int) -> dict[str, list[float]]:
     """Per-position frequency of A/T/G/C (gaps/N excluded from denominator).
 
@@ -515,6 +621,16 @@ def logo_freqs(raw_z: list[list[int]], aln_len: int) -> dict[str, list[float]]:
 
 # ── Main figure builder ───────────────────────────────────────────────────────
 
+TOP_SNP_COLOR = "#d62728"   # red, used as the FIRST group colour (headline)
+
+# Palette for sig-branch groups (Plotly D3-default qualitative). Red is the
+# headline / most-significant group; subsequent groups cycle through the rest.
+SIG_GROUP_PALETTE = [
+    "#d62728", "#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e",
+    "#17becf", "#e377c2", "#8c564b", "#bcbd22", "#7f7f7f",
+]
+
+
 def make_figure(
     tree,
     actuation: dict[str, float | None],
@@ -522,6 +638,8 @@ def make_figure(
     alignment: dict[str, str],
     peak_id: str,
     pclai_bed: Path | None = None,
+    phylo_mm: dict | None = None,
+    flank: int = 0,
 ) -> go.Figure:
     tree.root_at_midpoint()
     tree.ladderize()
@@ -569,6 +687,15 @@ def make_figure(
             f"({n_inherited} inherited from nearest ≤ {PCLAI_NEAREST_BP // 1000} kb)",
             file=sys.stderr,
         )
+        if not pclai:
+            # The BED exists but no leaf matched — usually a coordinate-space or
+            # chrom-naming mismatch rather than a genuine absence of ancestry.
+            print(
+                f"WARNING: PCLAI ({peak_id}): bed {pclai_bed} supplied but 0/{n} "
+                f"leaves matched; the ancestry stripe is blank. Check the peak's "
+                f"chrom exists in the BED and leaf names match {{sample}}/h{{hap}}.",
+                file=sys.stderr,
+            )
     pclai_rgbs: list[str] = []
     pclai_hover: list[str] = []
     for nm in names:
@@ -596,6 +723,25 @@ def make_figure(
     # MSA — three-way encoding: variable ATGC | invariant | missing
     aln_len = max((len(s) for s in alignment.values()), default=0)
     raw_seqs = [alignment.get(nm, "-" * aln_len) for nm in names]
+
+    # Regulatory-element band (only when the alignment carries flanks).
+    re_band = re_band_columns(alignment, names, flank, aln_len)
+
+    def _site_label(s) -> str:
+        """Label a linked site by RE-relative position when flanks are present.
+
+        phylo_mm reports linked sites as 1-based alignment columns; subtracting
+        the RE's 0-based start column yields the 1-based position within the RE
+        (so `RE13` reads as "13 bp into the regulatory element", not an opaque
+        flanked-alignment column). Without flanks the column already is the RE
+        position, so it's shown as-is.
+        """
+        if re_band is None:
+            return str(s)
+        try:
+            return f"RE{int(s) - re_band[0]}"
+        except (TypeError, ValueError):
+            return str(s)
 
     # raw base codes: A/T/G/C → 0-3; everything else (gap/N) → 5
     raw_z = [
@@ -703,6 +849,84 @@ def make_figure(
 
     fig = go.Figure()
 
+    # ── 0a. Precompute leaf → LASSO-rep-clade colour ─────────────────────────
+    # Mirrors the grouping rule used by the branch-overlay block below
+    # (group by linked-variants set, order groups by smallest p_fdr).
+    # **Only leaves that belong to a group's REPRESENTATIVE branch** —
+    # the branch that actually gets a label drawn on the tree — get a
+    # coloured leader line. Leaves in nested non-rep members of the same
+    # group stay gray. This keeps leader-line colours in 1-to-1
+    # correspondence with on-tree annotations.
+    _lasso_sig = [
+        b for b in (phylo_mm or {}).get("branches") or []
+        if b.get("selected_by_lasso")
+    ]
+    _groups_by_key: dict[frozenset, list[dict]] = {}
+    for _rec in _lasso_sig:
+        _key = frozenset(_rec.get("linked_sites") or ())
+        _groups_by_key.setdefault(_key, []).append(_rec)
+    def _gkey_p(ms: list[dict]) -> float:
+        _ps = [m.get("p_fdr") for m in ms if isinstance(m.get("p_fdr"), float)]
+        return min(_ps) if _ps else 1.0
+    _sorted_keys = sorted(
+        _groups_by_key.keys(),
+        key=lambda k: _gkey_p(_groups_by_key[k]),
+    )
+    _key_color = {
+        k: SIG_GROUP_PALETTE[i % len(SIG_GROUP_PALETTE)]
+        for i, k in enumerate(_sorted_keys)
+    }
+    # Pick the rep per group using the same rule as the overlay block.
+    def _rep_key_early(b: dict) -> tuple:
+        hl = 0 if (b.get("linked_sites") or ()) else 1
+        p = b.get("p_fdr") if isinstance(b.get("p_fdr"), float) else 1.0
+        return (hl, p)
+    leaf_clade_color: dict[str, str] = {}
+    leaf_clade_size: dict[str, int] = {}
+    for _key, _members in _groups_by_key.items():
+        _rep = sorted(_members, key=_rep_key_early)[0]
+        _color = _key_color[_key]
+        _n = _rep.get("n_below") or 10**9
+        for _tip in _rep.get("descendants", ()):
+            _sh = parse_leaf_meta(_tip)["sample_hap"]
+            if _sh not in leaf_clade_size or _n < leaf_clade_size[_sh]:
+                leaf_clade_size[_sh] = _n
+                leaf_clade_color[_sh] = _color
+
+    # ── 0b. Leaf-to-MSA leader lines ─────────────────────────────────────────
+    # Light dotted horizontal connectors from each tree tip across the entire
+    # right side of the figure (labels → paralog → PCLAI → actuation → MSA)
+    # so the eye can trace which row of every panel belongs to which leaf.
+    # Drawn as paper-coord shapes at layer="below" so they sit under every
+    # trace, label, and bar.
+    # Leaves inside a LASSO-selected clade get a slightly heavier coloured
+    # line matched to that clade's annotation; uncovered leaves stay light
+    # gray.
+    _tree_axis_min = -0.01 * max_depth
+    _tree_axis_max = max_depth * 1.05
+    _tree_axis_span = _tree_axis_max - _tree_axis_min
+    _main_span = MAIN_Y[1] - MAIN_Y[0]
+    for _i, _leaf in enumerate(leaves):
+        _tip_axis_x = pos[id(_leaf)]["x"]
+        _tip_paper_x = TREE_X[0] + (
+            (_tip_axis_x - _tree_axis_min) / _tree_axis_span
+            * (TREE_X[1] - TREE_X[0])
+        )
+        # Reversed yaxis: data y=-0.5 is at top, y=n-0.5 is at bottom.
+        _row_paper_y = MAIN_Y[1] - (ly[_i] + 0.5) / n * _main_span
+        _sample_hap = parse_leaf_meta(_leaf.name)["sample_hap"]
+        _clade_color = leaf_clade_color.get(_sample_hap)
+        _line_color = _clade_color if _clade_color else "#dddddd"
+        _line_width = 0.8 if _clade_color else 0.4
+        fig.add_shape(
+            type="line",
+            x0=_tip_paper_x, x1=1.0,
+            y0=_row_paper_y, y1=_row_paper_y,
+            xref="paper", yref="paper",
+            line=dict(color=_line_color, width=_line_width, dash="dot"),
+            layer="below",
+        )
+
     # ── 1. Tree branches ──────────────────────────────────────────────────────
     # Internal segments stay grey; terminal segments are coloured by paralog so
     # the tree carries the same colour signal as the leaf labels.
@@ -734,6 +958,280 @@ def make_figure(
             xaxis="x1", yaxis="y1",
         ))
 
+    # phylo_mm output (parsed once here; consumed by the branch overlay
+    # below and by the header-summary block lower down).
+    pm = phylo_mm or {"meta": {}, "branches": []}
+    pm_branches = pm.get("branches") or []
+    # Headline branches = the set LASSO jointly selected (lambda.min).
+    # LASSO naturally collapses nested correlated branches to one
+    # representative each, so the headline set is normally a small,
+    # biologically meaningful list. The per-branch Welch t-test results
+    # remain in the TSV as a diagnostic but are not used here for filtering.
+    sig = [b for b in pm_branches if b.get("selected_by_lasso")]
+    significant = bool(sig)
+
+    # ── 1c. Significant-branches overlay (phylo_mm) ──────────────────────────
+    # Group FDR-significant branches by their *linked-variants set*. Each
+    # group represents one biological signal — possibly detected at several
+    # nested resolutions on the tree. Each group gets its own palette color;
+    # the most-significant member of each group is drawn thick + annotated;
+    # other members of the same group are drawn thin in the same colour.
+    # MSA columns are colour-matched to the group they're linked to (5b).
+    _all_tip_names = frozenset(
+        parse_leaf_meta(t.name)["sample_hap"] for t in tree.get_terminals()
+    )
+
+    def _find_branch_endpoints(rec: dict) -> tuple[float, float, float] | None:
+        """Resolve a phylo_mm branch record to (px, cx, py) endpoints.
+
+        A bipartition has two halves. R's `ape::extract.clade` returns one
+        half (as specified by R's own rooting). Bio.Phylo's midpoint-rooted
+        tree may materialise *either* half as a clade. We try to find a
+        clade whose tip set equals the want set directly; failing that, we
+        find a clade whose tip set equals the *complement* and then resolve
+        the sibling clade (in the same parent) — that sibling IS the want
+        clade in Bio.Phylo, and we use ITS endpoints (correct x AND y).
+
+        Using the sibling's actual `pos[id(...)]["y"]` matters: a geometric
+        centroid of the want tips disagrees with the recursive
+        `(first_child_y + last_child_y)/2` rule that `compute_positions`
+        uses, especially for ladder-shaped trees.
+        """
+        want = frozenset(
+            parse_leaf_meta(d)["sample_hap"] for d in rec.get("descendants", ())
+        )
+        if not want:
+            return None
+        want_complement = _all_tip_names - want
+
+        def _endpoints_for_clade(c, parent):
+            if parent is None:
+                return None
+            return (pos[id(parent)]["x"], pos[id(c)]["x"], pos[id(c)]["y"])
+
+        # Pass 1: direct match. Pass 2: complement match → resolve sibling.
+        for clade in tree.root.find_clades(order="level"):
+            if clade.is_terminal() or clade is tree.root:
+                continue
+            tip_names = frozenset(
+                parse_leaf_meta(t.name)["sample_hap"]
+                for t in clade.get_terminals()
+            )
+            parent = next(
+                (p for p in tree.root.find_clades() if clade in p.clades),
+                None,
+            )
+            if parent is None:
+                continue
+            if tip_names == want:
+                return _endpoints_for_clade(clade, parent)
+            if tip_names == want_complement:
+                # Find the sibling clade that holds the want tips directly.
+                for sibling in parent.clades:
+                    if sibling is clade:
+                        continue
+                    sib_tips = frozenset(
+                        parse_leaf_meta(t.name)["sample_hap"]
+                        for t in sibling.get_terminals()
+                    )
+                    if sib_tips == want:
+                        return _endpoints_for_clade(sibling, parent)
+                # Fall through — want spans multiple siblings (rare on
+                # binary trees). Use the matched clade with the centroid y
+                # as a best-effort fallback.
+                want_ys = [
+                    pos[id(t)]["y"] for t in tree.get_terminals()
+                    if parse_leaf_meta(t.name)["sample_hap"] in want
+                ]
+                cy = sum(want_ys) / len(want_ys) if want_ys else pos[id(clade)]["y"]
+                return (pos[id(parent)]["x"], pos[id(clade)]["x"], cy)
+        return None
+
+    # Group LASSO-selected branches by their linked-variants set. Each
+    # distinct linked-variants signature is one annotation; branches with
+    # no linked variants form their own group (the "outlier-clade" signal
+    # not explained by any visible SNP).
+    sig_groups: dict[frozenset, list[dict]] = {}
+    for rec in sig:
+        key = frozenset(rec.get("linked_sites") or ())
+        sig_groups.setdefault(key, []).append(rec)
+
+    # Order groups by per-branch BH-FDR (smallest first). p_fdr is the
+    # headline p (pre-specified-hypothesis multiple testing, no double-
+    # dipping); post-LASSO p is reported in hover only.
+    def _group_p(members: list[dict]) -> float:
+        ps = [m.get("p_fdr") for m in members if isinstance(m.get("p_fdr"), float)]
+        return min(ps) if ps else 1.0
+    sorted_groups = sorted(
+        sig_groups.items(),
+        key=lambda kv: _group_p(kv[1]),
+    )
+    # Colour assignment: index 0 → red (TOP_SNP_COLOR), then cycle through palette.
+    group_color: dict[frozenset, str] = {}
+    for i, (key, _members) in enumerate(sorted_groups):
+        group_color[key] = SIG_GROUP_PALETTE[i % len(SIG_GROUP_PALETTE)]
+
+    # Helper for compact p-value formatting (None → "NA").
+    def _fmt_p(p):
+        return f"{p:.2g}" if isinstance(p, float) else "NA"
+    def _fmt_beta(b):
+        return f"{b:+.2f}" if isinstance(b, float) else "NA"
+    def _marginal_delta(rec: dict) -> float | None:
+        """Raw-actuation Δ = mean_in − mean_out from the coverage-weighted
+        per-branch scan. mean_out is the branch's SIBLING (the rest of its
+        parent clade), not the whole tree, so Δ is the *incremental* shift
+        along this branch — "this clade is +0.X higher than its sibling." A
+        nested branch that only inherits its parent's signal has Δ≈0, matching
+        the LASSO post-OLS β (the partial effect after other selected branches).
+        """
+        mi, mo = rec.get("mean_in"), rec.get("mean_out")
+        if isinstance(mi, float) and isinstance(mo, float):
+            return mi - mo
+        return None
+
+    # Draw branches per group.
+    for key, members in sorted_groups:
+        color = group_color[key]
+        # Pick the representative within the group:
+        #   1. Prefer a member that carries linked variants (the
+        #      biologically interpretable bipartition — its split is mirrored
+        #      by an MSA SNP). Nested no-SNP refinements are demoted to
+        #      thin lines in the same colour.
+        #   2. Tie-break by smallest p_fdr (strongest pre-specified signal).
+        def _rep_key(b: dict) -> tuple:
+            has_link = 0 if (b.get("linked_sites") or ()) else 1
+            p = b.get("p_fdr") if isinstance(b.get("p_fdr"), float) else 1.0
+            return (has_link, p)
+        members_sorted = sorted(members, key=_rep_key)
+        rep = members_sorted[0]
+        rest = members_sorted[1:]
+
+        # Representative — thick line + vertical bracket + annotation.
+        seg = _find_branch_endpoints(rep)
+        if seg is not None:
+            px, cx, py = seg
+            # Vertical "bracket" at the MRCA's x position, spanning the
+            # clade's y-range. This visually unites the horizontal branch
+            # line with all the coloured leader lines exiting from the
+            # clade's tips — without it, the branch is at one y while the
+            # leaders are at N tip y's, and the eye has to do the connection.
+            _want_sh = frozenset(
+                parse_leaf_meta(d)["sample_hap"] for d in rep.get("descendants", ())
+            )
+            _clade_ys = [
+                pos[id(t)]["y"] for t in tree.get_terminals()
+                if parse_leaf_meta(t.name)["sample_hap"] in _want_sh
+            ]
+            if len(_clade_ys) >= 2:
+                _y_min, _y_max = min(_clade_ys), max(_clade_ys)
+                fig.add_trace(go.Scatter(
+                    x=[cx, cx], y=[_y_min, _y_max],
+                    mode="lines",
+                    line=dict(color=color, width=1.5),
+                    hoverinfo="skip",
+                    showlegend=False,
+                    xaxis="x1", yaxis="y1",
+                ))
+            sorted_sites = [_site_label(s) for s in sorted(key, key=int)] if key else []
+            linked_str_full = ", ".join(sorted_sites) if sorted_sites else "none"
+            if len(sorted_sites) <= 4:
+                linked_str_short = (
+                    ", ".join(sorted_sites) if sorted_sites else "no SNP"
+                )
+            else:
+                linked_str_short = (
+                    ", ".join(sorted_sites[:4])
+                    + f", +{len(sorted_sites) - 4} more"
+                )
+            beta = rep.get("beta")
+            sel_p = rep.get("p")
+            ci_lo = rep.get("ci_lower"); ci_hi = rep.get("ci_upper")
+            ci_str = (
+                f" [{ci_lo:+.2f}, {ci_hi:+.2f}]"
+                if isinstance(ci_lo, float) and isinstance(ci_hi, float)
+                else ""
+            )
+            delta = _marginal_delta(rep)
+            mi, mo = rep.get("mean_in"), rep.get("mean_out")
+            means_str = (
+                f"actuation in: {mi:.2f}  vs sibling: {mo:.2f}<br>"
+                if isinstance(mi, float) and isinstance(mo, float)
+                else ""
+            )
+            # Headline p = per-branch coverage-weighted test BH-FDR. The branch
+            # tests are over *pre-specified* (sequence-defined) bipartitions
+            # — no double-dipping. selectiveInference's post-LASSO p (in
+            # `sel_p`) is shown as a secondary hover field.
+            head_p = rep.get("p_fdr")
+            fig.add_trace(go.Scatter(
+                x=[px, cx], y=[py, py],
+                mode="lines",
+                line=dict(color=color, width=3.0),
+                hoverinfo="text",
+                hovertext=(
+                    f"<b>LASSO-selected branch</b>  n={rep['n_below']}<br>"
+                    f"{means_str}"
+                    f"<b>Δ</b> (marginal, raw actuation) = {_fmt_beta(delta)}<br>"
+                    f"<b>β</b> (joint post-LASSO) = {_fmt_beta(beta)}{ci_str}<br>"
+                    f"<b>p_fdr</b> (cov-weighted + BH) = {_fmt_p(head_p)}<br>"
+                    f"<i>aux: post-selection p = {_fmt_p(sel_p)}</i><br>"
+                    f"linked sites: {linked_str_full}<br>"
+                    f"group members: {len(members)}"
+                ),
+                name=(
+                    f"Δ={_fmt_beta(delta)} β={_fmt_beta(beta)} "
+                    f"p_fdr={_fmt_p(head_p)} sites: {linked_str_short}"
+                ),
+                legendgroup=f"sig_group_{id(key)}",
+                showlegend=True,
+                xaxis="x1", yaxis="y1",
+            ))
+            fig.add_annotation(
+                x=(px + cx) / 2.0, y=py,
+                xref="x1", yref="y1",
+                text=(
+                    f"<b>Δ={_fmt_beta(delta)}  β={_fmt_beta(beta)}</b>  "
+                    f"p_fdr={_fmt_p(head_p)}"
+                ),
+                showarrow=False, yshift=-10,
+                font=dict(size=9, color=color),
+                bgcolor="rgba(255,255,255,0.85)",
+                bordercolor=color, borderwidth=0.5,
+            )
+
+        # Other members of this group — thin lines in the same colour.
+        if rest:
+            rxs: list = []; rys: list = []; rhov: list = []
+            n_drawn = 0
+            for rec in rest:
+                rseg = _find_branch_endpoints(rec)
+                if rseg is None:
+                    continue
+                px, cx, py = rseg
+                rxs += [px, cx, None]
+                rys += [py, py, None]
+                txt = (
+                    f"<b>LASSO-selected (group member)</b>  n={rec['n_below']}<br>"
+                    f"Δ={_fmt_beta(_marginal_delta(rec))}  "
+                    f"β={_fmt_beta(rec.get('beta'))}  "
+                    f"p_fdr={_fmt_p(rec.get('p_fdr'))}"
+                )
+                rhov += [txt, txt, txt]
+                n_drawn += 1
+            if n_drawn > 0:
+                fig.add_trace(go.Scatter(
+                    x=rxs, y=rys,
+                    mode="lines",
+                    line=dict(color=color, width=1.4),
+                    opacity=0.55,
+                    hoverinfo="text",
+                    hovertext=rhov,
+                    name=f"  (+{n_drawn} nested)",
+                    legendgroup=f"sig_group_{id(key)}",
+                    showlegend=True,
+                    xaxis="x1", yaxis="y1",
+                ))
+
     # ── 1b. Bootstrap support labels on internal nodes (≥70 only) ───────────
     boot_x, boot_y, boot_text = [], [], []
     for clade in tree.root.find_clades(order="level"):
@@ -761,10 +1259,14 @@ def make_figure(
     # row height is too small to fit readable text — identity is then
     # available via hover on the PCLAI / actuation / MSA columns.
     if show_labels:
+        # Display the bare sample-hap (last "__"-segment) — paralog/highlight
+        # identity is already conveyed by the colour + paralog stripe + chip
+        # legend, so the tag prefix would just clutter the label.
+        display_labels = [m["sample_hap"] for m in metas]
         fig.add_trace(go.Scatter(
             x=[0.0] * n, y=ly,
             mode="text",
-            text=names,
+            text=display_labels,
             textposition="middle right",
             textfont=dict(size=label_fs, color=leaf_text_colors),
             hovertext=act_hover,
@@ -775,37 +1277,41 @@ def make_figure(
 
     # ── 3a. Paralog stripe ────────────────────────────────────────────────────
     # Solid colour bar per leaf in the paralog palette so paralog identity
-    # remains readable when row height is too small for label text. Always
-    # added (even when has_paralogs=False); the column collapses to zero
-    # width when the trace has no useful colour signal.
-    paralog_hover = [
-        f"<b>{nm}</b><br>paralog: {m['paralog'] or '—'}"
-        for nm, m in zip(names, metas)
-    ]
-    fig.add_trace(go.Bar(
-        x=[1] * n, y=ly,
-        orientation="h",
-        marker=dict(color=leaf_text_colors, line=dict(color="#aaaaaa", width=0.3)),
-        width=1.0,
-        hovertext=paralog_hover,
-        hoverinfo="text",
-        showlegend=False,
-        xaxis="x7", yaxis="y1",
-    ))
+    # stays readable when row height is too small for label text. Only added
+    # when paralogs are actually present — a zero-width axis with a visible
+    # full-width Bar trace causes Plotly to fall back and paint the entire
+    # figure with the bar colour.
+    if has_paralogs:
+        paralog_hover = [
+            f"<b>{nm}</b><br>paralog: {m['paralog'] or '—'}"
+            for nm, m in zip(names, metas)
+        ]
+        fig.add_trace(go.Bar(
+            x=[1] * n, y=ly,
+            orientation="h",
+            marker=dict(color=leaf_text_colors, line=dict(color="#aaaaaa", width=0.3)),
+            width=1.0,
+            hovertext=paralog_hover,
+            hoverinfo="text",
+            showlegend=False,
+            xaxis="x7", yaxis="y1",
+        ))
 
     # ── 3b. PCLAI ancestry stripe ─────────────────────────────────────────────
-    # Trace always added so indices stay stable; column collapses to zero
-    # width when there's no PCLAI data.
-    fig.add_trace(go.Bar(
-        x=[1] * n, y=ly,
-        orientation="h",
-        marker=dict(color=pclai_rgbs, line=dict(color="#aaaaaa", width=0.3)),
-        width=1.0,
-        hovertext=pclai_hover,
-        hoverinfo="text",
-        showlegend=False,
-        xaxis="x6", yaxis="y1",
-    ))
+    # Same gate as paralog stripe: only emit the trace when PCLAI hit at least
+    # one leaf. Otherwise the bars would render in PCLAI_MISSING grey across
+    # the entire figure via Plotly's zero-width-domain fallback.
+    if pclai_present:
+        fig.add_trace(go.Bar(
+            x=[1] * n, y=ly,
+            orientation="h",
+            marker=dict(color=pclai_rgbs, line=dict(color="#aaaaaa", width=0.3)),
+            width=1.0,
+            hovertext=pclai_hover,
+            hoverinfo="text",
+            showlegend=False,
+            xaxis="x6", yaxis="y1",
+        ))
 
     # ── 3b. Actuation bars ────────────────────────────────────────────────────
     fig.add_trace(go.Bar(
@@ -874,6 +1380,91 @@ def make_figure(
         ygap=1,
         xaxis="x3", yaxis="y1",
     ))
+
+    # ── 5a. Regulatory-element band markers ───────────────────────────────────
+    # Two vertical lines bracketing the RE columns, so it's obvious which part
+    # of the (flanked) alignment is the peak itself vs. added assembly context.
+    if re_band is not None:
+        re_lo, re_hi = re_band
+        fig.add_trace(go.Scatter(
+            x=[re_lo - 0.5, re_lo - 0.5, None, re_hi + 0.5, re_hi + 0.5],
+            y=[Y_RANGE[1], Y_RANGE[0], None, Y_RANGE[1], Y_RANGE[0]],
+            mode="lines",
+            line=dict(color="#111111", width=1.2, dash="dash"),
+            hoverinfo="text",
+            hovertext=f"regulatory element: cols {re_lo+1}–{re_hi+1}",
+            name=f"RE (cols {re_lo+1}–{re_hi+1})",
+            legendgroup="re",
+            showlegend=True,
+            xaxis="x3", yaxis="y1",
+        ))
+
+    # ── 5b. Linked-variant highlight in MSA — colour-matched to branch group.
+    # Each MSA column whose allele exactly co-segregates with a sig-branch
+    # bipartition gets a dashed highlight in the colour of that branch's
+    # group. Columns linked to multiple groups get the most-significant
+    # group's colour (first match wins, since sorted_groups is sorted by
+    # best p_fdr ascending).
+    #
+    # Contiguous runs of linked columns (typical for an indel spanning many
+    # MSA positions) are collapsed into a single dashed rectangle outline
+    # — drawing N parallel vertical dashes for a 50-column indel produces a
+    # solid noise block; one outlined box around the run reads as "this
+    # whole block is linked." Singleton linked columns still render as a
+    # single vertical dash.
+    col_to_color: dict[int, str] = {}
+    if significant:
+        for key, _members in sorted_groups:
+            color = group_color[key]
+            for s in key:
+                try:
+                    c = int(s) - 1
+                except (TypeError, ValueError):
+                    continue
+                if c not in col_to_color:
+                    col_to_color[c] = color
+    if col_to_color:
+        cols_by_color: dict[str, list[int]] = {}
+        for c, color in col_to_color.items():
+            cols_by_color.setdefault(color, []).append(c)
+        for color, cols in cols_by_color.items():
+            cols_sorted = sorted(cols)
+            # Split into contiguous runs.
+            runs: list[tuple[int, int]] = []
+            run_start = cols_sorted[0]
+            run_end = cols_sorted[0]
+            for c0 in cols_sorted[1:]:
+                if c0 == run_end + 1:
+                    run_end = c0
+                else:
+                    runs.append((run_start, run_end))
+                    run_start = c0
+                    run_end = c0
+            runs.append((run_start, run_end))
+            link_xs: list = []
+            link_ys: list = []
+            for r_lo, r_hi in runs:
+                if r_lo == r_hi:
+                    # Singleton: one vertical dashed line.
+                    link_xs += [r_lo, r_lo, None]
+                    link_ys += [Y_RANGE[1], Y_RANGE[0], None]
+                else:
+                    # Multi-column run: dashed rectangle outline.
+                    x_lo, x_hi = r_lo - 0.5, r_hi + 0.5
+                    link_xs += [x_lo, x_hi, x_hi, x_lo, x_lo, None]
+                    link_ys += [Y_RANGE[1], Y_RANGE[1], Y_RANGE[0], Y_RANGE[0], Y_RANGE[1], None]
+            txt = f"linked variants ({len(cols)}) for sig branch group"
+            fig.add_trace(go.Scatter(
+                x=link_xs, y=link_ys,
+                mode="lines",
+                line=dict(color=color, width=1.0, dash="dot"),
+                hoverinfo="text",
+                hovertext=[txt] * len(link_xs),
+                name=f"linked variants ({len(cols)})",
+                legendgroup="linked",
+                showlegend=True,
+                xaxis="x3", yaxis="y1",
+            ))
 
     # ── 6. Sequence logo (stacked frequency bars) ─────────────────────────────
     logo_base = [0.0] * aln_len
@@ -1007,6 +1598,39 @@ def make_figure(
         f"<b>tree length</b>={tree_length:.3f}",
         f"<b>variable sites</b>={var_sites}/{aln_len}",
     ]
+    if re_band is not None:
+        summary_bits.append(
+            f"<b>RE</b>=cols {re_band[0]+1}–{re_band[1]+1} (+{flank}bp flank)"
+        )
+    # Phylogenetic heritability from MCMCglmm (rule phylo_mm). Headline =
+    # alpha.V=1 (Gelman 2006's default half-Cauchy(0,1) on σ_phylo); the
+    # alpha.V=0.25 fit is shown as a conservative-prior flank when it
+    # differs by >0.05. alpha.V=1000 is retained in the TSV as a stress
+    # test but NOT used in the headline: on weakly-identified peaks (small
+    # n_unique, big within-cluster spread) the wide half-Cauchy(0,~32)
+    # mass at large σ_phylo systematically inflates H² toward 1 without
+    # adding identification information.
+    meta = pm.get("meta", {})
+    h2_main = meta.get("h2_alpha1_mean")
+    h2_low  = meta.get("h2_alpha025_mean")
+    # Convergence flag (alpha.V=1 posterior ESS < threshold in phylo_mm.R).
+    # When the MCMC chain didn't converge, the point estimate is unreliable.
+    conv_flag = " [ESS low]" if str(meta.get("h2_converged", "")).upper() == "FALSE" else ""
+    if isinstance(h2_main, (int, float)):
+        if isinstance(h2_low, (int, float)) and (h2_main - h2_low) >= 0.05:
+            # Prior-sensitive: show both with a warning flag so it's obvious
+            # the data don't pin H² down.
+            summary_bits.append(
+                f"<b>H²<sub>p</sub></b>={h2_main:.2f} (α=0.25→{h2_low:.2f}) ⚠{conv_flag}"
+            )
+        else:
+            summary_bits.append(
+                f"<b>H²<sub>p</sub></b>≈{h2_main:.2f}{conv_flag}"
+            )
+    # LASSO-selected branch count (headline).
+    n_sel = meta.get("n_branches_selected")
+    if isinstance(n_sel, (int, float)):
+        summary_bits.append(f"<b>sig branches</b>={int(n_sel)}")
     summary_text = "  ·  ".join(summary_bits)
     # Title left-aligned, summary stats just under it.
     fig.add_annotation(
@@ -1066,10 +1690,24 @@ def main() -> None:
                         help="Output PDF path (via kaleido)")
     parser.add_argument("--peak-id",   type=str, default=None)
     parser.add_argument(
+        "--flank", type=int, default=0,
+        help="bp of flank that add_flanks added each side of the RE. When >0 "
+             "the RE sub-span is bracketed in the MSA and noted in the header.",
+    )
+    parser.add_argument(
         "--pclai-bed", type=Path, default=None,
         help="Optional bgzipped + tabix-indexed HPRC PCLAI asm-coord BED. "
              "When supplied, draws a per-leaf ancestry stripe colored by HPRC's "
              "pre-baked PCLAI palette.",
+    )
+    parser.add_argument(
+        "--phylo-mm", type=Path, default=None,
+        help="Optional per-peak phylo_mm TSV (workflow/scripts/phylo_mm.R). "
+             "Supplies the phylogenetic heritability H²_p sensitivity (header) "
+             "and per-internal-branch rows (coverage-weighted test + LASSO). "
+             "When provided, the header summary gains H²_p + the sig-branch "
+             "count, and LASSO-selected branches are annotated on the tree "
+             "with their linked MSA columns highlighted.",
     )
     args = parser.parse_args()
 
@@ -1081,9 +1719,13 @@ def main() -> None:
     alignment           = load_alignment(args.alignment)
     peak_id             = args.peak_id or args.tree.stem
 
+    phylo_mm = load_phylo_mm(args.phylo_mm) if args.phylo_mm else {"meta": {}, "branches": []}
+
     fig = make_figure(
         tree, actuation, coverage, alignment, peak_id,
         pclai_bed=args.pclai_bed,
+        phylo_mm=phylo_mm,
+        flank=args.flank,
     )
 
     args.html.parent.mkdir(parents=True, exist_ok=True)

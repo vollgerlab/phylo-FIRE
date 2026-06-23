@@ -6,3 +6,11 @@ __pycache__/
 .snakemake/
 .pixi/
 resources/pclai/
+resources/union-peaks-asm.bed.gz
+resources/union-peaks-asm.bed.gz.tbi
+resources/bad2matrix/
+*.agc
+.DS_Store
+temp/
+*.new
+temporary_file_for_*

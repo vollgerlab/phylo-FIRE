@@ -38,6 +38,32 @@ replot = { cmd = [
     "-j",
     "8",
 ] }
+# 5 haplotype-selective peaks pulled from hyak's union-peaks-chm13.bed.gz via
+# tabix region query (see resources/hap-selective-5/README.md). 5 peaks x ~90
+# sample-haps = 450 rows. Source TSV:
+#   /mmfs1/gscratch/stergachislab/HPRC/mrv-figures/Tables/example-hap-selective-peaks-sample.tsv
+hap-selective-5 = { cmd = [
+    "snakemake",
+    "--config",
+    "peak_ids=config/hap_selective_5_peak_ids.txt",
+    "input_table=resources/hap-selective-5/hap-selective-5.bed.gz",
+    "-j",
+    "8",
+] }
+# Same 5 peaks, restricted per-peak to rows whose haplotype_distinct
+# classification is exactly "Haplotype-selective". Each peak's set of
+# qualifying individuals contributes both haps → 10 leaves per peak
+# (chr21 has 12 because 6 individuals are hap-selective at that locus).
+hap-selective-5-samples = { cmd = [
+    "snakemake",
+    "--config",
+    "peak_ids=config/hap_selective_5_peak_ids.txt",
+    "input_table=resources/hap-selective-5/hap-selective-5-samples.bed.gz",
+    "highlight_file=config/hap_selective_5_highlights.tsv",
+    "min_seqs=2",
+    "-j",
+    "8",
+] }
 # Per-paralog-group MSA test using a fixture pre-extracted by PARE's
 # `extract_paralog_msas` rule. Exercises the `preextracted_dir` ingestion path.
 # pg_31 = canonical chr1 NOTCH2NL promoter family: NOTCH2 (1p11) +
@@ -51,21 +77,30 @@ replot = { cmd = [
 # across PARE runs.
 test-paralog = { cmd = [
     "snakemake",
-    "--config", "preextracted_dir=resources/test/preextracted_pg_31",
-    "-j", "8",
+    "--config",
+    "preextracted_dir=resources/test/preextracted_pg_31",
+    "flank=0",
+    "-j",
+    "8",
 ] }
 # All-haps version of the pg_31 fixture: same 5 paralog peaks but pulled
 # from the full HPRCv2 union BED (45 individuals -> 78 primary haps after
 # filtering to is_primary_sample). 319 sequences vs 24 in the small fixture.
 test-paralog-all-haps = { cmd = [
     "snakemake",
-    "--config", "preextracted_dir=resources/test/preextracted_pg_31_all_haps",
-    "-j", "8",
+    "--config",
+    "preextracted_dir=resources/test/preextracted_pg_31_all_haps",
+    "flank=0",
+    "-j",
+    "8",
 ] }
 fmt = "snakefmt workflow/Snakefile"
 # One-time bulk fetch of HPRC R2 PCLAI BEDs (CHM13 + asm coord spaces)
 # merged into resources/pclai/hprc_r2.bed.gz, bgzipped + tabixed.
 setup-pclai = "bash workflow/scripts/build_pclai_bed.sh"
+# Install selectiveInference + its CRAN deps into the pixi-managed R library.
+# selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.
+setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInference", quietly=TRUE)) install.packages("selectiveInference", repos="https://cloud.r-project.org") else cat("selectiveInference already installed\\n")'"""
 
 [dependencies]
 python = ">=3.11"
@@ -80,3 +115,14 @@ matplotlib = "*"
 plotly = "*"
 python-kaleido = "*"
 pysam = "*"
+# R + phylogenetic mixed model (MCMCglmm) + LASSO (glmnet) + valid
+# post-LASSO inference (selectiveInference, Lee/Sun/Sun/Taylor 2016 exact
+# post-selection p-values — avoids the double-dipping issue Witten et al.
+# discuss). selectiveInference isn't on conda-forge as of 2026-05 — install
+# via `pixi run setup-selectiveinference` after `pixi install`.
+r-base = ">=4.3"
+r-ape = "*"
+r-mcmcglmm = "*"
+r-glmnet = "*"
+r-remotes = "*"
+agc = ">=3.2.3,<4"

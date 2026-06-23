@@ -9,13 +9,19 @@ FIRE peaks, then renders each tree alongside a FIRE actuation heatmap.
 ## Quick commands
 
 ```bash
-pixi install              # first-time setup
-pixi run setup-pclai      # one-time: bulk-fetch HPRC R2 PCLAI BEDs → resources/pclai/hprc_r2_asm.bed.gz
-pixi run test             # 10 test peaks via test-union-peaks.bed.gz
-pixi run test-paralog     # NOTCH2NL paralog group via PARE-style preextracted dir
-pixi run dry-run          # DAG preview
-pixi run replot           # force re-run of the plot rule on existing trees
-pixi run fmt              # snakefmt workflow/Snakefile
+pixi install                       # first-time setup
+pixi run setup-pclai               # one-time: bulk-fetch HPRC R2 PCLAI BEDs → resources/pclai/hprc_r2_asm.bed.gz
+pixi run setup-selectiveinference  # one-time: install selectiveInference R pkg from CRAN (not on conda-forge)
+pixi run test                      # 8 test peaks via test-union-peaks.bed.gz
+pixi run test-paralog              # NOTCH2NL paralog group via PARE-style preextracted dir
+pixi run hap-selective-5           # 5 hap-selective peaks pulled from hyak via tabix-over-ssh
+pixi run dry-run                   # DAG preview
+pixi run replot                    # force re-run of the plot rule on existing trees
+pixi run fmt                       # snakefmt workflow/Snakefile
+
+# Cluster (CHPC) production run — uses the asm-coord union BED + AGC paths:
+pixi run -- snakemake --configfile config/cluster.yaml \
+    --config peak_ids=<peaks.txt> --profile profiles/slurm -j <N>
 ```
 
 There is **no `clean` task**: snakemake handles its own state via
@@ -41,27 +47,131 @@ Three Snakemake steps driven by a checkpoint:
    rules are discovered via `glob_wildcards("results/fastas/{peak_id}.fa")`
    after it completes.
 
+1b. `rule add_flanks` (only when `config["flank"] > 0`) -- pulls each haplotype's
+   sequence with `flank` bp of assembly context each side from the AGC archive
+   (`config["agc"]`, e.g. `resources/HPRC_r2_assemblies_0.6.1.agc`), keyed by the
+   PanSN `asm_chr` in the per-peak TSV. Region is
+   `{asm_chr}:{asm_start-flank}-{asm_end-1+flank}` (asm_start 1-based, asm_end
+   exclusive; verified against the BED `seq` column). One batched `agc getctg`
+   call per peak over all its haplotype regions (`-p`, `-t {threads}`). Rows
+   whose contig isn't PanSN/in the archive (e.g. HG002 `chrN_PATERNAL`) fall
+   back to RE-only, so a flank run never drops a haplotype. The RE then sits at
+   `[flank, flank+RE_len)` of each pulled sequence. `_mafft_input` routes mafft
+   to `results/flanked/{peak}.fa` when flanking is on, RE-only otherwise, so the
+   checkpoint's peak manifest stays independent of flank. Flanks add variable
+   sites that resolve the per-peak tree and reduce H²ₚ prior-dependence;
+   `preextracted_dir`/PARE controls its own flanks (this rule doesn't apply).
+
 2. `rule mafft` -- per-peak alignment (`--auto --maxiterate 1000 --reorder --adjustdirection`).
    Output is `temp()` (deleted after plot finishes). `--adjustdirection` adds `_R_` prefix to
    reversed sequences; the plot script strips this prefix from both alignment and tree leaf names.
 
-3. `rule iqtree` -- per-peak ML tree. Uses `shadow: "minimal"` so IQ-TREE's auxiliary
-   output files (`.log`, `.iqtree`, `.bionj`, `.mldist`, `.model.gz`) are discarded;
-   only the `.treefile` survives. Bootstrap (`-B 1000`) is conditional: enabled only when
-   the aligned FASTA has >=4 distinct sequences (IQ-TREE refuses bootstrap otherwise).
+3. `rule encode_indels` -- Simmons-Ochoterena (2000) simple indel coding via
+   `workflow/scripts/encode_indels.py`. Each distinct *internal* contiguous gap
+   (count >= 2) becomes a binary character; leading/trailing gaps are treated as
+   MISSING DATA (`?`), not coded, because a gap at an alignment end is
+   indistinguishable from the extraction window clipping that haplotype.
+   Invariant columns are dropped so the indel matrix is variable-only. Emits
+   `{peak_id}_nucleic.phy` + `{peak_id}_indel.phy` + a partition `.nex`
+   (`GTR+I+G` on DNA, `GTR2+ASC` on the indel partition; `+ASC` corrects the
+   ascertainment bias from recording only variable indel characters).
 
-4. `rule plot` -- produces `results/plots/{peak_id}.html` and `results/plots/{peak_id}.pdf`
+4. `rule iqtree` -- per-peak ML tree from the partitioned (DNA + indel) matrix.
+   Cannot use `shadow: "minimal"` (conflicts with the absolute `--prefix`), so a
+   post-run `find` deletes every aux file sharing the prefix except `.treefile`.
+   Models are pinned by the `.nex` charpartition, so IQ-TREE estimates parameters
+   but does NOT run model selection. Bootstrap (`-B 1000`) is conditional:
+   enabled only when the nucleic PHYLIP has >=4 distinct sequences (IQ-TREE
+   refuses bootstrap otherwise).
+
+5. `rule phylo_mm` -- per-peak phylogenetic mixed-model statistics via
+   `workflow/scripts/phylo_mm.R`. Outputs `results/phylo_mm/{peak_id}.tsv` +
+   `.pdf`. Three analyses:
+
+   - **H²ₚ multi-prior sensitivity.** Intercept-only MCMCglmm fit 3 times with
+     `alpha.V ∈ {1000, 1, 0.25}` on the phylogenetic random effect (PX prior;
+     marginal on σ_phylo is half-Cauchy with scale √alpha.V). Trait is
+     logit-transformed (with a coverage-derived offset for 0/1 saturation),
+     residual likelihood uses `mev = 1/(coverage · p · (1-p))` (binomial SE
+     on logit scale, the Hadfield 2010 meta-analysis trick), tree is
+     ultrametricized via `chronos()` before `inverseA`. Posterior summary
+     is median + 95% HPD. **Plot headline is the `alpha.V=1` fit** (Gelman 2006
+     default half-Cauchy(0,1) on σ_phylo); when the `alpha.V=0.25`
+     conservative-prior fit differs by ≥0.05 the plot shows
+     `H²ₚ=X.XX (α=0.25→Y.YY) ⚠` to flag prior dependence. `alpha.V=1000` is
+     retained in the TSV as a stress test but **not** in the headline:
+     on weakly-identified peaks (small n_unique, big within-cluster spread)
+     the wide half-Cauchy(0,~32) systematically inflates H²ₚ toward 1
+     without adding identification information. R prior stays at
+     `V=1, nu=0.002` (data-dominated); a `tightR` (V=1, nu=1) sensitivity
+     is computed in the diagnostic stderr but not surfaced — it introduces
+     bias on well-identified peaks where σ²_R is genuinely small.
+
+   - **LASSO joint branch selection.** Builds a binary indicator matrix
+     over all non-trivial internal bipartitions, runs `cv.glmnet` (alpha=1,
+     family=gaussian, standardize=FALSE, lambda.min). Selected branches go
+     to `selectiveInference::fixedLassoInf()` for **valid post-LASSO
+     p-values + CIs** (Lee/Sun/Sun/Taylor 2016 polyhedral conditioning).
+     Avoids the double-dipping problem Witten et al. flag. Falls back to
+     naive OLS (with `inference_method=ols_fallback` in TSV header) when
+     fixedLassoInf's polyhedral check fails.
+
+   - **Per-branch Welch's t-test scan.** Diagnostic only (every non-trivial
+     bipartition gets a t-test + BH FDR), retained in the TSV for the
+     parsimonious view but not the plot-overlay headline.
+
+   The TSV header carries `h2_alpha{1000,1,025}_{mean,lower,upper}`,
+   `n_branches_tested`, `n_branches_selected`, `lasso_lambda`,
+   `inference_method`. Per-branch rows carry `branch_id`, `descendants`,
+   marginal Welch stats (`mean_in`, `mean_out`, `t_stat`, `p_raw`,
+   `p_fdr`, `linked_sites`), plus LASSO selection columns
+   (`selected_by_lasso`, `lasso_coef`, `beta`, `se`, `ci_lower`,
+   `ci_upper`, `p`).
+
+5. `rule plot` -- produces `results/plots/{peak_id}.html` and `results/plots/{peak_id}.pdf`
    via `workflow/scripts/plot_tree_actuation_html.py`. Layout left → right:
-   midpoint-rooted ladderized tree, leaf labels, **PCLAI ancestry stripe**, FIRE
-   actuation heatmap, MSA with per-cell consensus coloring (toggleable).
+   midpoint-rooted ladderized tree, leaf labels, **PCLAI ancestry stripe**,
+   FIRE actuation heatmap (light-grey gaps with dark box outlines around
+   contiguous `-` runs, N/unmapped stay dark grey), MSA with per-cell
+   consensus coloring. The header surfaces H²ₚ (alpha.V=1 point estimate,
+   alpha=0.25 flank when sensitivity ≥0.05 with `⚠` flag), the LASSO-selected
+   branch count, and the standard peak stats. Each LASSO-selected branch
+   is annotated on the tree with `Δ` (marginal Welch effect), `β`
+   (post-selection joint effect), and `p` (post-selection p-value).
+   Linked variants are dashed-highlighted in the MSA. Light dotted leader
+   lines connect each tree tip across all panels for row alignment.
    The PCLAI column is shown only when `config["pclai_bed"]` points at a valid
    bgzipped + tabix-indexed BED; otherwise it collapses to zero width.
 
 ## Key implementation decisions
 
 - **`iqtree` not `iqtree2`**: the conda-forge package installs as `iqtree` (version 3+).
-- **Bootstrap gated on unique seq count**: `count_unique_seqs()` parses the multi-line FASTA
-  properly. Counting `>` headers is wrong because IQ-TREE deduplicates internally.
+- **Bootstrap gated on unique seq count**: `count_unique_seqs_phylip()` parses the nucleic
+  PHYLIP. Counting `>` headers is wrong because IQ-TREE deduplicates internally. (This
+  counts DNA-only uniqueness, so two tips identical in DNA but distinct in indel coding
+  count as one — slightly conservative for the >=4 bootstrap gate.)
+- **Indel-partition `+ASC`**: the binary indel matrix is variable-only by construction
+  (every retained column has both a `0` taxon and a `1` taxon; `encode_indels` drops any
+  invariant column), so ascertainment-bias correction is required or the indel-partition
+  branch lengths inflate. Terminal gaps are coded `?` (missing), not as indel state — see
+  rule `encode_indels` above and the "regulatory-element lengths" note below.
+- **What H²<sub>p</sub> means here**: the tree is the regulatory element's *own* sequence
+  genealogy and the trait is actuation of that same element, so H²<sub>p</sub> is "how much
+  actuation variance tracks sequence-relatedness at this locus", NOT transmissible
+  heritability. It is a within-locus descriptive statistic; the comparative-method
+  machinery (independent lineages, a species tree) does not hold for one short intraspecific
+  element. Treat it as descriptive, especially on prior-sensitive (`⚠`) or non-converged
+  (`[ESS low]`) peaks.
+- **Paralog mode + gene conversion (caveat)**: for SD paralog families (NOTCH2NL), a strictly
+  bifurcating ML tree is the wrong model — interlocus gene conversion makes the promoters
+  evolve reticulately, so haplotypes cluster by their most-recently-converted tract rather
+  than by orthology. Read the paralog-mode tree (and its H²<sub>p</sub>) with that in mind.
+- **Regulatory-element lengths**: peaks are short (~150-300 bp) with real per-haplotype
+  length variation (the fixture spans 238-282 bp). Length differences at the *alignment ends*
+  are partly an extraction-window artifact (the per-hap sequence is the assembly substring at
+  the projected consensus-peak coords, not the true element boundary), which is why
+  `encode_indels` masks terminal gaps as `?`. The principled fix is to extract with flanking
+  sequence and track the RE sub-span in the MSA (planned, upstream change).
 - **`min_seqs: 2`** (config default): allows peaks with only 2 distinct haplotype sequences.
   With `min_seqs: 3` (old default), some valid peaks were silently skipped.
 - **Actuation = `fire_cov_OV_cov`** (column 9, 0-indexed): `fire_coverage / coverage`,
@@ -69,7 +179,70 @@ Three Snakemake steps driven by a checkpoint:
 - **`haplotype_distinct` is a peak-level filter**: a peak is included if any primary-sample
   row has the target classification. All qualifying sequences go into the tree regardless.
 - **Streaming extraction**: `extract_fastas.py` processes one peak at a time (constant memory),
-  relying on the BED being sorted by genomic coordinate so rows for a peak are consecutive.
+  relying on the BED being sorted by `consensus_peak_id` so rows for a peak are consecutive.
+- **Columns resolved by header NAME, not fixed index** (`extract_fastas.resolve_columns`):
+  the union-peaks BED carries a `#chrom ...` header, and the column order has changed
+  across dataset builds (e.g. `fire_cov_OV_cov` moved, and `asm_chr/asm_start/asm_end`
+  were collapsed into a single `asm_peak_id = '{asm_chr}_{start}_{end}'`). Resolving by
+  name survives both. asm coords come from explicit columns if present, else from
+  splitting `asm_peak_id`. Falls back to legacy fixed indices only for a headerless file.
+- **HG002 maternal/paternal is FLIPPED in the peaks BED** (confirmed against the AGC:
+  `HG002#1#` = PATERNAL, `HG002#2#` = MATERNAL, i.e. hap1=paternal/hap2=maternal). The BED
+  has hap1→`chrN_MATERNAL`, hap2→`chrN_PATERNAL` — backwards. The *sequences* are correct
+  (they match their labeled parental assembly exactly), only the `Haplotype` 1/2 label is
+  swapped, so HG002 leaves carry the wrong hap number vs. the rest of the cohort. Not fixed
+  in the asm-coord rebuild as of 2026-06; needs an upstream fix (swap HG002 Haplotype 1↔2).
+  HG002 uses non-PanSN T2T contig names (`chr12_MATERNAL`); `add_flanks.agc_contig` maps
+  these to the archive's `HG002#2#chrN` (maternal) / `HG002#1#chrN` (paternal), keyed on the
+  asm_chr suffix (the true assembly), so HG002 now flanks correctly *despite* the label flip.
+- **Association tests are RE-scoped; H²ₚ uses the whole window.** When `flank > 0`,
+  `phylo_mm.R` restricts the variable sites that anchor branches (`var_cols`), the per-branch
+  WLS p-value scan, and the LASSO to the regulatory-element columns (`re_band`, reported as
+  `re_first_col`/`re_last_col` in the TSV header); neutral flank variation only resolves the
+  tree. The H²ₚ model uses the full flanked tree. The plot labels linked sites RE-relative
+  (`RE13` = 13 bp into the element) via the same band.
+- **`phylo_mm.R` uses `standardize=FALSE` in cv.glmnet**: indicator columns are already
+  on the same 0/1 scale, and `selectiveInference::fixedLassoInf` requires the same
+  parameterisation as the LASSO that produced the coefficients (otherwise the polyhedral
+  check fails). With our 0/1 indicators, standardisation also implicitly down-weights
+  small-clade branches — we want all branches penalised equally.
+- **LASSO uses `lambda.min`, not `lambda.1se`**: small effective N (peaks with only 2
+  unique phenotype levels) makes lambda.1se overly conservative; it routinely picks 0
+  branches even where the per-branch FDR scan flags real splits.
+- **H²ₚ identifiability depends on `n_unique` and within-cluster spread, not tree depth
+  per se**. Peaks with many haps per unique sequence (78 haps / 15 unique) have σ²_R
+  pinned by within-cluster replication; H²ₚ is data-driven and stable across alpha.V
+  priors. Peaks with few unique sequences AND large within-cluster spread on the logit
+  scale (e.g. chr15/chr20/chr22 in the test fixture: 2-3 unique, wvar(y) ≈ 5-7 vs
+  mev ≈ 0.5) have σ²_phylo unidentified by the data; the prior dictates the result.
+  The 3-alpha sensitivity sweep (`alpha.V ∈ {1000, 1, 0.25}`) surfaces this in the
+  diagnostic stderr (`[phylo_mm] <peak> H²: alpha=...`). Headline H²ₚ uses alpha=1;
+  alpha=0.25 conservative-prior flank with `⚠` is shown when they differ by ≥0.05.
+  alpha=1000 is *not* used in the headline because its scale-32 half-Cauchy on σ_phylo
+  systematically pushes σ²_phylo (and H²ₚ) toward huge values on weakly-identified peaks
+  without adding information beyond the prior itself.
+- **Headline p-value is `p_fdr` from the per-branch Welch's t-test scan (BH-corrected)**,
+  not selectiveInference's post-LASSO p. The branch indicators are *pre-specified by
+  the tree topology* (sequence-defined, not actuation-defined), so per-branch t-tests
+  + BH FDR over the ~75 bipartitions per peak is a multiple-testing-with-pre-specified-
+  hypotheses problem — *not* double-dipping. The plot annotation reads `Δ  β  p_fdr`.
+- **LASSO + `selectiveInference::fixedLassoInf` provide β and CI**, not p-values.
+  LASSO picks a parsimonious subset of branches to *annotate* (visual only — collapses
+  correlated nested branches to representatives); selectiveInference's post-LASSO
+  fit gives the joint β estimate and a selection-conditional CI. These are the
+  "effect size" half of the annotation. We don't use SI's p as the headline because
+  (a) selectiveInference's polyhedral check occasionally fails (→ OLS fallback with
+  invalid CIs), and (b) p_fdr is already a valid, simpler answer to the inferential
+  question. The SI p-value is retained in the TSV `p` column and shown as a
+  secondary hover field for the curious.
+- **Identical-haplotype collapse** (Hadfield 2010 / Halliwell BRV 2025): tips with
+  EXACT same aligned sequence (gaps counted; only truly-identical strings collapse)
+  share a single `animal` factor level in the MCMCglmm random effect. The collapsed
+  tree (via `ape::keep.tip`) gives a non-singular `inverseA`; within-cluster
+  observation variance lands in σ²_R rather than inflating σ²_phylo. H²ₚ is the
+  honest between-sequence-cluster heritability. `n_unique_seqs` is reported alongside
+  `n_tips` in the TSV header. Peaks with `n_unique_seqs < 2` (monomorphic
+  alignment) are written with empty TSV + note and skipped from any modeling.
 - **PCLAI lookup is CHM13-coord** (not asm). The plot script parses `peak_id` as
   `{chrom}_{start}_{end}` and runs **one tabix query per peak**; each returned row's
   source sample/hap is encoded in BED col 4 (`HG00097/h1/...`). This wins over
@@ -91,6 +264,7 @@ workflow/
     Snakefile                 main pipeline
     scripts/
         extract_fastas.py         one-pass FASTA + TSV extraction
+        phylo_mm.R                MCMCglmm H²ₚ + LASSO branch selection + selectiveInference
         plot_tree_actuation_html.py  interactive HTML + PDF tree/MSA/actuation plot
     rules/                    (reserved for future rule modules)
 resources/
@@ -105,10 +279,11 @@ resources/
 profiles/
     slurm/config.yaml         SLURM executor profile (CHPC Redwood)
 results/                      all pipeline outputs (gitignored)
-    fastas/  {peak_id}.fa  {peak_id}.tsv
-    aligned/ {peak_id}.fa  (temp, deleted after plot)
-    trees/   {peak_id}.treefile
-    plots/   {peak_id}.html  {peak_id}.pdf
+    fastas/    {peak_id}.fa  {peak_id}.tsv  peak_ids.txt
+    aligned/   {peak_id}.fa  (temp, deleted after plot)
+    trees/     {peak_id}.treefile
+    phylo_mm/  {peak_id}.tsv  {peak_id}.pdf
+    plots/     {peak_id}.html  {peak_id}.pdf
 ```
 
 ## Cross-repo: PARE
@@ -171,18 +346,19 @@ the tree and heatmap renderers scale to the production-shape input.
 
 ## Input table columns referenced
 
-| Column | Index | Used for |
-|--------|-------|----------|
-| `consensus_peak_id` | 4 | grouping key, output filename |
-| `fire_cov_OV_cov` | 9 | actuation fraction for heatmap |
-| `asm_chr` | 11 | PanSN per-sample asm contig (e.g. `HG02886#1#CMxxxx.1`); used for PCLAI lookup |
-| `asm_start` | 12 | peak start in asm coords (PCLAI tabix range) |
-| `asm_end` | 13 | peak end in asm coords (PCLAI tabix range) |
-| `seq` | 23 | DNA sequence (skip if NA) |
-| `Individual_ID` | 25 | FASTA header / tree leaf prefix |
-| `Haplotype` | 26 | FASTA header / tree leaf suffix; matches PCLAI's `#N#` directly |
-| `is_primary_sample` | 36 | filter when `primary_only: true` |
-| `haplotype_distinct` | 37 | optional peak-level filter |
+Resolved by header NAME (see `extract_fastas.resolve_columns`), not fixed index —
+the column order differs between dataset builds.
+
+| Column | Used for |
+|--------|----------|
+| `consensus_peak_id` | grouping key, output filename |
+| `fire_cov_OV_cov` | actuation fraction for heatmap |
+| `asm_peak_id` (or `asm_chr`/`asm_start`/`asm_end`) | per-sample asm contig + coords; flanks + PCLAI. New builds carry one `asm_peak_id = '{asm_chr}_{start}_{end}'`; old builds had the three split columns. |
+| `seq` | DNA sequence (skip if NA) |
+| `Individual_ID` | FASTA header / tree leaf prefix |
+| `Haplotype` | FASTA header / tree leaf suffix; matches PCLAI's `#N#` directly (but see HG002 flip above) |
+| `is_primary_sample` | filter when `primary_only: true` |
+| `haplotype_distinct` | optional peak-level filter |
 
 ## PCLAI ancestry overlay
 

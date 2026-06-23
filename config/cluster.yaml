@@ -1,0 +1,12 @@
+# Cluster (CHPC Redwood) production paths. Overrides config/config.yaml.
+# Usage:
+#   pixi run -- snakemake --configfile config/cluster.yaml \
+#       --config peak_ids=<peaks.txt> --profile profiles/slurm -j <N>
+# (or add haplotype_distinct=<class> instead of peak_ids to select by class).
+#
+# The union BED here is asm-coord-sorted; the extract_fastas checkpoint sorts it
+# by consensus_peak_id, and columns are resolved by header name, so it ingests
+# directly. The AGC supplies flank sequence (flank/min_coverage etc. inherited
+# from config/config.yaml).
+input_table: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/fiber-seq-pilot/union-peaks-asm.bed.gz"
+agc: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_0.6.1.agc"

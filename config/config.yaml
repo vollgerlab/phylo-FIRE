@@ -1,5 +1,8 @@
-# Input table (bgzipped BED from union-peaks.Rmd pipeline)
-input_table: "Tables/union-peaks-cons.bed.gz"
+# Input table: bgzipped union-peaks BED. Columns are resolved by header name,
+# and the extract_fastas checkpoint sorts by consensus_peak_id, so the
+# asm-coord-sorted production BED works directly. This default points at the
+# local copy; `config/cluster.yaml` overrides it (+ agc) for CHPC runs.
+input_table: "resources/union-peaks-asm.bed.gz"
 
 # Optional: bypass the bgzip|extract_fastas step entirely and pull
 # {peak_id}.fa / {peak_id}.tsv pairs from a pre-extracted directory
@@ -17,6 +20,21 @@ primary_only: true
 
 # Minimum number of unique sequences to build a tree
 min_seqs: 2
+
+# Minimum per-leaf coverage (fibers) for a leaf to enter the per-branch
+# clade-vs-rest actuation test in phylo_mm.R. Leaves are also coverage-weighted
+# (WLS) within the test. Does NOT affect the H2_p model (it downweights low
+# coverage via mev instead). Set to 0 to disable the floor.
+min_coverage: 4
+
+# Flanking sequence (bp) added each side of the peak, pulled from the AGC
+# archive below. 0 = use the BED `seq` column directly (no AGC, RE only).
+# Default 500 (>=1 kb of context around the RE) gives the per-peak tree enough
+# variable sites to resolve and cuts H2_p prior-dependence; the RE sub-span is
+# bracketed in the plot. Only applies to the union-BED extraction path
+# (preextracted_dir / PARE controls its own flanks).
+flank: 500
+agc: "resources/HPRC_r2_assemblies_0.6.1.agc"
 
 # MAFFT parameters
 mafft_maxiterate: 1000

@@ -116,6 +116,10 @@ fmt = "snakefmt workflow/Snakefile"
 # One-time bulk fetch of HPRC R2 PCLAI BEDs (CHM13 + asm coord spaces)
 # merged into resources/pclai/hprc_r2.bed.gz, bgzipped + tabixed.
 setup-pclai = "bash workflow/scripts/build_pclai_bed.sh"
+# One-time: carve all HSCA peaks (any haplotype-selective class) out of the full
+# union BED into resources/hsca/ (hsca-peaks.bed.gz + hsca-index.tsv), a
+# reference table for minting new test cases quickly. Not run wholesale.
+setup-hsca = "bash workflow/scripts/build_hsca_table.sh"
 # Install selectiveInference + its CRAN deps into the pixi-managed R library.
 # selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.
 setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInference", quietly=TRUE)) install.packages("selectiveInference", repos="https://cloud.r-project.org") else cat("selectiveInference already installed\\n")'"""

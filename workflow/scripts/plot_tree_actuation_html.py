@@ -636,16 +636,15 @@ SIG_FDR = 0.05
 
 
 def _branch_is_sig(b: dict) -> bool:
-    """Draw a branch iff it's a split representative AND FDR-significant.
+    """Draw a variant iff it's a contributing variant (`is_split`).
 
-    `is_split` marks the smaller daughter of each internal node — the single
-    representative of that node's sister-clade contrast (one test per split).
-    Gating on the headline p_fdr keeps only the splits whose two daughter
-    lineages actually differ in actuation, so the tree shows the few real
-    shifts rather than every clade that merely beats the global mean.
+    `is_split` marks the variants the forward-selection joint regression kept —
+    those that explain actuation *beyond* the variants already in the model
+    (joint p < 0.05). We gate on that alone, NOT on the marginal p_fdr: a nested
+    variant that switches actuation back off within a stronger variant's clade
+    has a real joint contribution but a muddied marginal carriers-vs-rest effect.
     """
-    p = b.get("p_fdr")
-    return bool(b.get("is_split")) and isinstance(p, float) and p < SIG_FDR
+    return bool(b.get("is_split"))
 
 
 def _branch_group_key(b: dict) -> frozenset:
@@ -683,8 +682,46 @@ def make_figure(
     pos    = compute_positions(tree.root)
     leaves = list(tree.get_terminals())
     n      = len(leaves)
+
+    # Display order: tree order (by leaf y), but within each contiguous block of
+    # IDENTICAL aligned sequences, order rows by % actuation (high at top) so the
+    # actuation gradient inside a haplotype cluster is visible. We reorder the
+    # leaves list itself and renumber y to 0..n-1 — kept MONOTONIC because the
+    # MSA / actuation go.Heatmap traces (y=ly) render gaps for a non-monotonic y.
+    # Only identical-sequence (≈zero-length-branch) runs reorder, so the MSA and
+    # tree geometry don't visibly change. Internal-node y is then recomputed.
+    _ord = sorted(range(n), key=lambda i: pos[id(leaves[i])]["y"])
+    _disp: list[int] = []
+    _i = 0
+    while _i < n:
+        _seq = alignment.get(leaves[_ord[_i]].name)
+        _j = _i + 1
+        while _seq and _j < n and alignment.get(leaves[_ord[_j]].name) == _seq:
+            _j += 1
+        run = _ord[_i:_j]
+        if _seq and len(run) > 1:
+            run = sorted(
+                run,
+                key=lambda k: -(actuation.get(leaves[k].name)
+                                if actuation.get(leaves[k].name) is not None
+                                else float("-inf")),
+            )
+        _disp.extend(run)
+        _i = _j
+    leaves = [leaves[k] for k in _disp]
+    for _row, _lf in enumerate(leaves):
+        pos[id(_lf)]["y"] = float(_row)
+
+    def _recompute_y(clade):
+        if clade.is_terminal():
+            return pos[id(clade)]["y"]
+        cys = [_recompute_y(c) for c in clade.clades]
+        pos[id(clade)]["y"] = (cys[0] + cys[-1]) / 2.0
+        return pos[id(clade)]["y"]
+    _recompute_y(tree.root)
+
     names  = [lf.name for lf in leaves]
-    ly     = [pos[id(lf)]["y"] for lf in leaves]   # 0 … n-1
+    ly     = [pos[id(lf)]["y"] for lf in leaves]   # 0 … n-1, monotonic
 
     # Per-leaf metadata + colour assignment (paralog-aware).
     metas = [parse_leaf_meta(nm) for nm in names]
@@ -1182,53 +1219,40 @@ def make_figure(
             # sister-clade contrast. β/CI from the LASSO+selectiveInference fit
             # are secondary (joint effect, may differ in sign when correlated
             # clades are co-selected) and live in hover only.
-            head_p = rep.get("p_fdr")
+            # Headline = the JOINT (conditional) contribution β and its p from
+            # the forward-selection regression: "this variant changes actuation
+            # by β, after accounting for the others." A nested variant that
+            # switches actuation back off gets a negative β. The marginal
+            # carriers-vs-rest Δ is shown alongside in hover.
+            head_p = rep.get("p")
             fig.add_trace(go.Scatter(
                 x=[px, cx], y=[py, py],
                 mode="lines",
                 line=dict(color=color, width=3.0),
                 hoverinfo="text",
                 hovertext=(
-                    f"<b>Split: clade vs sister</b>  n={rep['n_below']}<br>"
+                    f"<b>Variant at {linked_str_full}</b>  n_carriers={rep['n_below']}<br>"
                     f"{means_str}"
-                    f"<b>Δ</b> (clade − sister, raw actuation) = {_fmt_beta(delta)}<br>"
-                    f"<b>p_fdr</b> (cov-weighted + BH) = {_fmt_p(head_p)}<br>"
-                    f"<i>aux: joint β (LASSO+SI) = {_fmt_beta(beta)}{ci_str}, "
-                    f"post-selection p = {_fmt_p(sel_p)}</i><br>"
-                    f"linked sites: {linked_str_full}"
+                    f"<b>β</b> (joint contribution){ci_str} = {_fmt_beta(beta)}<br>"
+                    f"<b>p</b> (joint) = {_fmt_p(head_p)}<br>"
+                    f"<i>marginal Δ (carriers − rest) = {_fmt_beta(delta)}, "
+                    f"BH p_fdr = {_fmt_p(rep.get('p_fdr'))}</i>"
                 ),
                 name=(
-                    f"Δ={_fmt_beta(delta)} p_fdr={_fmt_p(head_p)} "
-                    f"sites: {linked_str_short}"
+                    f"β={_fmt_beta(beta)} p={_fmt_p(head_p)} "
+                    f"pos: {linked_str_short}"
                 ),
                 legendgroup=f"sig_group_{id(key)}",
                 showlegend=True,
                 xaxis="x1", yaxis="y1",
             ))
-            # Place the label at the branch midpoint, but anchor it so it never
-            # runs off the left edge for root-proximal branches (small x), and
-            # alternate it above/below the branch line to cut overlap between
-            # nearby splits.
-            _mid = (px + cx) / 2.0
-            if _mid < 0.18 * max_depth:
-                _xanchor = "left"
-            elif _mid > 0.82 * max_depth:
-                _xanchor = "right"
-            else:
-                _xanchor = "center"
-            fig.add_annotation(
-                x=_mid, y=py,
-                xref="x1", yref="y1",
-                xanchor=_xanchor,
-                text=(
-                    f"<b>Δ={_fmt_beta(delta)}</b>  p_fdr={_fmt_p(head_p)}"
-                ),
-                showarrow=False,
-                yshift=11 if (_gi % 2) else -11,
-                font=dict(size=9, color=color),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor=color, borderwidth=0.5,
-            )
+            # NB: the β/p label is NOT drawn on the tree branch — a variant's
+            # carriers are often NOT a single clade (homoplasy / recurrent
+            # allele), so a tree segment can't represent the strongest variant.
+            # The label is anchored to the variant's MSA column instead (§5b
+            # below), which always exists. The coloured branch segment here +
+            # the colour-matched leader lines just show WHICH haplotypes carry
+            # it when they do form a clade.
 
         # Other members of this group — thin lines in the same colour.
         if rest:
@@ -1497,6 +1521,37 @@ def make_figure(
                 xaxis="x3", yaxis="y1",
             ))
 
+    # ── 5c. Per-variant β/p labels at the TOP of each MSA column ──────────────
+    # The headline for every contributing variant lives here (not on the tree):
+    # a variant's carriers may not be monophyletic, so the column — which always
+    # exists — is the reliable anchor. One label per contributing variant, in
+    # its colour, at its representative (left-most) linked column, staggered
+    # vertically so neighbouring columns don't collide.
+    if significant:
+        _msa_top = Y_RANGE[1]   # data-y of the MSA top (reversed axis)
+        for _i, (key, members) in enumerate(sorted_groups):
+            rep = members[0]
+            positions = sorted(group_links.get(key, frozenset()), key=int)
+            if not positions:
+                continue
+            c0 = int(positions[0]) - 1   # 0-based column → x3 coordinate
+            pos_str = ",".join(_site_label(s) for s in positions)
+            fig.add_annotation(
+                x=c0, y=_msa_top,
+                xref="x3", yref="y1",
+                yanchor="bottom",
+                yshift=4 + 13 * (_i % 3),
+                text=(
+                    f"<b>β={_fmt_beta(rep.get('beta'))}</b> "
+                    f"p={_fmt_p(rep.get('p'))}<br>{pos_str}"
+                ),
+                showarrow=True, arrowhead=0, arrowwidth=0.8,
+                arrowcolor=group_color[key], ax=0, ay=-8,
+                font=dict(size=8, color=group_color[key]),
+                bgcolor="rgba(255,255,255,0.85)",
+                bordercolor=group_color[key], borderwidth=0.5,
+            )
+
     # ── 6. Sequence logo (stacked frequency bars) ─────────────────────────────
     logo_base = [0.0] * aln_len
     for nuc in "ATGC":
@@ -1668,10 +1723,9 @@ def make_figure(
         summary_bits.append(
             f"<b>H²<sub>p</sub></b>≈{h2_main:.2f}{hpd_str}{prior_str}{wide_flag}{conv_flag}"
         )
-    # Annotated branch count (headline) = LASSO-selected AND FDR-significant,
-    # i.e. the branches actually drawn on the tree (not the raw LASSO count,
-    # which over-selects correlated clades).
-    summary_bits.append(f"<b>sig branches</b>={len(sig)}")
+    # Headline count = the variants the forward regression flagged as
+    # contributing (drawn on the tree).
+    summary_bits.append(f"<b>contributing variants</b>={len(sig)}")
     summary_text = "  ·  ".join(summary_bits)
     # Title left-aligned, summary stats just under it.
     fig.add_annotation(

@@ -119,40 +119,37 @@ Three Snakemake steps driven by a checkpoint:
      is computed in the diagnostic stderr but not surfaced — it introduces
      bias on well-identified peaks where σ²_R is genuinely small.
 
-   - **Per-split sister-clade contrast (headline).** Each internal node splits
-     the tree into two daughter subtrees. For the SMALLER daughter (the split's
-     representative, flagged `is_split`) a coverage-weighted WLS contrasts its
-     actuation against its SISTER subtree (the other daughter), **not** against
-     the rest of the tree. This is the local phylogenetic contrast — "does this
-     lineage differ from the one it just split from?" — so a clade that looks
-     significant only because the global mean lumps in a distant high/low clade
-     is correctly NOT significant. BH FDR is over the split representatives (one
-     test per node). A split is tested when both daughters have ≥2 covered
-     leaves and the contrast spans ≥2 distinct sequence clusters (this skips
-     arbitrary within-identical-cluster resolutions without dropping a real
-     split where one identical leaf happens to sit on the sister side, which
-     the LASSO's `clean_partition` would wrongly reject — e.g. an
-     ancestral/derived root split). `Δ = mean_in − mean_out` (clade − sister)
-     is the headline effect, `p_fdr` the headline p.
-
-   - **LASSO joint branch selection (secondary).** Over `clean_partition`
-     bipartitions (no identical-cluster straddle), QR-reduced to a linearly
-     independent set (tree clades are collinear: parent = child₁ + child₂),
-     `cv.glmnet` (alpha=1, standardize=FALSE, lambda.min) +
-     `selectiveInference::fixedLassoInf()` give a joint post-selection β + CI.
-     Retained in the TSV / plot hover as a secondary effect-size view; it NO
-     LONGER drives the comparison or which branches are annotated, because the
-     joint β over correlated nested clades is unstable (sign-flips vs the
-     marginal Δ). OLS fallback (`inference_method=ols_fallback`) when the
-     polyhedral check fails.
+   - **Variant attribution — forward-selection joint regression (headline).**
+     The question is "given this heritable trait, which variants contribute?",
+     so the candidates are the VARIABLE SITES themselves (RE-scoped via
+     `var_cols`), not tree splits. Each site is a 0/1 minor-allele indicator;
+     sites carrying the SAME partition (perfectly correlated / complementary)
+     merge into one block reporting all positions ("multiple variants on one
+     branch"). Forward selection adds the candidate that explains the most
+     ADDITIONAL weighted-R² of actuation (coverage-weighted WLS), stopping when
+     the best gain falls below `R2_MIN` (0.05 = 5% of variance) or stops being
+     significant. We select on **variance explained, not p-value**: at N≈78 a
+     β≈0.08 variant adding <2% variance still clears p<0.05, so a significance
+     gate over-selects weak passengers (chr19: pos 77 explains 85%, two others
+     ~1% each yet "significant"). The reported `beta` is the JOINT (conditional)
+     contribution — so a passenger that merely tracks a stronger variant adds ~0
+     R² and is dropped, while a NESTED variant that switches actuation back off
+     among a stronger site's carriers explains real variance and is kept with a
+     negative β (verified: Y β=+0.50 "creates", W⊂Y β=−0.48 "removes"). Few
+     candidates (2–10 blocks), so the joint fit is exact and stable — no LASSO /
+     selectiveInference. `mean_in`/`mean_out` are the marginal carriers-vs-rest
+     means; `beta`/`se`/`ci`/`p` the joint fit; `is_split` flags the selected
+     (contributing) variants.
 
    The TSV header carries `h2_alpha{1000,1,025}_{mean,lower,upper}`,
-   `n_branches_tested` (= split reps tested), `n_splits_sig` (BH<0.05),
-   `n_branches_selected` (LASSO), `lasso_lambda`, `inference_method`.
-   Per-branch rows carry `branch_id`, `descendants`, sister-contrast stats
-   (`mean_in`, `mean_out`, `t_stat`, `p_raw`, `p_fdr`), `is_split`,
-   `linked_sites`, plus secondary LASSO columns (`selected_by_lasso`,
-   `lasso_coef`, `beta`, `se`, `ci_lower`, `ci_upper`, `p`).
+   `n_variants_tested`, `n_variants_selected`, `n_branches_selected` (alias),
+   `inference_method=forward_wls`. Per-variant rows carry `branch_id` (block
+   index), `n_below` (n carriers), `descendants` (the carrier leaves, so the
+   plot can highlight them), marginal `mean_in`/`mean_out`/`t_stat`/`p_raw`/
+   `p_fdr`, `is_split` (= `selected_by_lasso`, both flag a contributing
+   variant), `linked_sites` (the RE position(s)), and the joint `beta`/`se`/
+   `ci_lower`/`ci_upper`/`p`. Epigenetic peaks (flanks resolve the tree but the
+   RE is monomorphic) get a real H² with an empty variant table.
 
 5. `rule plot` -- produces `results/plots/{peak_id}.html` and `results/plots/{peak_id}.pdf`
    via `workflow/scripts/plot_tree_actuation_html.py`. Layout left → right:
@@ -163,17 +160,21 @@ Three Snakemake steps driven by a checkpoint:
    its 95% HPD**, alpha=0.25 flank when sensitivity ≥0.05 with `⚠`, and
    `⚠ unidentified` when the HPD spans >0.5 of [0,1] — i.e. the posterior is
    nearly flat and the point estimate is meaningless, distinct from
-   prior-sensitivity), the significant-split count, and the standard peak stats.
-   Each significant split (`is_split` rep with `p_fdr < 0.05`) is annotated on
-   the tree with a single horizontal segment at the split's branch and a
-   `Δ=… p_fdr=…` label (Δ = clade − sister, the local contrast; the joint LASSO
-   β + CI live in hover only). One annotation per node, each in its own color,
-   labels anchored to avoid the left edge near the root and staggered
-   above/below to avoid overlap. Linked variants (when a split's bipartition is
-   mirrored by an MSA SNP) are dashed-highlighted in the MSA in the split's
-   color. Light dotted leader lines run from each tip to the sample-name
-   column. The PCLAI column is shown only when `config["pclai_bed"]` points at a
-   valid bgzipped + tabix-indexed BED; otherwise it collapses to zero width.
+   prior-sensitivity), the contributing-variant count, and the standard peak
+   stats. Each contributing variant (`is_split`) is annotated at its **MSA
+   column** (top of the alignment panel) with a `β=… p=…` label + its
+   RE-relative position(s) — NOT on a tree branch, because a variant's carriers
+   are often not monophyletic (homoplasy / recurrent allele), so the column is
+   the reliable anchor. β is the JOINT contribution (a nested "removal" variant
+   shows negative β). The carriers' MSA column is dashed-highlighted and their
+   leader lines coloured to match; when the carriers happen to form a clade its
+   branch is also drawn in the same colour. Within each contiguous block of
+   IDENTICAL aligned sequences the rows are ordered by % actuation (high at top)
+   so the gradient inside a haplotype cluster is visible (leaf order is reordered
+   but y stays monotonic so the heatmaps render correctly). Light dotted leader
+   lines run from each tip to the sample-name column. The PCLAI column is shown
+   only when `config["pclai_bed"]` points at a valid bgzipped + tabix-indexed
+   BED; otherwise it collapses to zero width.
 
 ## Key implementation decisions
 

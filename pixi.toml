@@ -56,6 +56,20 @@ hap-selective-20 = { cmd = [
     "-j",
     "8",
 ] }
+# hap-selective-20 + 10 Genetically-haplotype-specific peaks chosen for HIGH
+# haplotype-sequence diversity (47, 22, 20, 19, 17, 11, 9, 8, 5, 3 unique RE
+# seqs) across 9 chromosomes — i.e. likely MULTI-variant drivers, to exercise
+# the forward-selection variant attribution. Pulled from the HSCA reference
+# table (`pixi run setup-hsca`); see config/hap_selective_30_peak_ids.txt.
+hap-selective-30 = { cmd = [
+    "snakemake",
+    "--config",
+    "peak_ids=config/hap_selective_30_peak_ids.txt",
+    "input_table=resources/hap-selective-30/hap-selective-30.bed.gz",
+    "min_seqs=1",
+    "-j",
+    "8",
+] }
 # 5 haplotype-selective peaks pulled from hyak's union-peaks-chm13.bed.gz via
 # tabix region query (see resources/hap-selective-5/README.md). 5 peaks x ~90
 # sample-haps = 450 rows. Source TSV:

@@ -92,11 +92,37 @@ BURNIN <- as.integer(if (is.null(opt$burnin)) 10000 else opt$burnin)
 THIN   <- as.integer(if (is.null(opt$thin))      25 else opt$thin)
 
 # ── load tree + actuation TSV ─────────────────────────────────────────────────
+# Midpoint-root to MATCH the plot's Bio.Phylo root_at_midpoint(). The rooting
+# decides which side of each edge is the reported "clade"; with an arbitrary
+# outgroup root that side can be the non-contiguous complement of the displayed
+# clade, which scatters the coloured leader lines and mis-places branch
+# annotations. (phangorn::midpoint isn't installed — root by hand at the
+# midpoint of the longest tip-to-tip path, the same definition Bio.Phylo uses.)
+midpoint_root <- function(tr) {
+    if (length(tr$tip.label) < 3L) return(tr)
+    D  <- cophenetic(tr)
+    mx <- which(D == max(D), arr.ind = TRUE)[1, ]
+    half <- D[mx[1], mx[2]] / 2
+    np <- ape::nodepath(tr, mx[1], mx[2])
+    el <- setNames(tr$edge.length, paste(tr$edge[, 1], tr$edge[, 2]))
+    cum <- 0
+    for (i in seq_len(length(np) - 1L)) {
+        a <- np[i]; b <- np[i + 1L]
+        e <- el[paste(a, b)]; if (is.na(e)) e <- el[paste(b, a)]
+        if (cum + e >= half) return(root(tr, node = b, resolve.root = TRUE))
+        cum <- cum + e
+    }
+    tr
+}
 tree <- read.tree(opt$tree)
 tree$tip.label <- gsub("^_R_", "", tree$tip.label)
-if (!is.rooted(tree)) {
-    tree <- root(tree, outgroup = tree$tip.label[1], resolve.root = TRUE)
-}
+tree <- tryCatch(midpoint_root(tree), error = function(e) {
+    if (!is.rooted(tree)) {
+        root(tree, outgroup = tree$tip.label[1], resolve.root = TRUE)
+    } else {
+        tree
+    }
+})
 zero_edges <- tree$edge.length <= 0
 if (any(zero_edges)) tree$edge.length[zero_edges] <- 1e-6
 tree$node.label <- NULL

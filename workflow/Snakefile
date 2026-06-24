@@ -142,8 +142,16 @@ files emitted by PARE's `extract_paralog_msas` rule).
     resources:
         mem_mb=32768,
         runtime=480,
+    params:
+        # Expose the scalar config the run block depends on as params so
+        # snakemake reruns the checkpoint when any of them change (a `run:`
+        # block doesn't track raw config reads — same gap as external scripts).
+        preextracted=config.get("preextracted_dir"),
+        min_seqs=config.get("min_seqs", 2),
+        primary_only=config.get("primary_only", True),
+        haplotype_distinct=config.get("haplotype_distinct"),
     run:
-        if config.get("preextracted_dir"):
+        if params.preextracted:
             n = _ingest_preextracted(Path(input.src), Path("results/fastas"))
             print(f"linked {n} pre-extracted FASTA/TSV pairs from {input.src}")
         else:
@@ -156,19 +164,19 @@ files emitted by PARE's `extract_paralog_msas` rule).
                 "| (sed -u 1q; sort -t$'\\t' -k5,5 -S 50%)",
                 f"| python {shlex.quote(str(input.script))}",
                 "--outdir results/fastas",
-                f"--min-seqs {config.get('min_seqs',2)}",
+                f"--min-seqs {params.min_seqs}",
             ]
-            if config.get("primary_only", True):
+            if params.primary_only:
                 parts.append("--primary-only")
-            if config.get("peak_ids"):
-                parts.append(f"--peak-ids {shlex.quote(str(config['peak_ids']))}")
-            if config.get("haplotype_distinct"):
+            if input.peak_ids:
+                parts.append(f"--peak-ids {shlex.quote(str(input.peak_ids[0]))}")
+            if params.haplotype_distinct:
                 parts.append(
-                    f"--haplotype-distinct {shlex.quote(str(config['haplotype_distinct']))}"
+                    f"--haplotype-distinct {shlex.quote(str(params.haplotype_distinct))}"
                 )
-            if config.get("highlight_file"):
+            if input.highlight:
                 parts.append(
-                    f"--highlight-file {shlex.quote(str(config['highlight_file']))}"
+                    f"--highlight-file {shlex.quote(str(input.highlight[0]))}"
                 )
             shell(" ".join(parts))
 

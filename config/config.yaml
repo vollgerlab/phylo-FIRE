@@ -37,6 +37,16 @@ min_coverage: 4
 flank: 250
 agc: "resources/HPRC_r2_assemblies_0.6.1.agc"
 
+# Heritability gate for variant attribution. phylo_mm fits H2_p on the RE-only
+# tree first; variants are attributed only when actuation is a stable + heritable
+# function of sequence. "Stable" = the 95% HPD is no wider than h2_hpd_width_max
+# (matches the plot's ⚠ unidentified flag). "Significant" = the HPD lower bound
+# is at least h2_hpd_lower_min (confidently heritable, not ~0). If the RE-only H2
+# fails, attribution expands to the whole (flanked) region and uses that H2
+# instead; if both fail, no drivers are reported.
+h2_hpd_width_max: 0.5
+h2_hpd_lower_min: 0.1
+
 # MAFFT parameters
 mafft_maxiterate: 1000
 

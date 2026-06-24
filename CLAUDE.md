@@ -100,24 +100,27 @@ Three Snakemake steps driven by a checkpoint:
    `workflow/scripts/phylo_mm.R`. Outputs `results/phylo_mm/{peak_id}.tsv` +
    `.pdf`. Three analyses:
 
-   - **H²ₚ multi-prior sensitivity.** Intercept-only MCMCglmm fit 3 times with
-     `alpha.V ∈ {1000, 1, 0.25}` on the phylogenetic random effect (PX prior;
-     marginal on σ_phylo is half-Cauchy with scale √alpha.V). Trait is
-     logit-transformed (with a coverage-derived offset for 0/1 saturation),
-     residual likelihood uses `mev = 1/(coverage · p · (1-p))` (binomial SE
-     on logit scale, the Hadfield 2010 meta-analysis trick), tree is
-     ultrametricized via `chronos()` before `inverseA`. Posterior summary
-     is median + 95% HPD. **Plot headline is the `alpha.V=1` fit** (Gelman 2006
-     default half-Cauchy(0,1) on σ_phylo); when the `alpha.V=0.25`
-     conservative-prior fit differs by ≥0.05 the plot shows
-     `H²ₚ=X.XX (α=0.25→Y.YY) ⚠` to flag prior dependence. `alpha.V=1000` is
-     retained in the TSV as a stress test but **not** in the headline:
-     on weakly-identified peaks (small n_unique, big within-cluster spread)
-     the wide half-Cauchy(0,~32) systematically inflates H²ₚ toward 1
-     without adding identification information. R prior stays at
-     `V=1, nu=0.002` (data-dominated); a `tightR` (V=1, nu=1) sensitivity
-     is computed in the diagnostic stderr but not surfaced — it introduces
-     bias on well-identified peaks where σ²_R is genuinely small.
+   - **H²ₚ — RE-only first, expand to whole region, and gate on it.** The
+     intercept-only MCMCglmm (`compute_h2`) is fit on TWO scopes: the **RE-only**
+     tree/alignment (`rule re_trim`→`re_iqtree`→`re_root_tree`: the same mafft
+     alignment sliced to the RE band, run through the identical encode→iqtree→
+     root pipeline) and the **whole flanked** tree. Each scope fits the
+     `alpha.V ∈ {1000, 1, 0.25}` (+ `tightR`) sensitivity (PX prior; logit trait
+     with coverage offset; `mev = 1/(cov·p·(1-p))`; `chronos()` then `inverseA`,
+     node labels stripped first). The clusters for σ²_R are by **that scope's**
+     sequence identity, so high-diversity peaks with big within-cluster
+     actuation spread come out unidentified (wide HPD). A fit is **heritable**
+     when its alpha.V=1 HPD width ≤ `h2_hpd_width_max` (0.5, identified) AND its
+     lower bound ≥ `h2_hpd_lower_min` (0.1, confidently > 0). **Attribution
+     mode**: RE if the RE-only H² is heritable → attribute **RE-band** variants;
+     else if the whole-region H² is heritable → mode `region`, attribute the
+     **whole-alignment** (RE + flank) variants; else mode `none` → no drivers
+     (e.g. chr22, both unidentified — identical RE sequences scatter 0.2–0.7 in
+     actuation, so it isn't sequence-driven). The headline `h2_alpha1_*` is the
+     winning scope's; `h2_re_*`, `h2_region_*`, `attribution_mode` carry both.
+     Thresholds are config params (`h2_hpd_width_max` / `h2_hpd_lower_min`). The
+     `.pdf` H² panel shows the winning scope. (At flank=0 the RE *is* the whole
+     alignment, so `_re_tree`/`_re_alignment` fall back to the main tree.)
 
    - **Variant attribution — forward-selection joint regression (headline).**
      The question is "given this heritable trait, which variants contribute?",

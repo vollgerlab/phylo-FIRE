@@ -348,6 +348,124 @@ every peak. Needs the alignment to compute the consensus.
         "Rscript {input.script} {input.treefile} {input.alignment} {output.rooted}"
 
 
+# ── RE-only tree (for the RE-only heritability test) ─────────────────────────
+# Same mafft alignment, sliced to the RE band, then run through the identical
+# encode → iqtree → root pipeline, so H²ₚ(RE) and H²ₚ(region) differ only in
+# scope. Only built when flank > 0 (with no flank, the RE *is* the whole
+# alignment and the main tree already serves — see `_re_tree`/`_re_alignment`).
+
+
+rule re_trim:
+    """Slice the flanked MSA down to the RE columns."""
+    input:
+        fa="results/aligned/{peak_id}.fa",
+        script=workflow.source_path("scripts/trim_to_re.py"),
+    output:
+        fa=temp("results/re/aligned/{peak_id}.fa"),
+    threads: 1
+    resources:
+        mem_mb=1024,
+        runtime=10,
+    params:
+        flank=config.get("flank", 0),
+    shell:
+        "python {input.script} --aln {input.fa} --flank {params.flank} --out {output.fa}"
+
+
+rule re_encode_indels:
+    """encode_indels on the RE-only alignment (mirrors rule encode_indels)."""
+    input:
+        fa="results/re/aligned/{peak_id}.fa",
+        script=workflow.source_path("scripts/encode_indels.py"),
+    output:
+        nex="results/re/coded/{peak_id}/{peak_id}.nex",
+        nuc="results/re/coded/{peak_id}/{peak_id}_nucleic.phy",
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=10,
+    params:
+        peak_id=lambda wc: wc.peak_id,
+        out_dir=lambda wc: f"results/re/coded/{wc.peak_id}",
+    shell:
+        """
+        python {input.script} \
+            --aligned {input.fa} \
+            --peak-id {params.peak_id} \
+            --out-dir {params.out_dir}
+        """
+
+
+rule re_iqtree:
+    """ML tree from the RE-only partitioned matrix (mirrors rule iqtree).
+
+The RE band can be (near-)monomorphic (epigenetic peaks), where IQ-TREE has
+<2 distinct sequences and errors. We fall back to the whole-region treefile
+then — phylo_mm sees the RE has <2 unique sequences and reports H²ₚ(RE) as
+unavailable regardless of the tree's topology, so the fallback only needs
+the right tip set.
+"""
+    input:
+        nex="results/re/coded/{peak_id}/{peak_id}.nex",
+        nuc="results/re/coded/{peak_id}/{peak_id}_nucleic.phy",
+        main_tree="results/trees/{peak_id}.treefile",
+    output:
+        treefile="results/re/trees/{peak_id}.treefile",
+    threads: 4
+    resources:
+        mem_mb=16384,
+        runtime=120,
+    params:
+        prefix=lambda wc: os.path.abspath(f"results/re/trees/{wc.peak_id}"),
+        peak_id=lambda wc: wc.peak_id,
+        bootstrap=lambda wc, input: (
+            "-B 1000" if count_unique_seqs_phylip(str(input.nuc)) >= 4 else ""
+        ),
+    shell:
+        """
+        if (cd $(dirname {input.nex}) && iqtree -p {params.peak_id}.nex \
+                --prefix {params.prefix} -T {threads} {params.bootstrap} --redo); then
+            find "$(dirname {params.prefix})" -maxdepth 1 \
+                -name "$(basename {params.prefix}).*" \
+                ! -name "$(basename {params.prefix}).treefile" -delete
+        else
+            echo "[re_iqtree] {params.peak_id}: IQ-TREE failed (monomorphic RE?); using main tree" >&2
+            cp {input.main_tree} {output.treefile}
+        fi
+        """
+
+
+rule re_root_tree:
+    """Ancestral-proxy root the RE-only tree (mirrors rule root_tree)."""
+    input:
+        treefile="results/re/trees/{peak_id}.treefile",
+        alignment="results/re/aligned/{peak_id}.fa",
+        script=workflow.source_path("scripts/root_tree.R"),
+    output:
+        rooted="results/re/trees/{peak_id}.rooted.nwk",
+    threads: 1
+    resources:
+        mem_mb=1024,
+        runtime=10,
+    shell:
+        "Rscript {input.script} {input.treefile} {input.alignment} {output.rooted}"
+
+
+def _re_tree(wildcards):
+    """RE-only rooted tree: the trimmed-then-rebuilt tree when flank>0, else
+    the main tree (with no flank the RE *is* the whole alignment)."""
+    if config.get("flank", 0) > 0:
+        return f"results/re/trees/{wildcards.peak_id}.rooted.nwk"
+    return f"results/trees/{wildcards.peak_id}.rooted.nwk"
+
+
+def _re_alignment(wildcards):
+    """RE-only alignment paired with `_re_tree`."""
+    if config.get("flank", 0) > 0:
+        return f"results/re/aligned/{wildcards.peak_id}.fa"
+    return f"results/aligned/{wildcards.peak_id}.fa"
+
+
 def _pclai_bed_for_plot(_wildcards):
     """Resolve the optional PCLAI bed path; only included as an input dep
     when configured AND present on disk so missing-data runs don't fail.
@@ -382,6 +500,8 @@ the three H²_p posterior densities + the selected-branch effect sizes.
         tree="results/trees/{peak_id}.rooted.nwk",
         actuation="results/fastas/{peak_id}.tsv",
         alignment="results/aligned/{peak_id}.fa",
+        re_tree=_re_tree,
+        re_alignment=_re_alignment,
         script=workflow.source_path("scripts/phylo_mm.R"),
     output:
         tsv="results/phylo_mm/{peak_id}.tsv",
@@ -393,17 +513,23 @@ the three H²_p posterior densities + the selected-branch effect sizes.
     params:
         min_cov=config.get("min_coverage", 4),
         flank=config.get("flank", 0),
+        h2_width_max=config.get("h2_hpd_width_max", 0.5),
+        h2_lower_min=config.get("h2_hpd_lower_min", 0.1),
     shell:
         """
         Rscript {input.script} \
             --tree      {input.tree} \
             --actuation {input.actuation} \
             --alignment {input.alignment} \
+            --re-tree      {input.re_tree} \
+            --re-alignment {input.re_alignment} \
             --tsv       {output.tsv} \
             --pdf       {output.pdf} \
             --peak-id   {wildcards.peak_id} \
             --min-cov   {params.min_cov} \
-            --flank     {params.flank}
+            --flank     {params.flank} \
+            --h2-width-max {params.h2_width_max} \
+            --h2-lower-min {params.h2_lower_min}
         """
 
 

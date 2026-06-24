@@ -1720,9 +1720,26 @@ def make_figure(
             if isinstance(h2_low, (int, float)) and (h2_main - h2_low) >= 0.05
             else ""
         )
-        summary_bits.append(
-            f"<b>H²<sub>p</sub></b>≈{h2_main:.2f}{hpd_str}{prior_str}{wide_flag}{conv_flag}"
-        )
+        # Attribution mode: which heritability test (RE-only first, then the
+        # whole region) was stable+significant and so gated the variant
+        # attribution. `none` = neither, so actuation isn't a heritable function
+        # of sequence here and no drivers are reported (the headline H² shown is
+        # the unidentified one).
+        mode = str(meta.get("attribution_mode", "")).strip()
+        if mode == "none":
+            re_m, rg_m = meta.get("h2_re_mean"), meta.get("h2_region_mean")
+            re_s = f"{re_m:.2f}" if isinstance(re_m, (int, float)) else "NA"
+            rg_s = f"{rg_m:.2f}" if isinstance(rg_m, (int, float)) else "NA"
+            summary_bits.append(
+                f"<b>H²<sub>p</sub></b> not sequence-driven "
+                f"(RE {re_s} ⚠, region {rg_s} ⚠){conv_flag}"
+            )
+        else:
+            scope = "RE" if mode == "RE" else ("region" if mode == "region" else "")
+            lbl = f"H²<sub>p</sub>({scope})" if scope else "H²<sub>p</sub>"
+            summary_bits.append(
+                f"<b>{lbl}</b>≈{h2_main:.2f}{hpd_str}{prior_str}{wide_flag}{conv_flag}"
+            )
     # Headline count = the variants the forward regression flagged as
     # contributing (drawn on the tree).
     summary_bits.append(f"<b>contributing variants</b>={len(sig)}")

@@ -91,6 +91,18 @@ MIN_COV <- as.numeric(if (is.null(opt[["min-cov"]])) 4 else opt[["min-cov"]])
 # the regulatory-element columns; the flanks only contribute to the tree.
 FLANK <- as.integer(if (is.null(opt$flank)) 0 else opt$flank)
 
+# Heritability gate for variant attribution (see config h2_hpd_*). A H²ₚ fit is
+# "stable + significant" — i.e. actuation is a heritable function of sequence —
+# when its 95% HPD is no wider than H2_WIDTH_MAX (identified) AND its lower bound
+# is at least H2_LOWER_MIN (confidently > 0). RE-only H² is tried first; if it
+# fails, the whole-region H² is used (and attribution widens to flank variants).
+H2_WIDTH_MAX <- as.numeric(if (is.null(opt[["h2-width-max"]])) 0.5 else opt[["h2-width-max"]])
+H2_LOWER_MIN <- as.numeric(if (is.null(opt[["h2-lower-min"]])) 0.1 else opt[["h2-lower-min"]])
+# RE-only tree + alignment (for the RE-only H²). Default to the whole-region
+# tree/alignment when not supplied (e.g. flank=0, where the RE *is* the whole).
+RE_TREE_PATH <- if (is.null(opt[["re-tree"]])) opt$tree else opt[["re-tree"]]
+RE_ALN_PATH  <- if (is.null(opt[["re-alignment"]])) opt$alignment else opt[["re-alignment"]]
+
 NITT   <- as.integer(if (is.null(opt$nitt))   50000 else opt$nitt)
 BURNIN <- as.integer(if (is.null(opt$burnin)) 10000 else opt$burnin)
 THIN   <- as.integer(if (is.null(opt$thin))      25 else opt$thin)
@@ -166,6 +178,15 @@ write_empty_header <- function(reason) {
         paste0("# h2_alpha025_upper=NA"),
         paste0("# h2_alpha1_ess=NA"),
         paste0("# h2_converged=NA"),
+        paste0("# h2_re_mean=NA"),
+        paste0("# h2_re_lower=NA"),
+        paste0("# h2_re_upper=NA"),
+        paste0("# h2_re_ok=NA"),
+        paste0("# h2_region_mean=NA"),
+        paste0("# h2_region_lower=NA"),
+        paste0("# h2_region_upper=NA"),
+        paste0("# h2_region_ok=NA"),
+        paste0("# attribution_mode=none"),
         paste0("# min_cov=", MIN_COV),
         paste0("# flank=", FLANK),
         paste0("# re_first_col=NA"),
@@ -241,107 +262,34 @@ re_hi <- if (is.null(re_cols)) (if (is.null(seq_mat)) 0L else ncol(seq_mat)) els
 # produce spurious weak associations anchored on a near-empty column.
 # Restricted to the RE band so neutral flank variation never drives the
 # site-based association — the flanks resolve the tree, the RE drives the test.
-var_cols <- if (is.null(seq_mat)) integer(0) else which(apply(seq_mat, 2, function(col) {
+var_cols_all <- if (is.null(seq_mat)) integer(0) else which(apply(seq_mat, 2, function(col) {
     real <- col %in% c("A", "C", "G", "T")
     length(unique(col)) >= 2L && mean(real) >= 0.5
 }))
-var_cols <- var_cols[var_cols >= re_lo & var_cols <= re_hi]
-cat(sprintf("[phylo_mm] %s RE band: cols %d-%d (flank=%d); %d variable RE sites\n",
-            peak_id, re_lo, re_hi, FLANK, length(var_cols)), file = stderr())
+var_cols_re <- var_cols_all[var_cols_all >= re_lo & var_cols_all <= re_hi]
+# `var_cols` (the candidates for attribution) is set AFTER the heritability gate
+# below: RE-band variants if the RE-only H² is heritable, the whole-alignment
+# variants if we expand to the region, none otherwise.
+cat(sprintf("[phylo_mm] %s RE band: cols %d-%d (flank=%d); %d variable RE sites (of %d total)\n",
+            peak_id, re_lo, re_hi, FLANK, length(var_cols_re), length(var_cols_all)),
+    file = stderr())
 
-# ── 1. Heritability sensitivity (three alpha priors) ──────────────────────────
-# Primer recipe applied here (per the Halliwell/de Villemereuil/Hadfield notes):
-#   - Logit-transform the bounded [0,1] trait with a coverage-derived offset
-#     so the Gaussian likelihood is on an unconstrained scale (`y_logit`).
-#   - Pass per-observation measurement-error variance (`mev`) so MCMCglmm
-#     properly downweights low-coverage observations rather than treating
-#     a 5-fiber proportion the same as a 50-fiber one. On the logit scale
-#     the binomial-sampling SE squared transforms by the delta method to
-#     1 / (n * p * (1-p)).
-#   - Run the model on an ultrametric tree (chronos) so the random-effect
-#     covariance matrix has interpretable depth and the prior on σ²_phylo
-#     applies to a consistent time scale across peaks.
-# These three changes don't affect the per-branch / LASSO sections (those
-# stay on the raw 0-1 actuation scale, which is what makes β values
-# directly readable as "actuation difference between clade and rest").
-
-# Ultrametrify the tree (used ONLY for the H² model). chronos can be
-# numerically fragile on near-zero branches — fall back to the original
-# phylogram if it errors.
-tree_ultra <- tryCatch(
-    suppressWarnings(chronos(tree, model = "correlated",
-                             control = chronos.control(tol = 1e-8))),
-    error = function(e) tree
-)
-
-# ── Identical-haplotype collapse (Option A) ────────────────────────────────
-# Cluster tips by EXACT aligned-sequence string (gaps count — only collapse
-# truly identical sequences, never gap-vs-base or differing-gap patterns).
-# Each cluster gets one rep tip in the collapsed tree; all members of the
-# cluster share that rep's name as their `animal` factor level in the MCMCglmm
-# data frame. Multiple observations of the same cluster contribute as
-# replicates: variation among them is absorbed by the Gaussian residual
-# (σ²_R), keeping σ²_animal as the strictly between-sequence variance.
-#
-# This fixes three problems on nearly-clonal haplotype trees: (1) inverse-A
-# was nearly singular for same-sequence tips, (2) σ²_animal was absorbing
-# within-cluster noise that should sit in σ²_R, and (3) the effective N
-# we report for H² should be N_unique not N_tips.
-aln_full_strings <- sapply(aln[common], function(s) s)   # exact, including gaps
-cluster_idx      <- match(aln_full_strings, unique(aln_full_strings))
-n_unique_seqs    <- max(cluster_idx)
-rep_per_cluster  <- common[!duplicated(cluster_idx)]      # one rep per cluster
-tip_to_rep       <- rep_per_cluster[cluster_idx]          # per-leaf rep name
-
-if (n_unique_seqs < 2L) {
-    write_empty_header(sprintf(
-        "monomorphic alignment — only %d unique sequence across %d tips",
-        n_unique_seqs, length(common)))
-    quit(status = 0)
-}
-
-tree_collapsed <- ape::keep.tip(tree_ultra, rep_per_cluster)
-inv_A <- inverseA(tree_collapsed, scale = TRUE)$Ainv
-
-# Logit trait + mev. eps offset: half a fiber's worth of probability,
-# floored by 1/(2 * max_cov) so we never collapse to numerical infinity.
-trait_eps <- max(1e-4, 0.5 / max(cov_vec[common], na.rm = TRUE))
-trait_clip <- pmin(pmax(trait[common], trait_eps), 1 - trait_eps)
-y_logit    <- qlogis(trait_clip)
-# Logit-scale measurement-error variance via the delta method.
-# var_logit ≈ var_raw / (p*(1-p))^2 = (p(1-p)/n) / (p(1-p))^2 = 1/(n*p*(1-p))
+# ── 1. Heritability — RE-only first, expand to whole region ───────────────────
+# H²ₚ is fit TWICE: on the RE-only tree/alignment (does actuation track the RE
+# sequence?) and on the whole flanked tree (does it track the broader region?).
+# Variant attribution is gated on these: RE-only first, expand to region only if
+# the RE fails but the region works, else no drivers. Recipe per fit (Halliwell/
+# de Villemereuil/Hadfield): logit-transform the [0,1] trait with a
+# coverage-derived offset; pass per-obs measurement-error variance `mev`
+# (binomial SE on the logit scale = 1/(n·p·(1-p))); fit on an ultrametric tree
+# (chronos). The shared trait prep:
 cov_used <- cov_vec[common]
-if (any(is.na(cov_used))) {
-    cov_used[is.na(cov_used)] <- median(cov_used, na.rm = TRUE)
-}
-mev_logit <- 1 / (cov_used * trait_clip * (1 - trait_clip))
+if (any(is.na(cov_used))) cov_used[is.na(cov_used)] <- median(cov_used, na.rm = TRUE)
+trait_eps  <- max(1e-4, 0.5 / max(cov_vec[common], na.rm = TRUE))
+trait_clip <- pmin(pmax(trait[common], trait_eps), 1 - trait_eps)
+y_logit    <- setNames(qlogis(trait_clip), common)
+mev_logit  <- setNames(1 / (cov_used * trait_clip * (1 - trait_clip)), common)
 
-mm_df <- data.frame(
-    animal    = tip_to_rep,                  # rep name (shared across cluster)
-    actuation = unname(y_logit),
-    mev       = unname(mev_logit),
-    stringsAsFactors = FALSE
-)
-mm_df$animal <- factor(mm_df$animal, levels = tree_collapsed$tip.label)
-
-fit_h2 <- function(alpha_V, r_nu = 0.002, r_V = 1) {
-    prior <- list(
-        R = list(V = r_V, nu = r_nu),
-        G = list(G1 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = alpha_V))
-    )
-    tryCatch(
-        MCMCglmm(actuation ~ 1, random = ~animal,
-                 ginverse = list(animal = inv_A),
-                 mev      = mm_df$mev,
-                 data     = mm_df, prior = prior,
-                 nitt = NITT, burnin = BURNIN, thin = THIN, verbose = FALSE),
-        error = function(e) NULL
-    )
-}
-
-# Posterior summary: median + 95% HPD plus the underlying σ² medians so we
-# can diagnose whether H² inflation is being driven by a shrinking σ²_R
-# (denominator collapse) vs. a genuinely large σ²_phylo (numerator growth).
 summarise_h2 <- function(fit) {
     if (is.null(fit)) return(list(median = NA_real_, lo = NA_real_, hi = NA_real_,
                                   ess = NA_real_, sigma_p = NA_real_, sigma_r = NA_real_))
@@ -349,66 +297,103 @@ summarise_h2 <- function(fit) {
     s_r <- fit$VCV[, "units"]
     h2  <- s_p / (s_p + s_r)
     ci  <- HPDinterval(h2, prob = 0.95)
-    list(
-        median  = median(h2),
-        lo      = ci[1],
-        hi      = ci[2],
-        ess     = unname(effectiveSize(h2)),
-        sigma_p = median(s_p),
-        sigma_r = median(s_r)
-    )
+    list(median = median(h2), lo = ci[1], hi = ci[2],
+         ess = unname(effectiveSize(h2)), sigma_p = median(s_p), sigma_r = median(s_r))
 }
 
-# ── Diagnostic: is mev overstated relative to within-cluster spread? ───────
-# If MEDIAN(mev) >> MEDIAN(within-cluster var(y_logit)), the model is being
-# told most residual noise is already "explained" → σ²_R shrinks → H² inflates.
-mev_q <- quantile(mm_df$mev, c(0.25, 0.5, 0.75), na.rm = TRUE)
-within_var <- tapply(mm_df$actuation, mm_df$animal,
-                     function(v) if (length(v) >= 2L) var(v) else NA_real_)
-within_var <- within_var[!is.na(within_var)]
-cat(sprintf(
-    "[phylo_mm] %s mev: q25=%.3f median=%.3f q75=%.3f  | within-cluster var(y_logit): n_rep_clusters=%d %s\n",
-    peak_id, mev_q[1], mev_q[2], mev_q[3], length(within_var),
-    if (length(within_var) > 0)
-        sprintf("median=%.3f range=[%.3f, %.3f]",
-                median(within_var), min(within_var), max(within_var))
-    else "(no replicated clusters — within-cluster σ²_R is unidentified)"
-), file = stderr())
+# Fit the H² sensitivity (3 alphas + tight-R) on a (tree, alignment) pair. The
+# alignment defines the identical-sequence CLUSTERS (within-cluster spread → the
+# residual σ²_R that, when large, makes H² unidentified); the tree gives the
+# phylogenetic covariance. `ok` = the alpha.V=1 headline is identified (HPD width
+# <= H2_WIDTH_MAX) AND significant (HPD lower >= H2_LOWER_MIN).
+compute_h2 <- function(tree_in, aln_in) {
+    # Drop IQ-TREE's bootstrap internal-node labels: they repeat (e.g. two nodes
+    # labelled "100"), and inverseA rejects non-unique tip/node labels. (Local
+    # copy — the plot's tree keeps its support labels.)
+    tree_in$node.label <- NULL
+    NA3 <- list(median = NA_real_, lo = NA_real_, hi = NA_real_, ess = NA_real_,
+                sigma_p = NA_real_, sigma_r = NA_real_)
+    fail <- list(n_unique = NA_integer_, ok = FALSE,
+                 a1000 = NA3, a1 = NA3, a025 = NA3, tightR = NA3, fits = list())
+    strings <- vapply(aln_in[common], function(s) s, character(1))
+    cidx <- match(strings, unique(strings))
+    n_unique <- max(cidx)
+    if (n_unique < 2L) { fail$n_unique <- n_unique; return(fail) }
+    reps <- common[!duplicated(cidx)]
+    tip_to_rep <- reps[cidx]
+    # Ultrametrify for inverseA(scale=TRUE); if chronos can't (fragile on
+    # near-zero RE branches) fall back to the raw tree with scale=FALSE, and if
+    # inverseA still fails treat this scope's H² as unavailable (→ ok=FALSE).
+    tree_ultra <- tryCatch(
+        suppressWarnings(chronos(tree_in, model = "correlated",
+                                 control = chronos.control(tol = 1e-8))),
+        error = function(e) NULL)
+    ultra_ok <- !is.null(tree_ultra)
+    if (!ultra_ok) tree_ultra <- tree_in
+    tcol <- ape::keep.tip(tree_ultra, reps)
+    invA <- tryCatch(inverseA(tcol, scale = ultra_ok)$Ainv,
+                     error = function(e) tryCatch(inverseA(tcol, scale = FALSE)$Ainv,
+                                                  error = function(e2) NULL))
+    if (is.null(invA)) { fail$n_unique <- n_unique; return(fail) }
+    df <- data.frame(animal = tip_to_rep, actuation = unname(y_logit[common]),
+                     mev = unname(mev_logit[common]), stringsAsFactors = FALSE)
+    df$animal <- factor(df$animal, levels = tcol$tip.label)
+    fit_h2 <- function(alpha_V, r_nu = 0.002, r_V = 1) {
+        prior <- list(R = list(V = r_V, nu = r_nu),
+                      G = list(G1 = list(V = 1, nu = 1, alpha.mu = 0, alpha.V = alpha_V)))
+        tryCatch(
+            MCMCglmm(actuation ~ 1, random = ~animal, ginverse = list(animal = invA),
+                     mev = df$mev, data = df, prior = prior,
+                     nitt = NITT, burnin = BURNIN, thin = THIN, verbose = FALSE),
+            error = function(e) NULL)
+    }
+    f1000 <- fit_h2(1000); f1 <- fit_h2(1); f025 <- fit_h2(0.25)
+    ftR   <- fit_h2(1, r_nu = 1, r_V = 1)
+    a1 <- summarise_h2(f1)
+    ok <- !is.na(a1$median) && (a1$hi - a1$lo) <= H2_WIDTH_MAX && a1$lo >= H2_LOWER_MIN
+    list(n_unique = n_unique, ok = ok, a1000 = summarise_h2(f1000), a1 = a1,
+         a025 = summarise_h2(f025), tightR = summarise_h2(ftR),
+         fits = list(a1000 = f1000, a1 = f1, a025 = f025))
+}
 
-fit_a1000 <- fit_h2(1000)
-fit_a1    <- fit_h2(1)
-fit_a025  <- fit_h2(0.25)
-# Tight-R sensitivity: same G prior as the default (alpha.V=1) but with an
-# informative R prior pinning σ²_R near 1 logit². If H² drops materially vs.
-# the default, R was being squeezed to zero by the weakly-informative nu=0.002.
-fit_a1_tightR <- fit_h2(1, r_nu = 1, r_V = 1)
-h2_1000   <- summarise_h2(fit_a1000)
-h2_1      <- summarise_h2(fit_a1)
-h2_025    <- summarise_h2(fit_a025)
-h2_tightR <- summarise_h2(fit_a1_tightR)
+# RE-only tree + alignment (the whole alignment/tree when flank=0).
+aln_re <- read_fasta(RE_ALN_PATH)
+aln_re <- aln_re[common]; aln_re <- aln_re[!sapply(aln_re, is.null)]
+re_tree <- read.tree(RE_TREE_PATH)
+re_tree$tip.label <- gsub("^_R_", "", re_tree$tip.label)
+re_tree <- tryCatch(keep.tip(re_tree, common), error = function(e) re_tree)
+
+h2_region <- compute_h2(tree, aln)
+h2_re     <- compute_h2(re_tree, aln_re)
+
+n_unique_seqs <- h2_region$n_unique
+if (n_unique_seqs < 2L) {
+    write_empty_header(sprintf(
+        "monomorphic alignment — only %d unique sequence across %d tips",
+        n_unique_seqs, length(common)))
+    quit(status = 0)
+}
+
+# ── Attribution mode: RE-only first, expand to whole region, else none ────────
+if (isTRUE(h2_re$ok)) {
+    attribution_mode <- "RE";     h2_head <- h2_re;     var_cols <- var_cols_re
+} else if (isTRUE(h2_region$ok)) {
+    attribution_mode <- "region"; h2_head <- h2_region; var_cols <- var_cols_all
+} else {
+    attribution_mode <- "none"
+    h2_head  <- if (!is.na(h2_re$a1$median)) h2_re else h2_region
+    var_cols <- integer(0)
+}
+# Headline H² (TSV h2_alpha1_* etc.) = whichever mode won.
+h2_1000 <- h2_head$a1000; h2_1 <- h2_head$a1
+h2_025  <- h2_head$a025;  h2_tightR <- h2_head$tightR
 cat(sprintf(
-    "[phylo_mm] %s H²: alpha=1000 -> %.3f [%.3f, %.3f]  alpha=1 -> %.3f [%.3f, %.3f]  alpha=0.25 -> %.3f [%.3f, %.3f]  alpha=1+tightR -> %.3f [%.3f, %.3f]\n",
+    "[phylo_mm] %s H² gate: RE %s (%.2f [%.2f,%.2f]) | region %s (%.2f [%.2f,%.2f]) -> mode=%s\n",
     peak_id,
-    h2_1000$median,   h2_1000$lo,   h2_1000$hi,
-    h2_1$median,      h2_1$lo,      h2_1$hi,
-    h2_025$median,    h2_025$lo,    h2_025$hi,
-    h2_tightR$median, h2_tightR$lo, h2_tightR$hi
-), file = stderr())
-cat(sprintf(
-    "[phylo_mm] %s σ²: alpha=1000 (σ²p=%.3f σ²r=%.3f)  alpha=1 (σ²p=%.3f σ²r=%.3f)  alpha=0.25 (σ²p=%.3f σ²r=%.3f)  alpha=1+tightR (σ²p=%.3f σ²r=%.3f)\n",
-    peak_id,
-    h2_1000$sigma_p,   h2_1000$sigma_r,
-    h2_1$sigma_p,      h2_1$sigma_r,
-    h2_025$sigma_p,    h2_025$sigma_r,
-    h2_tightR$sigma_p, h2_tightR$sigma_r
-), file = stderr())
-cat(sprintf(
-    "[phylo_mm] %s convergence: H²(alpha=1) ESS=%s -> %s (threshold %d)\n",
-    peak_id,
-    if (is.na(h2_1$ess)) "NA" else sprintf("%.0f", h2_1$ess),
-    if (!is.na(h2_1$ess) && h2_1$ess >= ESS_MIN) "CONVERGED" else "NOT CONVERGED",
-    ESS_MIN
-), file = stderr())
+    if (isTRUE(h2_re$ok)) "OK" else "fail", h2_re$a1$median, h2_re$a1$lo, h2_re$a1$hi,
+    if (isTRUE(h2_region$ok)) "OK" else "fail",
+    h2_region$a1$median, h2_region$a1$lo, h2_region$a1$hi,
+    attribution_mode), file = stderr())
 
 # ── 2. Per-branch coverage-weighted clade-vs-rest test (headline) ─────────────
 nTips <- length(tree$tip.label)
@@ -644,6 +629,17 @@ header <- c(
     paste0("# h2_alpha1_ess=",      if (is.na(h2_1$ess)) "NA" else round(h2_1$ess, 1)),
     paste0("# h2_converged=",
            if (!is.na(h2_1$ess) && h2_1$ess >= ESS_MIN) "TRUE" else "FALSE"),
+    # Both H² fits (alpha.V=1) + which one gated attribution. The headline
+    # h2_alpha1_* above is whichever mode won (h2_re if RE-driven, else region).
+    paste0("# h2_re_mean=",      round(h2_re$a1$median, 4)),
+    paste0("# h2_re_lower=",     round(h2_re$a1$lo,     4)),
+    paste0("# h2_re_upper=",     round(h2_re$a1$hi,     4)),
+    paste0("# h2_re_ok=",        if (isTRUE(h2_re$ok)) "TRUE" else "FALSE"),
+    paste0("# h2_region_mean=",  round(h2_region$a1$median, 4)),
+    paste0("# h2_region_lower=", round(h2_region$a1$lo,     4)),
+    paste0("# h2_region_upper=", round(h2_region$a1$hi,     4)),
+    paste0("# h2_region_ok=",    if (isTRUE(h2_region$ok)) "TRUE" else "FALSE"),
+    paste0("# attribution_mode=", attribution_mode),
     paste0("# min_cov=", MIN_COV),
     paste0("# flank=", FLANK),
     paste0("# re_first_col=", if (FLANK > 0L) re_lo else "NA"),
@@ -677,9 +673,13 @@ plot_h2 <- function(fit, label, color) {
                        ", ", sprintf("%.2f", HPDinterval(h2)[2]), "]"))
     abline(v = median(h2), lty = 2, col = color)
 }
-plot_h2(fit_a1000, "alpha.V=1000 (wide)",   "#1f77b4")
-plot_h2(fit_a1,    "alpha.V=1   (moderate)", "#2ca02c")
-plot_h2(fit_a025,  "alpha.V=0.25 (tight)",   "#d62728")
+# Posteriors for the WINNING H² mode (RE if it worked, else region) — per the
+# spec we only render the RE-only panels when the RE-only H² is the one used.
+.pdf_fits <- h2_head$fits
+.pdf_tag  <- sprintf(" [%s]", attribution_mode)
+plot_h2(.pdf_fits$a1000, paste0("alpha.V=1000 (wide)", .pdf_tag),   "#1f77b4")
+plot_h2(.pdf_fits$a1,    paste0("alpha.V=1 (moderate)", .pdf_tag),  "#2ca02c")
+plot_h2(.pdf_fits$a025,  paste0("alpha.V=0.25 (tight)", .pdf_tag),  "#d62728")
 
 # Bar plot of the contributing variants' joint β with CIs
 if (nrow(branch_df) > 0L && any(branch_df$selected_by_lasso)) {

@@ -483,6 +483,7 @@ def load_phylo_mm(path: Path) -> dict:
         rec["selected_by_lasso"] = (
             str(rec.get("selected_by_lasso", "")).upper() == "TRUE"
         )
+        rec["is_split"] = str(rec.get("is_split", "")).upper() == "TRUE"
         rec["descendants"] = tuple(
             d for d in rec.get("descendants", "").split(",") if d
         )
@@ -629,6 +630,33 @@ SIG_GROUP_PALETTE = [
     "#d62728", "#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e",
     "#17becf", "#e377c2", "#8c564b", "#bcbd22", "#7f7f7f",
 ]
+
+# BH-FDR threshold for ANNOTATING a selected branch on the tree.
+SIG_FDR = 0.05
+
+
+def _branch_is_sig(b: dict) -> bool:
+    """Draw a branch iff it's a split representative AND FDR-significant.
+
+    `is_split` marks the smaller daughter of each internal node — the single
+    representative of that node's sister-clade contrast (one test per split).
+    Gating on the headline p_fdr keeps only the splits whose two daughter
+    lineages actually differ in actuation, so the tree shows the few real
+    shifts rather than every clade that merely beats the global mean.
+    """
+    p = b.get("p_fdr")
+    return bool(b.get("is_split")) and isinstance(p, float) and p < SIG_FDR
+
+
+def _branch_group_key(b: dict) -> frozenset:
+    """Group identity = the branch's own clade (its descendant tip set).
+
+    Each significant selected branch is its own annotation. We no longer merge
+    branches by shared linked-variants: real clades (e.g. the ancestral/derived
+    split) frequently have NO linked variant, so a linked-variant key would
+    collapse every such clade into one group and draw only one of them.
+    """
+    return frozenset(b.get("descendants") or ())
 
 
 def make_figure(
@@ -861,11 +889,11 @@ def make_figure(
     # correspondence with on-tree annotations.
     _lasso_sig = [
         b for b in (phylo_mm or {}).get("branches") or []
-        if b.get("selected_by_lasso")
+        if _branch_is_sig(b)
     ]
     _groups_by_key: dict[frozenset, list[dict]] = {}
     for _rec in _lasso_sig:
-        _key = frozenset(_rec.get("linked_sites") or ())
+        _key = _branch_group_key(_rec)
         _groups_by_key.setdefault(_key, []).append(_rec)
     def _gkey_p(ms: list[dict]) -> float:
         _ps = [m.get("p_fdr") for m in ms if isinstance(m.get("p_fdr"), float)]
@@ -964,16 +992,15 @@ def make_figure(
     # below and by the header-summary block lower down).
     pm = phylo_mm or {"meta": {}, "branches": []}
     pm_branches = pm.get("branches") or []
-    # Headline branches = the set LASSO jointly selected (lambda.min).
-    # LASSO naturally collapses nested correlated branches to one
-    # representative each, so the headline set is normally a small,
-    # biologically meaningful list. The per-branch Welch t-test results
-    # remain in the TSV as a diagnostic but are not used here for filtering.
-    sig = [b for b in pm_branches if b.get("selected_by_lasso")]
+    # Headline branches = significant SPLITS: each internal node's smaller
+    # daughter (`is_split`) whose sister-clade contrast clears BH-FDR < 0.05.
+    # One annotation per node, so the set is naturally small and each Δ is a
+    # local (clade-vs-sister) effect with no joint-β sign instability.
+    sig = [b for b in pm_branches if _branch_is_sig(b)]
     significant = bool(sig)
 
-    # ── 1c. Significant-branches overlay (phylo_mm) ──────────────────────────
-    # Group FDR-significant branches by their *linked-variants set*. Each
+    # ── 1c. Significant-splits overlay (phylo_mm) ────────────────────────────
+    # Each significant split is its own annotation (keyed by its clade). Each
     # group represents one biological signal — possibly detected at several
     # nested resolutions on the tree. Each group gets its own palette color;
     # the most-significant member of each group is drawn thick + annotated;
@@ -1055,7 +1082,7 @@ def make_figure(
     # not explained by any visible SNP).
     sig_groups: dict[frozenset, list[dict]] = {}
     for rec in sig:
-        key = frozenset(rec.get("linked_sites") or ())
+        key = _branch_group_key(rec)
         sig_groups.setdefault(key, []).append(rec)
 
     # Order groups by per-branch BH-FDR (smallest first). p_fdr is the
@@ -1070,8 +1097,16 @@ def make_figure(
     )
     # Colour assignment: index 0 → red (TOP_SNP_COLOR), then cycle through palette.
     group_color: dict[frozenset, str] = {}
+    # Linked MSA sites per group (from its representative) — group identity is
+    # now the clade, so the linked variants for labels / MSA highlighting come
+    # off the branch record, not the group key.
+    group_links: dict[frozenset, frozenset] = {}
     for i, (key, _members) in enumerate(sorted_groups):
         group_color[key] = SIG_GROUP_PALETTE[i % len(SIG_GROUP_PALETTE)]
+        _ls: set = set()
+        for _m in _members:
+            _ls.update(_m.get("linked_sites") or ())
+        group_links[key] = frozenset(_ls)
 
     # Helper for compact p-value formatting (None → "NA").
     def _fmt_p(p):
@@ -1080,11 +1115,9 @@ def make_figure(
         return f"{b:+.2f}" if isinstance(b, float) else "NA"
     def _marginal_delta(rec: dict) -> float | None:
         """Raw-actuation Δ = mean_in − mean_out from the coverage-weighted
-        per-branch scan. mean_out is conditional on the LASSO significance
-        hierarchy: the rest of the innermost LASSO-selected clade that contains
-        this branch (its incremental effect within the signal), or the rest of
-        the tree when no selected clade is above it (its overall effect). This
-        makes Δ a conditional effect that tracks the LASSO joint β.
+        per-split scan. mean_out is the clade's SISTER subtree (the other
+        daughter of its parent node), so Δ is the local contrast: how much this
+        lineage's actuation differs from the one it split from.
         """
         mi, mo = rec.get("mean_in"), rec.get("mean_out")
         if isinstance(mi, float) and isinstance(mo, float):
@@ -1092,7 +1125,7 @@ def make_figure(
         return None
 
     # Draw branches per group.
-    for key, members in sorted_groups:
+    for _gi, (key, members) in enumerate(sorted_groups):
         color = group_color[key]
         # Pick the representative within the group:
         #   1. Prefer a member that carries linked variants (the
@@ -1116,7 +1149,10 @@ def make_figure(
         seg = _find_branch_endpoints(rep)
         if seg is not None:
             px, cx, py = seg
-            sorted_sites = [_site_label(s) for s in sorted(key, key=int)] if key else []
+            links = group_links.get(key, frozenset())
+            sorted_sites = (
+                [_site_label(s) for s in sorted(links, key=int)] if links else []
+            )
             linked_str_full = ", ".join(sorted_sites) if sorted_sites else "none"
             if len(sorted_sites) <= 4:
                 linked_str_short = (
@@ -1142,10 +1178,10 @@ def make_figure(
                 if isinstance(mi, float) and isinstance(mo, float)
                 else ""
             )
-            # Headline p = per-branch coverage-weighted test BH-FDR. The branch
-            # tests are over *pre-specified* (sequence-defined) bipartitions
-            # — no double-dipping. selectiveInference's post-LASSO p (in
-            # `sel_p`) is shown as a secondary hover field.
+            # Headline = Δ (clade vs SISTER, raw actuation) + its BH-FDR p, the
+            # sister-clade contrast. β/CI from the LASSO+selectiveInference fit
+            # are secondary (joint effect, may differ in sign when correlated
+            # clades are co-selected) and live in hover only.
             head_p = rep.get("p_fdr")
             fig.add_trace(go.Scatter(
                 x=[px, cx], y=[py, py],
@@ -1153,31 +1189,42 @@ def make_figure(
                 line=dict(color=color, width=3.0),
                 hoverinfo="text",
                 hovertext=(
-                    f"<b>LASSO-selected branch</b>  n={rep['n_below']}<br>"
+                    f"<b>Split: clade vs sister</b>  n={rep['n_below']}<br>"
                     f"{means_str}"
-                    f"<b>Δ</b> (marginal, raw actuation) = {_fmt_beta(delta)}<br>"
-                    f"<b>β</b> (joint post-LASSO) = {_fmt_beta(beta)}{ci_str}<br>"
+                    f"<b>Δ</b> (clade − sister, raw actuation) = {_fmt_beta(delta)}<br>"
                     f"<b>p_fdr</b> (cov-weighted + BH) = {_fmt_p(head_p)}<br>"
-                    f"<i>aux: post-selection p = {_fmt_p(sel_p)}</i><br>"
-                    f"linked sites: {linked_str_full}<br>"
-                    f"group members: {len(members)}"
+                    f"<i>aux: joint β (LASSO+SI) = {_fmt_beta(beta)}{ci_str}, "
+                    f"post-selection p = {_fmt_p(sel_p)}</i><br>"
+                    f"linked sites: {linked_str_full}"
                 ),
                 name=(
-                    f"Δ={_fmt_beta(delta)} β={_fmt_beta(beta)} "
-                    f"p_fdr={_fmt_p(head_p)} sites: {linked_str_short}"
+                    f"Δ={_fmt_beta(delta)} p_fdr={_fmt_p(head_p)} "
+                    f"sites: {linked_str_short}"
                 ),
                 legendgroup=f"sig_group_{id(key)}",
                 showlegend=True,
                 xaxis="x1", yaxis="y1",
             ))
+            # Place the label at the branch midpoint, but anchor it so it never
+            # runs off the left edge for root-proximal branches (small x), and
+            # alternate it above/below the branch line to cut overlap between
+            # nearby splits.
+            _mid = (px + cx) / 2.0
+            if _mid < 0.18 * max_depth:
+                _xanchor = "left"
+            elif _mid > 0.82 * max_depth:
+                _xanchor = "right"
+            else:
+                _xanchor = "center"
             fig.add_annotation(
-                x=(px + cx) / 2.0, y=py,
+                x=_mid, y=py,
                 xref="x1", yref="y1",
+                xanchor=_xanchor,
                 text=(
-                    f"<b>Δ={_fmt_beta(delta)}  β={_fmt_beta(beta)}</b>  "
-                    f"p_fdr={_fmt_p(head_p)}"
+                    f"<b>Δ={_fmt_beta(delta)}</b>  p_fdr={_fmt_p(head_p)}"
                 ),
-                showarrow=False, yshift=-10,
+                showarrow=False,
+                yshift=11 if (_gi % 2) else -11,
                 font=dict(size=9, color=color),
                 bgcolor="rgba(255,255,255,0.85)",
                 bordercolor=color, borderwidth=0.5,
@@ -1400,7 +1447,7 @@ def make_figure(
     if significant:
         for key, _members in sorted_groups:
             color = group_color[key]
-            for s in key:
+            for s in group_links.get(key, frozenset()):
                 try:
                     c = int(s) - 1
                 except (TypeError, ValueError):
@@ -1621,10 +1668,10 @@ def make_figure(
         summary_bits.append(
             f"<b>H²<sub>p</sub></b>≈{h2_main:.2f}{hpd_str}{prior_str}{wide_flag}{conv_flag}"
         )
-    # LASSO-selected branch count (headline).
-    n_sel = meta.get("n_branches_selected")
-    if isinstance(n_sel, (int, float)):
-        summary_bits.append(f"<b>sig branches</b>={int(n_sel)}")
+    # Annotated branch count (headline) = LASSO-selected AND FDR-significant,
+    # i.e. the branches actually drawn on the tree (not the raw LASSO count,
+    # which over-selects correlated clades).
+    summary_bits.append(f"<b>sig branches</b>={len(sig)}")
     summary_text = "  ·  ".join(summary_bits)
     # Title left-aligned, summary stats just under it.
     fig.add_annotation(

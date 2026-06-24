@@ -16,24 +16,28 @@
 #    peak (typical of nearly-clonal short-haplotype trees — see
 #    Hadfield 2015 MEE for the underlying identifiability issue).
 #
-# 2. **LASSO joint branch selection — branch annotation.**
-#    For each sequence-anchored bipartition (one mirrored by >=1 polymorphic
-#    MSA column) we build a binary indicator over tips. cv.glmnet (alpha=1,
-#    family=gaussian, lambda.min) picks the minimal set of branches that
-#    *jointly* explain actuation variance, collapsing correlated nested
-#    branches to one representative each. selectiveInference::fixedLassoInf
-#    then gives valid post-selection beta + CI for the selected set (OLS
-#    fallback when the polyhedral check fails). LASSO+SI supply the *effect
-#    size* shown on the plot; they are NOT the headline p-value.
+# 2. **Per-split sister-clade contrast — headline inference + annotation.**
+#    Each internal node defines a split into two daughter subtrees. For the
+#    SMALLER daughter (the split's representative, `is_split`) we run a
+#    coverage-weighted WLS contrast of actuation against its SISTER subtree
+#    (the other daughter), NOT against the rest of the tree. This is the local
+#    phylogenetic contrast — "does this lineage differ from the one it just
+#    split from?" — so a clade that looks significant only because the global
+#    mean lumps in a distant high/low clade is correctly NOT significant. BH
+#    FDR is over the split representatives (one test per node). p_fdr is the
+#    headline p; Δ = mean_in − mean_out (clade − sister) is the headline
+#    effect. The plot draws splits with p_fdr < 0.05.
 #
-# 3. **Per-branch coverage-weighted clade-vs-rest scan — headline inference.**
-#    For each non-trivial bipartition: a WLS clade-vs-rest test of actuation
-#    (weights = per-leaf coverage; leaves below `--min-cov` fibers are dropped
-#    from the test), then BH FDR. The bipartitions are pre-specified by the
-#    (sequence-derived) tree topology, so this is multiple-testing over fixed
-#    hypotheses, not double-dipping; p_fdr is the headline p the plot
-#    annotates. The linked-variants column lists MSA positions whose allele
-#    pattern matches that bipartition exactly.
+# 3. **LASSO joint branch selection — secondary effect size.**
+#    For each clean bipartition (a split no identical-sequence cluster
+#    straddles), cv.glmnet (alpha=1, family=gaussian, lambda.min) +
+#    selectiveInference::fixedLassoInf give a joint post-selection β + CI,
+#    retained in the TSV (`beta`/`ci_*`/`selected_by_lasso`) and the plot
+#    hover as a secondary effect-size view. This NO LONGER drives the
+#    comparison or which branches are annotated (the sister contrast in 2
+#    does), because the joint β over correlated nested clades is unstable
+#    (can sign-flip vs the marginal Δ). The linked-variants column lists MSA
+#    positions whose allele pattern matches a bipartition exactly.
 #
 # Usage:
 #   Rscript phylo_mm.R \
@@ -142,7 +146,7 @@ common <- intersect(tree$tip.label, names(trait))
 
 empty_branch_cols <- c(
     "branch_id", "n_below", "descendants",
-    "mean_in", "mean_out", "t_stat", "p_raw", "p_fdr", "linked_sites",
+    "mean_in", "mean_out", "t_stat", "p_raw", "p_fdr", "is_split", "linked_sites",
     "selected_by_lasso", "lasso_coef",
     "beta", "se", "ci_lower", "ci_upper", "p"
 )
@@ -449,11 +453,12 @@ if (n_branches_raw == 0L) {
 X <- do.call(cbind, X_cols)
 rownames(X) <- tree$tip.label
 
-# ── RE-anchoring: which RE variants exactly mirror each bipartition ──────────
-# RE-anchored = `linked` non-empty. This drives the LASSO candidate set AND
-# which branches get a p-value. The COMPARISON GROUP for each branch's test is
-# decided after the LASSO (below), conditional on the significance hierarchy —
-# so we only need the linked sites here.
+# ── Linked sites: which RE variants exactly mirror each bipartition ──────────
+# `linked` non-empty = the clade is variant-anchored; this drives only the
+# linked-site ANNOTATION now (the testable set is the clean-partition filter
+# below, which also admits clades no single variant mirrors). The COMPARISON
+# GROUP for each branch's test is decided after the LASSO (below), conditional
+# on the significance hierarchy — so we only need the linked sites here.
 linked_list <- vector("list", length(br_meta))
 for (i in seq_along(br_meta)) {
     indicator <- X[, i] == 1L
@@ -477,25 +482,32 @@ for (i in seq_along(br_meta)) {
 }
 
 # ── 3. LASSO joint branch selection ───────────────────────────────────────────
-# Restrict the design matrix to **sequence-anchored bipartitions**: branches
-# whose in/out partition is mirrored by at least one polymorphic MSA column
-# (i.e., `linked_sites` non-empty in the per-branch scan). This prevents
-# LASSO from picking spurious within-identical-cluster bipartitions that
-# IQ-TREE has to arbitrarily resolve when sequences are tied. On chr17
-# (only 1 variable site) this collapses the candidate set to exactly the
-# one biologically-meaningful bipartition; on richer peaks the filter is
-# permissive (any branch backed by ≥1 perfect-match SNP qualifies).
+# Restrict the design matrix to **clean bipartitions**: splits that no
+# identical-sequence cluster straddles (i.e. real bipartitions of the
+# collapsed / unique-sequence tree). This keeps every monophyletic clade the
+# sequence data actually support — including the {ancestral | derived} split
+# and other clades that NO single variant mirrors (e.g. the reference allele
+# vs. a set of independently-derived haplotypes) — while still discarding the
+# spurious within-identical-cluster branches IQ-TREE has to resolve arbitrarily
+# when sequences are tied (those put one cluster on both sides, so they're not
+# clean). Variant-anchored branches (`linked_per_branch`) are a strict subset
+# of clean ones; `linked_list` still drives the linked-site annotation below.
 # After filtering, we deduplicate identical columns (perfectly nested
 # bipartitions that share the same indicator vector).
 linked_per_branch <- vapply(linked_list, function(l) length(l) > 0L, logical(1))
-seq_anchored <- linked_per_branch
+cluster_by_tip <- cluster_idx[match(tree$tip.label, common)]
+clean_partition <- vapply(seq_len(ncol(X)), function(i) {
+    ingroup <- X[, i] == 1L
+    length(intersect(cluster_by_tip[ingroup], cluster_by_tip[!ingroup])) == 0L
+}, logical(1))
+seq_anchored <- clean_partition
 n_filtered_out <- sum(!seq_anchored)
 if (any(seq_anchored)) {
     X_seq <- X[, seq_anchored, drop = FALSE]
     br_meta_seq <- br_meta[seq_anchored]
 } else {
-    # No sequence-anchored bipartition — leave the design empty so LASSO
-    # selects 0 branches (will hit the n_branches_selected=0 branch below).
+    # No clean bipartition — leave the design empty so LASSO selects 0 branches
+    # (will hit the n_branches_selected=0 branch below).
     X_seq <- X[, integer(0), drop = FALSE]
     br_meta_seq <- list()
 }
@@ -512,10 +524,26 @@ col_keys <- if (ncol(X_seq) > 0L) apply(X_seq, 2, canon_key) else character(0)
 unique_idx <- !duplicated(col_keys)
 X_uniq <- X_seq[, unique_idx, drop = FALSE]
 br_meta_uniq <- br_meta_seq[unique_idx]
+# Drop linearly-dependent clades. Tree clades are inherently collinear: a
+# parent indicator equals the sum of its children's (P = A ∪ B disjoint), so
+# {intercept, A, B, P} is rank-deficient. Left in, this makes cv.glmnet spray
+# coefficients across the redundant set (over-selection) and fails
+# fixedLassoInf's polyhedral check (→ invalid OLS fallback). QR with the
+# intercept keeps a maximal independent set, preferring larger (more basal)
+# clades — so the {ancestral | derived} split survives and the redundant
+# children it subsumes drop out.
+if (ncol(X_uniq) > 1L) {
+    qrX  <- qr(cbind(1, X_uniq))
+    keep <- qrX$pivot[seq_len(qrX$rank)]
+    keep <- keep[keep > 1L] - 1L          # drop intercept column, reindex
+    keep <- sort(keep)
+    X_uniq <- X_uniq[, keep, drop = FALSE]
+    br_meta_uniq <- br_meta_uniq[keep]
+}
 if (ncol(X_uniq) > 0L) {
     colnames(X_uniq) <- paste0("br", sapply(br_meta_uniq, function(m) m$node))
 }
-cat(sprintf("[phylo_mm] %s LASSO design: %d branches passed sequence-anchor filter (%d filtered out), %d unique cols\n",
+cat(sprintf("[phylo_mm] %s LASSO design: %d clean bipartitions (%d within-cluster splits filtered out), %d independent cols\n",
             peak_id, sum(seq_anchored), n_filtered_out, ncol(X_uniq)),
     file = stderr())
 
@@ -618,14 +646,24 @@ if (ncol(X_uniq) == 1L && length(y) >= 4L) {
                 # estimates + CIs. p-values are flagged as naive in the
                 # header (`inference_method=ols_fallback`); consumers
                 # should treat them as descriptive, not confirmatory.
+                # A selected parent clade can equal the union of its selected
+                # children (indicator_parent = indicator_A + indicator_B), so
+                # the OLS design is rank-deficient and lm() drops the aliased
+                # column(s). Match coefficients back by name and keep only the
+                # branches lm actually estimated.
                 X_sel <- X_uniq[, sel_cols, drop = FALSE]
-                ols_df <- data.frame(y = y, X_sel)
+                colnames(X_sel) <- paste0("v", seq_along(sel_cols))
+                ols_df <- data.frame(y = y, X_sel, check.names = FALSE)
                 ols_fit <- lm(y ~ ., data = ols_df)
-                sm <- summary(ols_fit)$coefficients[-1, , drop = FALSE]
-                ci_ols <- confint(ols_fit)[-1, , drop = FALSE]
+                est <- coef(ols_fit)
+                est <- est[names(est) != "(Intercept)"]
+                kept_names <- names(est)[!is.na(est)]   # non-aliased predictors
+                kept_idx <- match(kept_names, colnames(X_sel))
+                sm <- summary(ols_fit)$coefficients[kept_names, , drop = FALSE]
+                ci_ols <- confint(ols_fit)[kept_names, , drop = FALSE]
                 inference_table <- data.frame(
-                    branch_id  = selected_branch_ids,
-                    lasso_coef = coefs_lasso[sel_cols],
+                    branch_id  = selected_branch_ids[kept_idx],
+                    lasso_coef = coefs_lasso[sel_cols][kept_idx],
                     beta       = sm[, "Estimate"],
                     se         = sm[, "Std. Error"],
                     ci_lower   = ci_ols[, 1],
@@ -633,6 +671,7 @@ if (ncol(X_uniq) == 1L && length(y) >= 4L) {
                     p          = sm[, "Pr(>|t|)"],
                     stringsAsFactors = FALSE
                 )
+                selected_branch_ids <- inference_table$branch_id
                 inference_method <- "ols_fallback"
             }
         }
@@ -644,59 +683,60 @@ cat(sprintf("[phylo_mm] %s LASSO selected %d branches (lambda.min=%.4g, %d uniqu
             lasso_lambda_used, ncol(X_uniq), inference_method),
     file = stderr())
 
-# ── Per-branch test, conditional on the LASSO significance hierarchy ──────────
-# Comparison group ("out") for a branch B with tip set B_tips:
-#   - if a LASSO-selected clade STRICTLY contains B, the innermost such clade
-#     minus B_tips — B is tested against the rest of the significant clade it
-#     sits in (its *incremental* effect within the signal); else
-#   - the rest of the tree — B is a top-level signal (no significant clade
-#     above it), tested for its overall effect.
-# Falls back to vs-rest when the conditional remainder has <2 testable tips.
-# Using the LASSO selection as the hierarchy (rather than the p-values
-# themselves) avoids circularity, and makes the marginal Δ a CONDITIONAL effect
-# that aligns with the LASSO joint β instead of depending on an arbitrary
-# tree-sibling. Coverage-weighted WLS, min-coverage floor, RE-anchored only.
-node_to_desc <- setNames(
-    lapply(br_meta, function(m) m$desc),
-    vapply(br_meta, function(m) as.character(m$node), character(1)))
-sel_desc  <- node_to_desc[as.character(selected_branch_ids)]
-all_tips  <- tree$tip.label
-comparison_tips <- function(B_tips) {
-    # Innermost selected clade that contains B. A selected bipartition has TWO
-    # sides (clade + complement); we take whichever side B sits in. (The root
-    # split is one bipartition with two clades — the canonical dedup keeps only
-    # one side as `sel_desc`, so without checking the complement a branch on the
-    # OTHER side would lose its container.) Smallest containing side wins; else
-    # B is a top-level signal → vs the rest of the tree.
-    best <- NULL; best_n <- Inf
-    for (sd in sel_desc) {
-        in_sd <- B_tips %in% sd
-        if (all(in_sd)) {
-            side <- sd
-        } else if (!any(in_sd)) {
-            side <- setdiff(all_tips, sd)       # B is in the complement side
-        } else {
-            next                                 # B straddles this split
-        }
-        if (length(side) > length(B_tips) && length(side) < best_n) {
-            best <- side; best_n <- length(side)
-        }
-    }
-    if (!is.null(best)) setdiff(best, B_tips) else setdiff(all_tips, B_tips)
+# ── Per-split test: each clade vs its SISTER (the rest of its parent) ─────────
+# Comparison group ("out") for a clade B is its sibling subtree(s) — the other
+# child/children of B's parent node — NOT the rest of the tree. This is the
+# local phylogenetic contrast: "does this lineage differ from the sister
+# lineage it just split from?" A clade that looks significant only because the
+# whole-tree baseline lumps in a distant high/low-actuation clade is NOT
+# significant against its own sister, so the headline collapses from "every
+# clade that beats the global mean" to the few real shifts. Each internal node
+# (split) is represented ONCE by its SMALLER daughter clade (`is_split`), and
+# the BH-FDR is over those representatives (one test per split). The LASSO/SI
+# block above still runs and fills the secondary β/CI columns, but no longer
+# drives the comparison or the annotation. Coverage-weighted WLS, min-cov floor.
+all_tips <- tree$tip.label
+parent_node <- function(node) {
+    p <- tree$edge[tree$edge[, 2] == node, 1]
+    if (length(p)) p[1] else NA_integer_
 }
+child_nodes <- function(node) tree$edge[tree$edge[, 1] == node, 2]
+node_tips <- function(node) {
+    if (node <= nTips) tree$tip.label[node] else extract.clade(tree, node)$tip.label
+}
+node_ntips <- function(node) if (node <= nTips) 1L else length(node_tips(node))
 
 rows <- list()
 for (i in seq_along(br_meta)) {
     meta   <- br_meta[[i]]
     linked <- linked_list[[i]]
-    in_clade <- tree$tip.label %in% meta$desc
-    in_out   <- tree$tip.label %in% comparison_tips(meta$desc)
-    if (sum(in_out & cov_ok) < 2L) in_out <- !in_clade   # fall back to vs-rest
+    node   <- meta$node
+    par    <- parent_node(node)
+    sibs   <- if (is.na(par)) integer(0) else setdiff(child_nodes(par), node)
+    sister_tips <- if (length(sibs)) unlist(lapply(sibs, node_tips)) else character(0)
+
+    in_clade <- all_tips %in% meta$desc
+    in_out   <- all_tips %in% sister_tips
     in_ok  <- in_clade & cov_ok
     out_ok <- in_out   & cov_ok
+
+    # One annotation per split: the clade is its parent's representative iff it
+    # is the smallest daughter (fewest tips; ties broken by lowest node id).
+    kids      <- c(node, sibs)
+    kid_sizes <- vapply(kids, node_ntips, integer(1))
+    is_rep    <- length(sibs) > 0L && node == kids[order(kid_sizes, kids)][1]
+
     mean_in <- mean_out <- t_stat <- p_raw <- NA_real_
-    if (length(linked) > 0L && sum(in_ok) >= 2L && sum(out_ok) >= 2L) {
-        sub <- in_ok | out_ok                # restrict the test to clade ∪ out
+    # Test a split iff both daughters have >=2 covered leaves AND the contrast
+    # spans >=2 distinct sequence clusters — this skips the arbitrary
+    # within-identical-cluster resolutions (daughters are the same sequence →
+    # Δ≈0) without dropping real splits where one identical leaf happens to sit
+    # on the sister side (which `clean_partition`, built for the LASSO, would
+    # wrongly reject — e.g. this peak's ancestral/derived root split).
+    n_clusters <- length(unique(cluster_by_tip[in_ok | out_ok]))
+    testable <- n_clusters >= 2L && sum(in_ok) >= 2L && sum(out_ok) >= 2L
+    if (testable) {
+        sub <- in_ok | out_ok                # restrict the test to clade ∪ sister
         yk  <- y[sub]; ind_k <- in_clade[sub]; wk <- w_cov[sub]
         fit <- tryCatch(lm(yk ~ ind_k, weights = wk), error = function(e) NULL)
         if (!is.null(fit)) {
@@ -710,18 +750,25 @@ for (i in seq_along(br_meta)) {
         }
     }
     rows[[length(rows) + 1L]] <- list(
-        branch_id    = meta$node,
+        branch_id    = node,
         n_below      = meta$n_below,
         descendants  = paste(meta$desc, collapse = ","),
         mean_in      = mean_in,
         mean_out     = mean_out,
         t_stat       = t_stat,
         p_raw        = p_raw,
+        is_split     = isTRUE(is_rep) && testable,
         linked_sites = paste(linked, collapse = ",")
     )
 }
 branch_df <- do.call(rbind, lapply(rows, as.data.frame))
-branch_df$p_fdr <- p.adjust(branch_df$p_raw, method = "BH")
+# BH-FDR over the split representatives only (one test per internal node), so
+# the correction reflects the number of distinct splits, not every clade.
+branch_df$p_fdr <- NA_real_
+rep_mask <- branch_df$is_split & !is.na(branch_df$p_raw)
+if (any(rep_mask)) {
+    branch_df$p_fdr[rep_mask] <- p.adjust(branch_df$p_raw[rep_mask], method = "BH")
+}
 
 # ── Annotate branch_df with LASSO selection + inference columns ───────────────
 branch_df$selected_by_lasso <- branch_df$branch_id %in% selected_branch_ids
@@ -741,10 +788,9 @@ if (!is.null(inference_table)) {
     }
 }
 
-# Sort: LASSO-selected first (by post-selection p), then remainder by p_fdr.
-ord <- order(!branch_df$selected_by_lasso,
-             ifelse(branch_df$selected_by_lasso,
-                    branch_df$p, branch_df$p_fdr),
+# Sort: split representatives first (by BH-FDR), then remaining clades by p_raw.
+ord <- order(!branch_df$is_split,
+             ifelse(branch_df$is_split, branch_df$p_fdr, Inf),
              branch_df$p_raw)
 branch_df <- branch_df[ord, ]
 # Re-order columns into the canonical layout.
@@ -771,7 +817,10 @@ header <- c(
     paste0("# flank=", FLANK),
     paste0("# re_first_col=", if (FLANK > 0L) re_lo else "NA"),
     paste0("# re_last_col=",  if (FLANK > 0L) re_hi else "NA"),
-    paste0("# n_branches_tested=",  sum(!is.na(branch_df$p_raw))),
+    paste0("# n_branches_tested=",  sum(branch_df$is_split, na.rm = TRUE)),
+    paste0("# n_splits_sig=",
+           sum(branch_df$is_split & !is.na(branch_df$p_fdr) &
+               branch_df$p_fdr < 0.05, na.rm = TRUE)),
     paste0("# n_branches_selected=", length(selected_branch_ids)),
     paste0("# lasso_lambda=",       if (is.na(lasso_lambda_used)) "NA" else format(lasso_lambda_used, digits = 6)),
     paste0("# inference_method=",   inference_method),

@@ -84,6 +84,18 @@ Three Snakemake steps driven by a checkpoint:
    enabled only when the nucleic PHYLIP has >=4 distinct sequences (IQ-TREE
    refuses bootstrap otherwise).
 
+4b. `rule root_tree` (`workflow/scripts/root_tree.R`) -- roots the ML
+   `.treefile` ONCE into `results/trees/{peak_id}.rooted.nwk`, which BOTH
+   `phylo_mm` and `plot` read (neither re-roots), so the clade each branch
+   represents is identical in the stats and the figure. Root = the **ancestral
+   proxy**: the haplotype(s) closest to the MSA consensus (the modal allele ≈
+   ancestral in young intraspecific variation), via `ape::root(outgroup=…)`;
+   falls back to midpoint when that set isn't monophyletic, then to the first
+   tip. This polarizes the tree ancestral→derived without midpoint's
+   molecular-clock assumption and puts the reference allele at the base, which
+   the sister-clade contrast (below) needs to read cleanly. Needs the alignment
+   (to compute the consensus) as an input alongside the treefile.
+
 5. `rule phylo_mm` -- per-peak phylogenetic mixed-model statistics via
    `workflow/scripts/phylo_mm.R`. Outputs `results/phylo_mm/{peak_id}.tsv` +
    `.pdf`. Three analyses:
@@ -107,48 +119,61 @@ Three Snakemake steps driven by a checkpoint:
      is computed in the diagnostic stderr but not surfaced — it introduces
      bias on well-identified peaks where σ²_R is genuinely small.
 
-   - **LASSO joint branch selection.** Builds a binary indicator matrix
-     over all non-trivial internal bipartitions, runs `cv.glmnet` (alpha=1,
-     family=gaussian, standardize=FALSE, lambda.min). Selected branches go
-     to `selectiveInference::fixedLassoInf()` for **valid post-LASSO
-     p-values + CIs** (Lee/Sun/Sun/Taylor 2016 polyhedral conditioning).
-     Avoids the double-dipping problem Witten et al. flag. Falls back to
-     naive OLS (with `inference_method=ols_fallback` in TSV header) when
-     fixedLassoInf's polyhedral check fails.
+   - **Per-split sister-clade contrast (headline).** Each internal node splits
+     the tree into two daughter subtrees. For the SMALLER daughter (the split's
+     representative, flagged `is_split`) a coverage-weighted WLS contrasts its
+     actuation against its SISTER subtree (the other daughter), **not** against
+     the rest of the tree. This is the local phylogenetic contrast — "does this
+     lineage differ from the one it just split from?" — so a clade that looks
+     significant only because the global mean lumps in a distant high/low clade
+     is correctly NOT significant. BH FDR is over the split representatives (one
+     test per node). A split is tested when both daughters have ≥2 covered
+     leaves and the contrast spans ≥2 distinct sequence clusters (this skips
+     arbitrary within-identical-cluster resolutions without dropping a real
+     split where one identical leaf happens to sit on the sister side, which
+     the LASSO's `clean_partition` would wrongly reject — e.g. an
+     ancestral/derived root split). `Δ = mean_in − mean_out` (clade − sister)
+     is the headline effect, `p_fdr` the headline p.
 
-   - **Per-branch Welch's t-test scan.** Diagnostic only (every non-trivial
-     bipartition gets a t-test + BH FDR), retained in the TSV for the
-     parsimonious view but not the plot-overlay headline.
+   - **LASSO joint branch selection (secondary).** Over `clean_partition`
+     bipartitions (no identical-cluster straddle), QR-reduced to a linearly
+     independent set (tree clades are collinear: parent = child₁ + child₂),
+     `cv.glmnet` (alpha=1, standardize=FALSE, lambda.min) +
+     `selectiveInference::fixedLassoInf()` give a joint post-selection β + CI.
+     Retained in the TSV / plot hover as a secondary effect-size view; it NO
+     LONGER drives the comparison or which branches are annotated, because the
+     joint β over correlated nested clades is unstable (sign-flips vs the
+     marginal Δ). OLS fallback (`inference_method=ols_fallback`) when the
+     polyhedral check fails.
 
    The TSV header carries `h2_alpha{1000,1,025}_{mean,lower,upper}`,
-   `n_branches_tested`, `n_branches_selected`, `lasso_lambda`,
-   `inference_method`. Per-branch rows carry `branch_id`, `descendants`,
-   marginal Welch stats (`mean_in`, `mean_out`, `t_stat`, `p_raw`,
-   `p_fdr`, `linked_sites`), plus LASSO selection columns
-   (`selected_by_lasso`, `lasso_coef`, `beta`, `se`, `ci_lower`,
-   `ci_upper`, `p`).
+   `n_branches_tested` (= split reps tested), `n_splits_sig` (BH<0.05),
+   `n_branches_selected` (LASSO), `lasso_lambda`, `inference_method`.
+   Per-branch rows carry `branch_id`, `descendants`, sister-contrast stats
+   (`mean_in`, `mean_out`, `t_stat`, `p_raw`, `p_fdr`), `is_split`,
+   `linked_sites`, plus secondary LASSO columns (`selected_by_lasso`,
+   `lasso_coef`, `beta`, `se`, `ci_lower`, `ci_upper`, `p`).
 
 5. `rule plot` -- produces `results/plots/{peak_id}.html` and `results/plots/{peak_id}.pdf`
    via `workflow/scripts/plot_tree_actuation_html.py`. Layout left → right:
-   midpoint-rooted ladderized tree, leaf labels, **PCLAI ancestry stripe**,
+   ancestral-proxy-rooted ladderized tree, leaf labels, **PCLAI ancestry stripe**,
    FIRE actuation heatmap (light-grey gaps with dark box outlines around
    contiguous `-` runs, N/unmapped stay dark grey), MSA with per-cell
    consensus coloring. The header surfaces H²ₚ (alpha.V=1 point estimate **with
    its 95% HPD**, alpha=0.25 flank when sensitivity ≥0.05 with `⚠`, and
    `⚠ unidentified` when the HPD spans >0.5 of [0,1] — i.e. the posterior is
    nearly flat and the point estimate is meaningless, distinct from
-   prior-sensitivity), the LASSO-selected branch count, and the standard peak
-   stats. Each LASSO-selected branch is annotated on the tree with a single
-   horizontal segment (the branch) — `Δ` (marginal effect, conditional on the
-   LASSO significance hierarchy: the clade vs the rest of the innermost
-   LASSO-selected clade that CONTAINS it, i.e. its incremental effect within
-   the signal it sits in; or vs the REST of the tree when no selected clade is
-   above it. This makes Δ track the joint β and stops nested sub-branches from
-   re-reporting the parent signal), `β` (post-selection joint effect), and `p`
-   (post-selection p-value). Linked variants are dashed-highlighted in the MSA.
-   Light dotted leader lines run from each tip to the sample-name column.
-   The PCLAI column is shown only when `config["pclai_bed"]` points at a valid
-   bgzipped + tabix-indexed BED; otherwise it collapses to zero width.
+   prior-sensitivity), the significant-split count, and the standard peak stats.
+   Each significant split (`is_split` rep with `p_fdr < 0.05`) is annotated on
+   the tree with a single horizontal segment at the split's branch and a
+   `Δ=… p_fdr=…` label (Δ = clade − sister, the local contrast; the joint LASSO
+   β + CI live in hover only). One annotation per node, each in its own color,
+   labels anchored to avoid the left edge near the root and staggered
+   above/below to avoid overlap. Linked variants (when a split's bipartition is
+   mirrored by an MSA SNP) are dashed-highlighted in the MSA in the split's
+   color. Light dotted leader lines run from each tip to the sample-name
+   column. The PCLAI column is shown only when `config["pclai_bed"]` points at a
+   valid bgzipped + tabix-indexed BED; otherwise it collapses to zero width.
 
 ## Key implementation decisions
 
@@ -202,12 +227,15 @@ Three Snakemake steps driven by a checkpoint:
   HG002 uses non-PanSN T2T contig names (`chr12_MATERNAL`); `add_flanks.agc_contig` maps
   these to the archive's `HG002#2#chrN` (maternal) / `HG002#1#chrN` (paternal), keyed on the
   asm_chr suffix (the true assembly), so HG002 now flanks correctly *despite* the label flip.
-- **Association tests are RE-scoped; H²ₚ uses the whole window.** When `flank > 0`,
-  `phylo_mm.R` restricts the variable sites that anchor branches (`var_cols`), the per-branch
-  WLS p-value scan, and the LASSO to the regulatory-element columns (`re_band`, reported as
-  `re_first_col`/`re_last_col` in the TSV header); neutral flank variation only resolves the
-  tree. The H²ₚ model uses the full flanked tree. The plot labels linked sites RE-relative
-  (`RE13` = 13 bp into the element) via the same band.
+- **Variant anchoring is RE-scoped; the split test and H²ₚ are not.** When `flank > 0`,
+  `phylo_mm.R` restricts the variable sites that anchor branches (`var_cols`) — hence the
+  LASSO candidate set and the linked-site annotation — to the regulatory-element columns
+  (`re_band`, reported as `re_first_col`/`re_last_col` in the TSV header); neutral flank
+  variation only resolves the tree. The **headline sister-clade split test is NOT
+  column-scoped** — it contrasts daughter-subtree actuation regardless of where the
+  defining variants sit, so a split driven by a flank variant still gets a Δ + p_fdr (it
+  just carries no linked RE site). H²ₚ uses the full flanked tree. The plot labels linked
+  sites RE-relative (`RE13` = 13 bp into the element) via the same band.
 - **`phylo_mm.R` uses `standardize=FALSE` in cv.glmnet**: indicator columns are already
   on the same 0/1 scale, and `selectiveInference::fixedLassoInf` requires the same
   parameterisation as the LASSO that produced the coefficients (otherwise the polyhedral
@@ -228,20 +256,29 @@ Three Snakemake steps driven by a checkpoint:
   alpha=1000 is *not* used in the headline because its scale-32 half-Cauchy on σ_phylo
   systematically pushes σ²_phylo (and H²ₚ) toward huge values on weakly-identified peaks
   without adding information beyond the prior itself.
-- **Headline p-value is `p_fdr` from the per-branch Welch's t-test scan (BH-corrected)**,
-  not selectiveInference's post-LASSO p. The branch indicators are *pre-specified by
-  the tree topology* (sequence-defined, not actuation-defined), so per-branch t-tests
-  + BH FDR over the ~75 bipartitions per peak is a multiple-testing-with-pre-specified-
-  hypotheses problem — *not* double-dipping. The plot annotation reads `Δ  β  p_fdr`.
-- **LASSO + `selectiveInference::fixedLassoInf` provide β and CI**, not p-values.
-  LASSO picks a parsimonious subset of branches to *annotate* (visual only — collapses
-  correlated nested branches to representatives); selectiveInference's post-LASSO
-  fit gives the joint β estimate and a selection-conditional CI. These are the
-  "effect size" half of the annotation. We don't use SI's p as the headline because
-  (a) selectiveInference's polyhedral check occasionally fails (→ OLS fallback with
-  invalid CIs), and (b) p_fdr is already a valid, simpler answer to the inferential
-  question. The SI p-value is retained in the TSV `p` column and shown as a
-  secondary hover field for the curious.
+- **Headline test is the per-split sister-clade contrast, `p_fdr` (BH over splits).**
+  Each internal node is tested ONCE: its smaller daughter (`is_split`) vs its sister
+  daughter, coverage-weighted WLS, then BH FDR over the split reps. The comparison is
+  the SISTER, not the rest of the tree — so a sub-clade that differs from the global
+  mean only because the tree contains a distant high/low clade is correctly *not*
+  significant against its own sibling. This collapses the headline from "every clade
+  that beats the global mean" (which on a high-H²ₚ peak is 10+ correlated, sign-flipping
+  branches) to the few real shifts, and makes Δ a coherent local effect (Δ ≈ the WLS
+  coefficient, no joint-β instability). The plot annotation reads `Δ=… p_fdr=…`.
+- **The sister contrast replaced two earlier designs** that both produced confusing
+  output on high-H²ₚ peaks: (a) clade-vs-*rest-of-tree* (every derived sub-clade looked
+  significant against the high-actuation reference background), and (b) clade-vs-LASSO-
+  *container* (Δ conditioned on the LASSO selection hierarchy, but lambda.min over the
+  collinear clade set over-selected and the joint β sign-flipped vs the marginal Δ).
+  The sister (rest-of-parent) comparison is the local phylogenetic contrast and needs
+  no LASSO hierarchy to be coherent.
+- **LASSO + `selectiveInference::fixedLassoInf` are now SECONDARY** (TSV + plot hover
+  only). They still run on the QR-reduced `clean_partition` set and supply a joint
+  post-selection β + CI, but no longer choose what to draw or the comparison group.
+  Kept because the joint multi-branch effect is occasionally a useful cross-check;
+  demoted because (a) the polyhedral check fails on collinear tree clades (→ OLS
+  fallback with invalid CIs), and (b) the joint β can disagree in sign with the local
+  Δ, which is exactly the confusion the sister contrast removes.
 - **Identical-haplotype collapse** (Hadfield 2010 / Halliwell BRV 2025): tips with
   EXACT same aligned sequence (gaps counted; only truly-identical strings collapse)
   share a single `animal` factor level in the MCMCglmm random effect. The collapsed

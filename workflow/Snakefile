@@ -322,16 +322,21 @@ dropping its model from the charpartition.)
 
 
 rule root_tree:
-    """Midpoint-root the ML tree ONCE into a canonical rooted Newick.
+    """Root the ML tree ONCE into a canonical rooted Newick.
 
 Both phylo_mm and plot read THIS rooted tree and neither re-roots, so the
 clade each branch represents is identical everywhere — fixing the scattered
 leader lines / detached annotations / mirror branches that came from
-phylo_mm and the plot rooting independently. Midpoint is the justifiable
-default for these no-outgroup intraspecific trees.
+phylo_mm and the plot rooting independently. Rooted on the ANCESTRAL PROXY:
+the haplotype(s) closest to the MSA consensus (the modal allele ≈ ancestral
+in young intraspecific variation), falling back to midpoint when that set
+isn't monophyletic. This polarizes the tree ancestral→derived without a
+molecular-clock assumption, so the reference allele sits at the base on
+every peak. Needs the alignment to compute the consensus.
 """
     input:
         treefile="results/trees/{peak_id}.treefile",
+        alignment="results/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/root_tree.R"),
     output:
         rooted="results/trees/{peak_id}.rooted.nwk",
@@ -340,7 +345,7 @@ default for these no-outgroup intraspecific trees.
         mem_mb=1024,
         runtime=10,
     shell:
-        "Rscript {input.script} {input.treefile} {output.rooted}"
+        "Rscript {input.script} {input.treefile} {input.alignment} {output.rooted}"
 
 
 def _pclai_bed_for_plot(_wildcards):

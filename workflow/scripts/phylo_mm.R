@@ -92,12 +92,10 @@ BURNIN <- as.integer(if (is.null(opt$burnin)) 10000 else opt$burnin)
 THIN   <- as.integer(if (is.null(opt$thin))      25 else opt$thin)
 
 # ── load tree + actuation TSV ─────────────────────────────────────────────────
-# Midpoint-root to MATCH the plot's Bio.Phylo root_at_midpoint(). The rooting
-# decides which side of each edge is the reported "clade"; with an arbitrary
-# outgroup root that side can be the non-contiguous complement of the displayed
-# clade, which scatters the coloured leader lines and mis-places branch
-# annotations. (phangorn::midpoint isn't installed — root by hand at the
-# midpoint of the longest tip-to-tip path, the same definition Bio.Phylo uses.)
+# The tree arrives pre-midpoint-rooted (rule root_tree, via Bio.Phylo) so
+# phylo_mm and the plot share ONE rooting — the clade each branch represents is
+# then identical everywhere. `midpoint_root` is kept only as a fallback if an
+# unrooted tree ever slips in.
 midpoint_root <- function(tr) {
     if (length(tr$tip.label) < 3L) return(tr)
     D  <- cophenetic(tr)
@@ -116,13 +114,12 @@ midpoint_root <- function(tr) {
 }
 tree <- read.tree(opt$tree)
 tree$tip.label <- gsub("^_R_", "", tree$tip.label)
-tree <- tryCatch(midpoint_root(tree), error = function(e) {
-    if (!is.rooted(tree)) {
-        root(tree, outgroup = tree$tip.label[1], resolve.root = TRUE)
-    } else {
-        tree
-    }
-})
+if (!is.rooted(tree)) {
+    tree <- tryCatch(
+        midpoint_root(tree),
+        error = function(e) root(tree, outgroup = tree$tip.label[1], resolve.root = TRUE)
+    )
+}
 zero_edges <- tree$edge.length <= 0
 if (any(zero_edges)) tree$edge.length[zero_edges] <- 1e-6
 tree$node.label <- NULL
@@ -502,7 +499,16 @@ if (any(seq_anchored)) {
     X_seq <- X[, integer(0), drop = FALSE]
     br_meta_seq <- list()
 }
-col_keys <- if (ncol(X_seq) > 0L) apply(X_seq, 2, paste, collapse = "") else character(0)
+# Deduplicate on a CANONICAL key (flip so the first tip is always 0) so a
+# bipartition and its COMPLEMENT collapse to one column. Otherwise the root's
+# two children — the same split, opposite indicators ("0011..." vs "1100...")
+# — both survive, and the LASSO selects both, drawing one branch and its mirror
+# image (the spurious faint "(+1 nested)" line).
+canon_key <- function(col) {
+    if (length(col) && col[1] == 1L) col <- 1L - col
+    paste(col, collapse = "")
+}
+col_keys <- if (ncol(X_seq) > 0L) apply(X_seq, 2, canon_key) else character(0)
 unique_idx <- !duplicated(col_keys)
 X_uniq <- X_seq[, unique_idx, drop = FALSE]
 br_meta_uniq <- br_meta_seq[unique_idx]
@@ -653,16 +659,30 @@ cat(sprintf("[phylo_mm] %s LASSO selected %d branches (lambda.min=%.4g, %d uniqu
 node_to_desc <- setNames(
     lapply(br_meta, function(m) m$desc),
     vapply(br_meta, function(m) as.character(m$node), character(1)))
-sel_desc <- node_to_desc[as.character(selected_branch_ids)]
+sel_desc  <- node_to_desc[as.character(selected_branch_ids)]
+all_tips  <- tree$tip.label
 comparison_tips <- function(B_tips) {
-    containing <- Filter(
-        function(s) length(s) > length(B_tips) && all(B_tips %in% s), sel_desc)
-    if (length(containing) > 0L) {
-        setdiff(containing[[which.min(vapply(containing, length, integer(1)))]],
-                B_tips)
-    } else {
-        setdiff(tree$tip.label, B_tips)
+    # Innermost selected clade that contains B. A selected bipartition has TWO
+    # sides (clade + complement); we take whichever side B sits in. (The root
+    # split is one bipartition with two clades — the canonical dedup keeps only
+    # one side as `sel_desc`, so without checking the complement a branch on the
+    # OTHER side would lose its container.) Smallest containing side wins; else
+    # B is a top-level signal → vs the rest of the tree.
+    best <- NULL; best_n <- Inf
+    for (sd in sel_desc) {
+        in_sd <- B_tips %in% sd
+        if (all(in_sd)) {
+            side <- sd
+        } else if (!any(in_sd)) {
+            side <- setdiff(all_tips, sd)       # B is in the complement side
+        } else {
+            next                                 # B straddles this split
+        }
+        if (length(side) > length(B_tips) && length(side) < best_n) {
+            best <- side; best_n <- length(side)
+        }
     }
+    if (!is.null(best)) setdiff(best, B_tips) else setdiff(all_tips, B_tips)
 }
 
 rows <- list()

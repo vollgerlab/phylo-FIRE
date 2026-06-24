@@ -29,11 +29,12 @@ min_coverage: 4
 
 # Flanking sequence (bp) added each side of the peak, pulled from the AGC
 # archive below. 0 = use the BED `seq` column directly (no AGC, RE only).
-# Default 500 (>=1 kb of context around the RE) gives the per-peak tree enough
-# variable sites to resolve and cuts H2_p prior-dependence; the RE sub-span is
-# bracketed in the plot. Only applies to the union-BED extraction path
-# (preextracted_dir / PARE controls its own flanks).
-flank: 500
+# Default 250 (~500 bp of context around the RE) gives the per-peak tree enough
+# variable sites to resolve and cuts H2_p prior-dependence, while keeping the RE
+# the bulk of the alignment; the RE sub-span is bracketed in the plot. Only
+# applies to the union-BED extraction path (preextracted_dir / PARE controls
+# its own flanks).
+flank: 250
 agc: "resources/HPRC_r2_assemblies_0.6.1.agc"
 
 # MAFFT parameters

@@ -641,7 +641,9 @@ def make_figure(
     phylo_mm: dict | None = None,
     flank: int = 0,
 ) -> go.Figure:
-    tree.root_at_midpoint()
+    # The tree is already midpoint-rooted upstream (rule root_tree) — the SAME
+    # rooting phylo_mm sees — so we do NOT re-root here. Just ladderize for a
+    # tidy display order (ladderize doesn't change the rooting or clades).
     tree.ladderize()
 
     # MAFFT --adjustdirection prefixes reversed-complemented leaf names with "_R_".

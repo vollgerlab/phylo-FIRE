@@ -321,6 +321,28 @@ dropping its model from the charpartition.)
         """
 
 
+rule root_tree:
+    """Midpoint-root the ML tree ONCE into a canonical rooted Newick.
+
+Both phylo_mm and plot read THIS rooted tree and neither re-roots, so the
+clade each branch represents is identical everywhere — fixing the scattered
+leader lines / detached annotations / mirror branches that came from
+phylo_mm and the plot rooting independently. Midpoint is the justifiable
+default for these no-outgroup intraspecific trees.
+"""
+    input:
+        treefile="results/trees/{peak_id}.treefile",
+        script=workflow.source_path("scripts/root_tree.R"),
+    output:
+        rooted="results/trees/{peak_id}.rooted.nwk",
+    threads: 1
+    resources:
+        mem_mb=1024,
+        runtime=10,
+    shell:
+        "Rscript {input.script} {input.treefile} {output.rooted}"
+
+
 def _pclai_bed_for_plot(_wildcards):
     """Resolve the optional PCLAI bed path; only included as an input dep
     when configured AND present on disk so missing-data runs don't fail.
@@ -352,7 +374,7 @@ plus LASSO-selected branches with selectiveInference beta/CI. The PDF shows
 the three H²_p posterior densities + the selected-branch effect sizes.
 """
     input:
-        tree="results/trees/{peak_id}.treefile",
+        tree="results/trees/{peak_id}.rooted.nwk",
         actuation="results/fastas/{peak_id}.tsv",
         alignment="results/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/phylo_mm.R"),
@@ -392,7 +414,7 @@ statistical overlay: header summary (H²_p), and the top variable-site
 SNP effect is annotated above the MSA at its alignment column.
 """
     input:
-        tree="results/trees/{peak_id}.treefile",
+        tree="results/trees/{peak_id}.rooted.nwk",
         actuation="results/fastas/{peak_id}.tsv",
         alignment="results/aligned/{peak_id}.fa",
         pclai=_pclai_bed_for_plot,

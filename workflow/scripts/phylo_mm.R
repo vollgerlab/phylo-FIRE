@@ -103,6 +103,11 @@ H2_LOWER_MIN <- as.numeric(if (is.null(opt[["h2-lower-min"]])) 0.1 else opt[["h2
 RE_TREE_PATH <- if (is.null(opt[["re-tree"]])) opt$tree else opt[["re-tree"]]
 RE_ALN_PATH  <- if (is.null(opt[["re-alignment"]])) opt$alignment else opt[["re-alignment"]]
 
+# A variant must be carried by >= MIN_CARRIERS haplotypes on each side to be a
+# candidate. A singleton (1 carrier, e.g. a private insertion) trivially
+# "explains" that one haplotype's actuation — overfitting, not a driver.
+MIN_CARRIERS <- as.integer(if (is.null(opt[["min-carriers"]])) 2 else opt[["min-carriers"]])
+
 NITT   <- as.integer(if (is.null(opt$nitt))   50000 else opt$nitt)
 BURNIN <- as.integer(if (is.null(opt$burnin)) 10000 else opt$burnin)
 THIN   <- as.integer(if (is.null(opt$thin))      25 else opt$thin)
@@ -439,6 +444,9 @@ block_of <- list()
 for (cc in names(site_indicators)) {
     ind <- as.integer(site_indicators[[cc]][tip_order])
     if (all(is.na(ind)) || length(unique(ind[!is.na(ind)])) < 2L) next
+    # Drop singleton / near-private variants: both alleles need >= MIN_CARRIERS
+    # haplotypes, else the "driver" is just one or two samples.
+    if (min(sum(ind == 1L, na.rm = TRUE), sum(ind == 0L, na.rm = TRUE)) < MIN_CARRIERS) next
     k <- canon_key(ind)
     if (!is.null(block_of[[k]])) {
         bi <- block_of[[k]]

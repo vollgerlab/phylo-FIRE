@@ -810,6 +810,17 @@ def make_figure(
         msa_x0, msa_x1 = 0, aln_len - 1
     msa_disp_n = max(1, msa_x1 - msa_x0 + 1)
 
+    # Contributing variants ("drivers") — counted early so the layout can
+    # reserve a per-driver carrier column (filled = the haplotype carries that
+    # driver's allele). This is the ONLY place set-nesting is visible: when an
+    # inner driver's carriers are a subset of an outer driver's, the inner
+    # column's filled cells line up inside the outer's — which the tree can't
+    # show because the carriers needn't be a clade.
+    _sig_branches = [
+        b for b in (phylo_mm or {}).get("branches") or [] if _branch_is_sig(b)
+    ]
+    n_drv = len(_sig_branches)
+
     # Regulatory-element band (only when the alignment carries flanks).
     re_band = re_band_columns(alignment, names, flank, aln_len)
 
@@ -909,11 +920,12 @@ def make_figure(
         label_px   = 0.0
         label_frac = 0.0
     act_frac        = 0.05
+    drv_frac        = min(0.06, 0.016 * n_drv)   # per-driver carrier columns
     par_frac        = 0.018 if has_paralogs else 0.0
     pcl_frac        = 0.018 if pclai_present else 0.0
     gap             = 0.005
-    msa_frac        = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + gap * 6) - 0.20
-    tree_frac       = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + msa_frac + gap * 6)
+    msa_frac        = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + drv_frac + gap * 7) - 0.20
+    tree_frac       = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + drv_frac + msa_frac + gap * 7)
     # Slide order: TREE | LABEL | PAR | PCL | ACT | MSA. PAR/PCL collapse to
     # zero width when their respective data isn't present; their traces stay
     # in the figure to keep trace indices stable.
@@ -922,7 +934,8 @@ def make_figure(
     LABEL_X = [cur, cur + label_frac];  cur = LABEL_X[1] + gap
     PAR_X   = [cur, cur + par_frac];    cur = PAR_X[1]   + gap
     PCL_X   = [cur, cur + pcl_frac];    cur = PCL_X[1]   + gap
-    ACT_X   = [cur, cur + act_frac];    cur = ACT_X[1]   + gap * 2
+    ACT_X   = [cur, cur + act_frac];    cur = ACT_X[1]   + gap
+    DRV_X   = [cur, cur + drv_frac];    cur = DRV_X[1]   + gap * 2
     MSA_X   = [cur, 1.00]
 
     # Vertical layout: title strip (top, ~40 px) | freq chart (~50 px) | main.
@@ -1168,6 +1181,31 @@ def make_figure(
         for _m in _members:
             _ls.update(_m.get("linked_sites") or ())
         group_links[key] = frozenset(_ls)
+
+    # ── Per-driver carrier columns ────────────────────────────────────────────
+    # One column per contributing variant, ordered as the legend; a filled cell
+    # means that haplotype carries that driver's allele. SET-NESTING is visible
+    # here and nowhere else: if an inner driver's carriers are a subset of an
+    # outer driver's, the inner column's filled rows fall inside the outer's.
+    if sorted_groups:
+        _sh_to_ly = {
+            parse_leaf_meta(names[i])["sample_hap"]: ly[i] for i in range(n)
+        }
+        for j, (key, members) in enumerate(sorted_groups):
+            cy = []
+            for d in members[0].get("descendants", ()):
+                sh = parse_leaf_meta(d)["sample_hap"]
+                if sh in _sh_to_ly:
+                    cy.append(_sh_to_ly[sh])
+            if not cy:
+                continue
+            fig.add_trace(go.Bar(
+                x=[0.86] * len(cy), base=[j - 0.43] * len(cy), y=cy,
+                orientation="h", width=0.9,
+                marker=dict(color=group_color[key], line=dict(width=0)),
+                hoverinfo="skip", showlegend=False,
+                xaxis="x8", yaxis="y1",
+            ))
 
     # Helper for compact p-value formatting (None → "NA").
     def _fmt_p(p):
@@ -1655,6 +1693,13 @@ def make_figure(
             title=dict(text="% FIRE", font=dict(size=10)),
             showticklabels=False, showgrid=False, zeroline=False,
             range=[0, 1.1],
+        ),
+        xaxis8=dict(
+            domain=DRV_X,
+            anchor="y1",
+            title=dict(text="drivers", font=dict(size=9)) if n_drv else None,
+            showticklabels=False, showgrid=False, zeroline=False,
+            range=[-0.5, max(0.5, n_drv - 0.5)],
         ),
         xaxis6=dict(
             domain=PCL_X,

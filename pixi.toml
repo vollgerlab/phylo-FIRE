@@ -70,6 +70,21 @@ hap-selective-30 = { cmd = [
     "-j",
     "8",
 ] }
+# 12 Genetically-haplotype-specific peaks chosen to exercise the dual-H² gate +
+# multi-variant attribution: 6 with LOW within-cluster spread + high unique-seq
+# count (identified RE-H² → driver-attributed; 3 come out 2-driver incl. the
+# nested chr14_100272296: 4-carrier inner block within a 21-carrier outer) and
+# 6 with HIGH within-cluster RE spread (RE-H² fails → mode none — actuation not
+# sequence-driven). Screened from the HSCA table by within-cluster spread.
+genetic-candidates = { cmd = [
+    "snakemake",
+    "--config",
+    "peak_ids=config/genetic_candidates_peak_ids.txt",
+    "input_table=resources/genetic-candidates/genetic-candidates.bed.gz",
+    "min_seqs=1",
+    "-j",
+    "8",
+] }
 # 5 haplotype-selective peaks pulled from hyak's union-peaks-chm13.bed.gz via
 # tabix region query (see resources/hap-selective-5/README.md). 5 peaks x ~90
 # sample-haps = 450 rows. Source TSV:

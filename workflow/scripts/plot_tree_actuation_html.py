@@ -1727,12 +1727,18 @@ def make_figure(
         # the unidentified one).
         mode = str(meta.get("attribution_mode", "")).strip()
         if mode == "none":
-            re_m, rg_m = meta.get("h2_re_mean"), meta.get("h2_region_mean")
-            re_s = f"{re_m:.2f}" if isinstance(re_m, (int, float)) else "NA"
-            rg_s = f"{rg_m:.2f}" if isinstance(rg_m, (int, float)) else "NA"
+            def _h2_str(prefix):
+                m = meta.get(f"{prefix}_mean")
+                lo, hi = meta.get(f"{prefix}_lower"), meta.get(f"{prefix}_upper")
+                if not isinstance(m, (int, float)):
+                    return "NA"
+                hpd = (f" [{lo:.2f}–{hi:.2f}]"
+                       if isinstance(lo, (int, float)) and isinstance(hi, (int, float))
+                       else "")
+                return f"{m:.2f}{hpd} ⚠"
             summary_bits.append(
                 f"<b>H²<sub>p</sub></b> not sequence-driven "
-                f"(RE {re_s} ⚠, region {rg_s} ⚠){conv_flag}"
+                f"(RE {_h2_str('h2_re')}, region {_h2_str('h2_region')}){conv_flag}"
             )
         else:
             scope = "RE" if mode == "RE" else ("region" if mode == "region" else "")

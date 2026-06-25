@@ -791,6 +791,25 @@ def make_figure(
     aln_len = max((len(s) for s in alignment.values()), default=0)
     raw_seqs = [alignment.get(nm, "-" * aln_len) for nm in names]
 
+    # MSA display window. The flanks only ever matter for (a) building the tree
+    # and (b) region-mode drivers that sit outside the RE. So unless attribution
+    # expanded to the whole region, clip the displayed MSA to the RE band — the
+    # tree is already built, and a 950-column flanked alignment collapses to a
+    # readable ~400-column view. The heatmap still holds every column; we just
+    # set the x-axis range (so variant positions keep their absolute coords).
+    _meta0 = (phylo_mm or {}).get("meta", {})
+    _re_lo_m, _re_hi_m = _meta0.get("re_first_col"), _meta0.get("re_last_col")
+    re_only_msa = (
+        str(_meta0.get("attribution_mode", "")).strip() != "region"
+        and isinstance(_re_lo_m, (int, float))
+        and isinstance(_re_hi_m, (int, float))
+    )
+    if re_only_msa:
+        msa_x0, msa_x1 = int(_re_lo_m) - 1, int(_re_hi_m) - 1   # 0-based inclusive
+    else:
+        msa_x0, msa_x1 = 0, aln_len - 1
+    msa_disp_n = max(1, msa_x1 - msa_x0 + 1)
+
     # Regulatory-element band (only when the alignment carries flanks).
     re_band = re_band_columns(alignment, names, flank, aln_len)
 
@@ -865,7 +884,12 @@ def make_figure(
     # (paralog groups can have hundreds of leaves; without a cap a 276-leaf peak
     # produces a 3500 px tall figure, which fit-to-width viewers compress to
     # the point that 0.9 px tree lines are sub-pixel and disappear).
-    fig_width   = 1500
+    # Scale width with the alignment length so each MSA column keeps enough
+    # horizontal room to read its variant marks (the MSA panel is ~55% of the
+    # figure, so ~4.5 px/column total → ~2.5 px in the MSA). Floor at 1500 for
+    # short RE-only peaks, cap so very long flanked/paralog alignments don't
+    # produce an absurd canvas.
+    fig_width   = max(1500, min(5200, int(msa_disp_n * 4.5)))
     target_h    = 2200
     row_h       = max(4, min(18, target_h // max(n, 1)))
     label_fs    = max(7, min(12, row_h - 1))
@@ -1243,7 +1267,10 @@ def make_figure(
                     f"pos: {linked_str_short}"
                 ),
                 legendgroup=f"sig_group_{id(key)}",
-                showlegend=True,
+                # Legend entry comes uniformly from §5c (one per contributing
+                # variant) so non-clade variants — whose carriers don't form a
+                # branch and so never reach this block — still appear.
+                showlegend=False,
                 xaxis="x1", yaxis="y1",
             ))
             # NB: the β/p label is NOT drawn on the tree branch — a variant's
@@ -1439,7 +1466,9 @@ def make_figure(
     # ── 5a. Regulatory-element band markers ───────────────────────────────────
     # Two vertical lines bracketing the RE columns, so it's obvious which part
     # of the (flanked) alignment is the peak itself vs. added assembly context.
-    if re_band is not None:
+    # Skipped when the view is already clipped to the RE (re_only_msa) — the
+    # whole panel is the RE, so the brackets would just sit on the edges.
+    if re_band is not None and not re_only_msa:
         re_lo, re_hi = re_band
         fig.add_trace(go.Scatter(
             x=[re_lo - 0.5, re_lo - 0.5, None, re_hi + 0.5, re_hi + 0.5],
@@ -1535,22 +1564,36 @@ def make_figure(
             if not positions:
                 continue
             c0 = int(positions[0]) - 1   # 0-based column → x3 coordinate
-            pos_str = ",".join(_site_label(s) for s in positions)
+            # Cap the position list: a single variant block can span 20-50+
+            # perfectly-correlated columns (a big indel), which overflows the
+            # label and the legend.
+            _labs = [_site_label(s) for s in positions]
+            pos_str = (", ".join(_labs) if len(_labs) <= 4
+                       else ", ".join(_labs[:3]) + f", +{len(_labs) - 3} more")
+            _beta = _fmt_beta(rep.get("beta"))
+            _p = _fmt_p(rep.get("p"))
             fig.add_annotation(
                 x=c0, y=_msa_top,
                 xref="x3", yref="y1",
                 yanchor="bottom",
                 yshift=4 + 13 * (_i % 3),
-                text=(
-                    f"<b>β={_fmt_beta(rep.get('beta'))}</b> "
-                    f"p={_fmt_p(rep.get('p'))}<br>{pos_str}"
-                ),
+                text=f"<b>β={_beta}</b> p={_p}<br>{pos_str}",
                 showarrow=True, arrowhead=0, arrowwidth=0.8,
                 arrowcolor=group_color[key], ax=0, ay=-8,
                 font=dict(size=8, color=group_color[key]),
                 bgcolor="rgba(255,255,255,0.85)",
                 bordercolor=group_color[key], borderwidth=0.5,
             )
+            # Uniform legend entry per contributing variant — so a variant whose
+            # carriers aren't a clade (no branch drawn) still appears.
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="lines",
+                line=dict(color=group_color[key], width=3.0),
+                name=f"β={_beta} p={_p}  pos: {pos_str}",
+                legendgroup=f"sig_group_{id(key)}",
+                showlegend=True,
+                xaxis="x3", yaxis="y1",
+            ))
 
     # ── 6. Sequence logo (stacked frequency bars) ─────────────────────────────
     logo_base = [0.0] * aln_len
@@ -1632,6 +1675,7 @@ def make_figure(
         xaxis3=dict(
             domain=MSA_X,
             anchor="y1",
+            range=[msa_x0 - 0.5, msa_x1 + 0.5],   # RE-only window unless region mode
             title=dict(text="alignment position", font=dict(size=10)),
             showgrid=False, zeroline=False,
             tickfont=dict(size=9),

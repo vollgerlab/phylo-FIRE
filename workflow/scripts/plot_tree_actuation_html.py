@@ -1610,12 +1610,15 @@ def make_figure(
                        else ", ".join(_labs[:3]) + f", +{len(_labs) - 3} more")
             _beta = _fmt_beta(rep.get("beta"))
             _p = _fmt_p(rep.get("p"))
+            # One short line only (β/p) so the box is ~1 row tall and the
+            # vertical stagger clears it; the position list lives in the legend
+            # and the driver column, so it isn't repeated here.
             fig.add_annotation(
                 x=c0, y=_msa_top,
                 xref="x3", yref="y1",
                 yanchor="bottom",
-                yshift=4 + 13 * (_i % 3),
-                text=f"<b>β={_beta}</b> p={_p}<br>{pos_str}",
+                yshift=4 + 14 * (_i % 4),
+                text=f"<b>β={_beta}</b> p={_p}",
                 showarrow=True, arrowhead=0, arrowwidth=0.8,
                 arrowcolor=group_color[key], ax=0, ay=-8,
                 font=dict(size=8, color=group_color[key]),

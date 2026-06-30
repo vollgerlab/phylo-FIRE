@@ -201,12 +201,15 @@ hsca-stage = { cmd = [
     "-j",
     "400",
 ] }
-# Scope the cluster run to ONE HSCA class. Haplotype-selective = the het-SNV
-# class (~23K peaks). Build the id list first (needs resources/hsca/ from
-# setup-hsca), then run. Dry-run with `pixi run hsca-hapsel -n`, drop -n for
-# real. Outputs under results/hsca_hapsel/. (hsca_class_ids.sh works for any
-# class: "Genetically haplotype-specific" / "Epigenetically haplotype-selective"
-# / "Complex" — copy this pair and swap the class + run_name to add others.)
+# Scope a run to ONE HSCA class. Haplotype-selective = the het-SNV class
+# (~23K peaks). Build the id list first (needs resources/hsca/ from setup-hsca),
+# then run. Dry-run with `pixi run hsca-hapsel -n`, drop -n for real. Outputs
+# under results/hsca_hapsel/. Runs LOCALLY on the fat node (no --profile / SLURM)
+# at -j 400 — the per-rule thread caps (OMP/OPENBLAS/POLARS_MAX_THREADS) keep
+# each job to its declared threads so 700 cores aren't oversubscribed. (For
+# memory safety at high -j add `--resources mem_mb=<node_RAM>`; for SLURM submit
+# instead, append `--profile profiles/slurm`.) hsca_class_ids.sh works for any
+# class — copy this pair and swap the class + run_name to add others.
 hsca-hapsel-ids = "bash workflow/scripts/hsca_class_ids.sh 'Haplotype-selective' config/hsca_hapsel_peak_ids.txt"
 hsca-hapsel = { cmd = [
     "snakemake",
@@ -215,8 +218,6 @@ hsca-hapsel = { cmd = [
     "--config",
     "run_name=hsca_hapsel",
     "peak_ids=config/hsca_hapsel_peak_ids.txt",
-    "--profile",
-    "profiles/slurm",
     "-j",
     "400",
 ] }

@@ -201,6 +201,25 @@ hsca-stage = { cmd = [
     "-j",
     "400",
 ] }
+# Scope the cluster run to ONE HSCA class. Haplotype-selective = the het-SNV
+# class (~23K peaks). Build the id list first (needs resources/hsca/ from
+# setup-hsca), then run. Dry-run with `pixi run hsca-hapsel -n`, drop -n for
+# real. Outputs under results/hsca_hapsel/. (hsca_class_ids.sh works for any
+# class: "Genetically haplotype-specific" / "Epigenetically haplotype-selective"
+# / "Complex" — copy this pair and swap the class + run_name to add others.)
+hsca-hapsel-ids = "bash workflow/scripts/hsca_class_ids.sh 'Haplotype-selective' config/hsca_hapsel_peak_ids.txt"
+hsca-hapsel = { cmd = [
+    "snakemake",
+    "--configfile",
+    "config/cluster.yaml",
+    "--config",
+    "run_name=hsca_hapsel",
+    "peak_ids=config/hsca_hapsel_peak_ids.txt",
+    "--profile",
+    "profiles/slurm",
+    "-j",
+    "400",
+] }
 # Install selectiveInference + its CRAN deps into the pixi-managed R library.
 # selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.
 setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInference", quietly=TRUE)) install.packages("selectiveInference", repos="https://cloud.r-project.org") else cat("selectiveInference already installed\\n")'"""

@@ -343,7 +343,9 @@ dropping its model from the charpartition.)
         nuc=TEMP + "/coded/{peak_id}/{peak_id}_nucleic.phy",
         indel=TEMP + "/coded/{peak_id}/{peak_id}_indel.phy",
     output:
-        treefile=RESULTS + "/trees/{peak_id}.treefile",
+        # unrooted ML tree — temp: superseded by the rooted .nwk (root_tree keeps
+        # branch lengths + bootstrap); only root_tree + re_iqtree-fallback read it.
+        treefile=temp(TEMP + "/trees/{peak_id}.treefile"),
     group:
         "peak_chain"
     threads: 4
@@ -351,7 +353,7 @@ dropping its model from the charpartition.)
         mem_mb=16384,
         runtime=120,
     params:
-        prefix=lambda wc: os.path.abspath(f"{RESULTS}/trees/{wc.peak_id}"),
+        prefix=lambda wc: os.path.abspath(f"{TEMP}/trees/{wc.peak_id}"),
         peak_id=lambda wc: wc.peak_id,
         # Enable ultrafast bootstrap only when the alignment has >=4 unique sequences;
         # IQ-TREE deduplicates internally and refuses bootstrap on fewer distinct taxa.
@@ -393,7 +395,7 @@ molecular-clock assumption, so the reference allele sits at the base on
 every peak. Needs the alignment to compute the consensus.
 """
     input:
-        treefile=RESULTS + "/trees/{peak_id}.treefile",
+        treefile=TEMP + "/trees/{peak_id}.treefile",
         alignment=TEMP + "/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/root_tree.R"),
     output:
@@ -405,6 +407,9 @@ every peak. Needs the alignment to compute the consensus.
         mem_mb=1024,
         runtime=10,
     shell:
+        # OpenBLAS/MKL ignore the rule's threads and grab every core — cap them.
+        "OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} "
+        "MKL_NUM_THREADS={threads} "
         "Rscript {input.script} {input.treefile} {input.alignment} {output.rooted}"
 
 
@@ -474,7 +479,7 @@ the right tip set.
         nex=TEMP + "/re/coded/{peak_id}/{peak_id}.nex",
         nuc=TEMP + "/re/coded/{peak_id}/{peak_id}_nucleic.phy",
         indel=TEMP + "/re/coded/{peak_id}/{peak_id}_indel.phy",
-        main_tree=RESULTS + "/trees/{peak_id}.treefile",
+        main_tree=TEMP + "/trees/{peak_id}.treefile",
     output:
         # internal: only re_root_tree → phylo_mm read it, nothing downstream.
         treefile=temp(TEMP + "/re/trees/{peak_id}.treefile"),
@@ -520,6 +525,9 @@ rule re_root_tree:
         mem_mb=1024,
         runtime=10,
     shell:
+        # OpenBLAS/MKL ignore the rule's threads and grab every core — cap them.
+        "OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} "
+        "MKL_NUM_THREADS={threads} "
         "Rscript {input.script} {input.treefile} {input.alignment} {output.rooted}"
 
 
@@ -592,6 +600,7 @@ by hand for ad-hoc debugging.
         h2_lower_min=config.get("h2_hpd_lower_min", 0.1),
     shell:
         """
+        OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} MKL_NUM_THREADS={threads} \
         Rscript {input.script} \
             --tree      {input.tree} \
             --actuation {input.actuation} \
@@ -631,7 +640,7 @@ already-produced files (alignment + actuation + phylo_mm TSV); no re-modeling.
         runtime=10,
     shell:
         """
-        python {input.script} \
+        POLARS_MAX_THREADS={threads} python {input.script} \
             --aligned   {input.aligned} \
             --actuation {input.actuation} \
             --phylo-mm  {input.phylo_mm} \
@@ -663,7 +672,7 @@ depend on which peaks land in each manifest.
         seed=config.get("random_seed", 42),
     shell:
         """
-        python {input.script} \
+        POLARS_MAX_THREADS={threads} python {input.script} \
             --indir {params.rdir}/re_variants \
             --peaks {params.rdir}/fastas/peak_ids.txt \
             --out-parquet {output.parquet} \

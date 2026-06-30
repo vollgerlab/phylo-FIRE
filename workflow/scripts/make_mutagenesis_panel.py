@@ -1,31 +1,36 @@
 #!/usr/bin/env python
-"""Generate a single-change mutagenesis panel for multi-change driver blocks.
+"""Mutagenesis panel for multi-change driver blocks — ONE entry per UNIQUE
+sequence, with roles + natural identity as ANNOTATIONS (not in the name).
 
-A phylo_mm "driver" can bundle several perfectly-correlated alignment columns
-(e.g. RE24/25/26): across the natural haplotypes those changes ALWAYS co-occur,
-so the data can't say which one drives actuation. To localize the effect you
-have to break the correlation experimentally — test each change in isolation on
-a constant background.
+A phylo_mm "driver" can bundle several perfectly-correlated columns (e.g.
+RE24/25/26): across the natural haplotypes those changes always co-occur, so the
+data can't say which one matters. To break the correlation you test each change
+in isolation on a fixed background.
 
-For each selected driver with >1 change this emits:
-  * <driver>_background   — a representative carrier with ALL the driver's
-                            changes reverted to the ancestral (non-carrier)
-                            allele. The negative control; expect ~baseline.
-  * <driver>_<edit>       — the background plus exactly ONE change added back.
-  * <driver>_full         — the representative carrier itself. Positive control.
+We build, per multi-change driver:
+  * background    — a representative carrier with ALL the driver's changes
+                    reverted to the ancestral (non-carrier) allele (the negative
+                    control / backbone the single edits sit on).
+  * <one per change> — background plus exactly ONE change added back.
+  * full          — the representative carrier itself (positive control).
 
-Every sequence differs from <driver>_background by exactly one change, on the
-carrier's own background, so a reporter assay reads out each change's effect.
-Contiguous gap columns (one indel) merge into a single change.
+But the SAME DNA can be several of these at once and can equal a real haplotype:
+`full` is literally the carrier sequence; a `background` is often an existing
+non-carrier; one driver's `background` could be another driver's something. So
+this DEDUPLICATES by sequence and annotates each unique sequence with:
+  - roles=  a |-list of {driver}:{role}[:{edit}] it plays (e.g. d3:background,
+            d3:RE24:a>g, d3:full, d6:RE77:g>a)
+  - natural= the re_variants seq_id it matches (if any), with that cluster's
+            n_haps and MEAN % actuation — i.e. "this construct is really N
+            existing haplotypes" — else natural=none (a novel synthetic seq).
 
-Headers point back to the re_variants table: the source carrier seq_id, its hap
-support and observed % actuation, the baseline (nearest non-carrier) seq_id +
-its support/actuation, the driver + block beta, and the specific edit — so each
-clonable sequence is self-describing and traceable.
+Inputs are already-produced files (alignment + phylo_mm TSV + re_variants TSV);
+no re-modeling. Run via preextracted_dir (flank=0) peaks or any per-peak run.
 
 Usage:
     make_mutagenesis_panel.py --aligned aln.fa --phylo-mm peak.tsv \
-        [--re-variants peak.tsv] [--driver d3] --out panel.fa [--tsv panel.tsv]
+        --re-variants peak.tsv [--driver d3] --out panel.fa \
+        [--aligned-out panel.aln.fa] [--tsv panel.tsv]
 """
 import argparse
 from pathlib import Path
@@ -33,18 +38,16 @@ from pathlib import Path
 
 def read_fasta(path):
     seqs, name, buf = {}, None, []
-    with open(path) as fh:
-        for line in fh:
-            line = line.rstrip("\n")
-            if line.startswith(">"):
-                if name is not None:
-                    seqs[name] = "".join(buf)
-                name = line[1:].split()[0]
-                if name.startswith("_R_"):
-                    name = name[3:]
-                buf = []
-            else:
-                buf.append(line)
+    for line in Path(path).read_text().splitlines():
+        if line.startswith(">"):
+            if name is not None:
+                seqs[name] = "".join(buf)
+            name = line[1:].split()[0]
+            if name.startswith("_R_"):
+                name = name[3:]
+            buf = []
+        else:
+            buf.append(line)
     if name is not None:
         seqs[name] = "".join(buf)
     return seqs
@@ -52,39 +55,36 @@ def read_fasta(path):
 
 def parse_phylo_mm(path):
     header, cols, drivers = {}, [], []
-    with open(path) as fh:
-        for line in fh:
-            line = line.rstrip("\n")
-            if line.startswith("#"):
-                k, _, v = line[1:].strip().partition("=")
-                header[k.strip()] = v.strip()
-            elif not cols:
-                cols = line.split("\t")
-            else:
-                row = dict(zip(cols, line.split("\t")))
-                if row.get("is_split", "").upper() == "TRUE":
-                    drivers.append({
-                        "id": f"d{row.get('branch_id', '?')}",
-                        "cols": [int(c) for c in row["linked_sites"].split(",") if c],
-                        "carriers": [d for d in row.get("descendants", "").split(",") if d],
-                        "beta": row.get("beta", "NA"),
-                    })
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("#"):
+            k, _, v = line[1:].partition("=")
+            header[k.strip()] = v.strip()
+        elif not cols:
+            cols = line.split("\t")
+        else:
+            r = dict(zip(cols, line.split("\t")))
+            if r.get("is_split", "").upper() == "TRUE":
+                drivers.append({
+                    "id": f"d{r['branch_id']}",
+                    "cols": [int(c) for c in r["linked_sites"].split(",") if c],
+                    "carriers": {d for d in r.get("descendants", "").split(",") if d},
+                    "beta": r.get("beta", "NA"),
+                })
     return header, drivers
 
 
 def parse_re_variants(path):
-    """re_variants TSV → ({seq_id: row}, {sample: seq_id}). Empty if no path."""
+    """re_variants TSV → {re_seq: (seq_id, n_haps, pct_acc)} + {sample: seq_id}."""
     by_seq, by_sample = {}, {}
     if not path or not Path(path).exists():
         return by_seq, by_sample
-    with open(path) as fh:
-        cols = fh.readline().rstrip("\n").split("\t")
-        for line in fh:
-            r = dict(zip(cols, line.rstrip("\n").split("\t")))
-            sid = r.get("seq_id")
-            if not sid:
-                continue
-            by_seq[sid] = r
+    lines = Path(path).read_text().splitlines()
+    cols = lines[0].split("\t")
+    for line in lines[1:]:
+        r = dict(zip(cols, line.split("\t")))
+        rs, sid = r.get("re_seq"), r.get("seq_id")
+        if rs and sid:
+            by_seq[rs] = (sid, r.get("n_haps", "?"), _pct(r.get("act_mean")))
             for s in (r.get("samples") or "").split(","):
                 if s:
                     by_sample[s] = sid
@@ -98,11 +98,16 @@ def _num(x, default):
         return default
 
 
-def _pct(act):
+def _pct(x):
     try:
-        return f"{float(act) * 100:.1f}"
+        return f"{float(x) * 100:.1f}"
     except (TypeError, ValueError):
         return "NA"
+
+
+def gc_frac(seq):
+    bases = [b for b in seq.upper() if b in "ACGT"]
+    return round(sum(b in "GC" for b in bases) / len(bases), 4) if bases else 0.0
 
 
 def major(chars):
@@ -113,8 +118,6 @@ def major(chars):
 
 
 def merge_changes(cols, anc, car):
-    """Group driver columns into changes: contiguous gap-edit columns (one indel)
-    merge; substitutions stay individual. Returns list of column-lists."""
     cols = sorted(cols)
     is_indel = {c: ("-" in (anc[c], car[c])) for c in cols}
     groups, i = [], 0
@@ -132,15 +135,14 @@ def merge_changes(cols, anc, car):
 
 
 MANIFEST_COLS = [
-    "peak_id", "driver", "name", "type", "edit", "n_changes", "beta_block",
-    "from_carrier_seq", "carrier_nhaps", "carrier_pct_acc",
-    "baseline_seq", "baseline_nhaps", "baseline_pct_acc", "re_len", "seq",
+    "peak_id", "name", "re_len", "gc_frac", "n_roles", "roles",
+    "natural_seq_id", "natural_n_haps", "natural_pct_acc", "is_synthetic", "seq",
 ]
 
 
 def build(aligned, phylo_mm, re_variants=None, which=None):
     header, drivers = parse_phylo_mm(phylo_mm)
-    by_seq, by_sample = parse_re_variants(re_variants)
+    natural, _by_sample = parse_re_variants(re_variants)
     peak = header.get("peak_id", Path(phylo_mm).stem)
     re_first = _num(header.get("re_first_col"), 1)
     mode = header.get("attribution_mode", "none")
@@ -152,7 +154,8 @@ def build(aligned, phylo_mm, re_variants=None, which=None):
     def relabel(c):
         return f"RE{c - re_first + 1}"
 
-    records, aligned_records, manifest, skipped = [], [], [], []
+    # seq -> {aligned, roles[], anchor}  (deduplicated across drivers + roles)
+    uniq, skipped = {}, []
     for drv in drivers:
         if which and drv["id"] != which:
             continue
@@ -167,111 +170,102 @@ def build(aligned, phylo_mm, re_variants=None, which=None):
         if len(changes) < 2:
             skipped.append((drv["id"], len(changes)))
             continue
-        # representative carrier background = modal carrier aligned sequence
-        modal = major([seqs[c] for c in carriers])
-        rep = next(c for c in carriers if seqs[c] == modal)
+        rep = next(c for c in carriers if seqs[c] == major([seqs[x] for x in carriers]))
         full = list(seqs[rep])
         backbone = full.copy()
         for c in cols:
             backbone[c - 1] = anc[c]
 
-        # ── tie back to the re_variants table ────────────────────────────────
-        car_seq = by_sample.get(rep, "")
-        car_row = by_seq.get(car_seq, {})
-        base_seq = car_row.get("nearest_noncarrier_seq_id", "")
-        base_row = by_seq.get(base_seq, {})
-        ann = {
-            "from_carrier_seq": car_seq or "NA",
-            "carrier_nhaps": car_row.get("n_haps", "NA"),
-            "carrier_pct_acc": _pct(car_row.get("act_mean")),
-            "baseline_seq": base_seq or "NA",
-            "baseline_nhaps": base_row.get("n_haps", "NA"),
-            "baseline_pct_acc": _pct(base_row.get("act_mean")),
-        }
-        beta = drv["beta"]
-
-        def emit(suffix, chars, edit, kind, npos):
+        def add(chars, role):
             sub = "".join(chars)[lo - 1:hi].replace("-", "")
-            name = f"{peak}_{drv['id']}_{suffix}"
-            # alignment-frame copy (gapped, full length) for the validation plot:
-            # anchored next to the representative carrier leaf it was built from.
-            aligned_records.append({
-                "name": name, "seq": "".join(chars), "anchor": rep,
-                "label": f"{drv['id']}_{suffix}", "type": kind, "edit": edit,
-            })
-            desc = (
-                f"RE_ID={peak} driver={drv['id']} beta_block={beta} "
-                f"type={kind} edit={edit} n_changes={npos} "
-                f"from_carrier={ann['from_carrier_seq']} "
-                f"carrier_nhaps={ann['carrier_nhaps']} "
-                f"carrier_pct_acc={ann['carrier_pct_acc']} "
-                f"baseline={ann['baseline_seq']} "
-                f"baseline_nhaps={ann['baseline_nhaps']} "
-                f"baseline_pct_acc={ann['baseline_pct_acc']} re_len={len(sub)}"
-            )
-            records.append((name, desc, sub))
-            manifest.append({
-                "peak_id": peak, "driver": drv["id"], "name": name, "type": kind,
-                "edit": edit, "n_changes": npos, "beta_block": beta,
-                "from_carrier_seq": ann["from_carrier_seq"],
-                "carrier_nhaps": ann["carrier_nhaps"],
-                "carrier_pct_acc": ann["carrier_pct_acc"],
-                "baseline_seq": ann["baseline_seq"],
-                "baseline_nhaps": ann["baseline_nhaps"],
-                "baseline_pct_acc": ann["baseline_pct_acc"],
-                "re_len": len(sub), "seq": sub,
-            })
+            rec = uniq.setdefault(sub, {"aligned": "".join(chars), "roles": [], "anchor": rep})
+            if role not in rec["roles"]:
+                rec["roles"].append(role)
 
-        emit("background", backbone, "none(all_reverted)", "background", 0)
+        add(backbone, f"{drv['id']}:background")
         for grp in changes:
             seq = backbone.copy()
             for c in grp:
                 seq[c - 1] = car[c]
             if len(grp) == 1:
                 c = grp[0]
-                edit = f"{relabel(c)}:{anc[c]}>{car[c]}"
+                role = f"{drv['id']}:{relabel(c)}:{anc[c]}>{car[c]}"
             else:
-                edit = f"{relabel(grp[0])}-{relabel(grp[-1])}:indel"
-            emit(edit.split(":")[0], seq, edit, "single_edit", 1)
-        emit("full", full, "all(=carrier)", "full", len(changes))
-    return records, aligned_records, manifest, skipped
+                role = f"{drv['id']}:{relabel(grp[0])}-{relabel(grp[-1])}:indel"
+            add(seq, role)
+        add(full, f"{drv['id']}:full")
+
+    # one record per UNIQUE sequence, roles + natural identity as annotations.
+    records = []
+    for i, (sub, rec) in enumerate(
+        sorted(uniq.items(), key=lambda kv: (-len(kv[1]["roles"]), kv[0]))
+    ):
+        nat = natural.get(sub)            # (seq_id, n_haps, pct_acc) or None
+        records.append({
+            "name": f"{peak}_u{i:02d}", "seq": sub, "aligned": rec["aligned"],
+            "anchor": rec["anchor"], "roles": rec["roles"], "natural": nat,
+            "re_len": len(sub), "gc": gc_frac(sub), "peak": peak,
+        })
+    return records, skipped
+
+
+def _desc(r):
+    nat = r["natural"]
+    nat_s = (f"natural={nat[0]} natural_n_haps={nat[1]} natural_pct_acc={nat[2]}"
+             if nat else "natural=none natural_n_haps=0 natural_pct_acc=NA")
+    return (f"RE_ID={r['peak']} re_len={r['re_len']} gc={r['gc']} "
+            f"{nat_s} n_roles={len(r['roles'])} roles={'|'.join(r['roles'])}")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--aligned", required=True)
     ap.add_argument("--phylo-mm", required=True)
-    ap.add_argument("--re-variants", help="per-peak re_variants TSV for header annotation")
+    ap.add_argument("--re-variants", help="per-peak re_variants TSV for natural-identity annotation")
     ap.add_argument("--driver", help="restrict to one driver id, e.g. d3")
-    ap.add_argument("--out", required=True, help="clonable (ungapped) FASTA")
+    ap.add_argument("--out", required=True, help="clonable (ungapped) FASTA, unique seqs")
     ap.add_argument("--aligned-out", help="alignment-frame FASTA for the validation plot")
     ap.add_argument("--tsv", help="optional manifest TSV")
     args = ap.parse_args()
 
-    records, aligned_records, manifest, skipped = build(
-        args.aligned, args.phylo_mm, args.re_variants, args.driver)
+    records, skipped = build(args.aligned, args.phylo_mm, args.re_variants, args.driver)
+
+    # Uniqueness invariant: no two records share a sequence.
+    assert len({r["seq"] for r in records}) == len(records), "duplicate sequences emitted"
+
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as fh:
-        for name, desc, seq in records:
-            fh.write(f">{name} {desc}\n{seq}\n")
+        for r in records:
+            fh.write(f">{r['name']} {_desc(r)}\n{r['seq']}\n")
     if args.aligned_out:
         Path(args.aligned_out).parent.mkdir(parents=True, exist_ok=True)
         with open(args.aligned_out, "w") as fh:
-            for r in aligned_records:
-                fh.write(
-                    f">{r['name']} anchor_leaf={r['anchor']} type={r['type']} "
-                    f"edit={r['edit']} label={r['label']}\n{r['seq']}\n"
-                )
+            for r in records:
+                fh.write(f">{r['name']} anchor_leaf={r['anchor']} "
+                         f"label={'|'.join(r['roles'])} "
+                         f"natural={r['natural'][0] if r['natural'] else 'none'}\n{r['aligned']}\n")
     if args.tsv:
         with open(args.tsv, "w") as fh:
             fh.write("\t".join(MANIFEST_COLS) + "\n")
-            for m in manifest:
-                fh.write("\t".join(str(m[c]) for c in MANIFEST_COLS) + "\n")
-    peak = manifest[0]["peak_id"] if manifest else "(none)"
-    n_drv = len({m["driver"] for m in manifest})
-    print(f"[panel] {peak} → {len(records)} seqs over {n_drv} multi-change driver(s)")
-    for did, n in skipped:
-        print(f"[panel] skipped {did}: {n} change(s), nothing to dissect")
+            for r in records:
+                nat = r["natural"]
+                row = {
+                    "peak_id": r["peak"], "name": r["name"], "re_len": r["re_len"],
+                    "gc_frac": r["gc"], "n_roles": len(r["roles"]),
+                    "roles": ";".join(r["roles"]),
+                    "natural_seq_id": nat[0] if nat else "",
+                    "natural_n_haps": nat[1] if nat else "",
+                    "natural_pct_acc": nat[2] if nat else "",
+                    "is_synthetic": nat is None, "seq": r["seq"],
+                }
+                fh.write("\t".join(str(row[c]) for c in MANIFEST_COLS) + "\n")
+
+    peak = records[0]["peak"] if records else "(none)"
+    n_syn = sum(1 for r in records if r["natural"] is None)
+    print(f"[panel] {peak}: {len(records)} unique sequences "
+          f"({n_syn} synthetic, {len(records) - n_syn} = existing haplotypes)")
+    for did, nch in skipped:
+        print(f"[panel] skipped {did}: {nch} change(s), nothing to dissect")
 
 
 def _self_test():
@@ -287,25 +281,26 @@ def _self_test():
         f.write("\t".join(["1", "TRUE", "2,3,4", "car1,car2", "-0.4"]) + "\n")
     rv = os.path.join(d, "rv.tsv")
     with open(rv, "w") as f:
-        f.write("seq_id\tsamples\tn_haps\tact_mean\tnearest_noncarrier_seq_id\n")
-        f.write("chrT_1_6_s00\tcar1,car2\t2\t0.10\tchrT_1_6_s01\n")
-        f.write("chrT_1_6_s01\tnon1,non2\t2\t0.80\t\n")
-    recs, aligned, _man, _skip = build(aln, pm, rv)
-    bg = next(s for n, _, s in recs if n.endswith("_background"))
-    # aligned-frame records carry the anchor leaf + full-length (gapped) seq
-    assert all(r["anchor"] in ("car1", "car2") for r in aligned), aligned
-    assert {len(r["seq"]) for r in aligned} == {6}, aligned
-    assert bg[:4] == "AACA", bg
-    assert len(recs) == 5, [n for n, _, _ in recs]
-    for n, _, s in recs:
-        suf = n.split("_")[-1]
-        if suf.startswith("RE"):
-            assert sum(a != b for a, b in zip(s, bg)) == 1, (n, s, bg)
-    # header carries table provenance
-    desc0 = next(desc for n, desc, _ in recs if n.endswith("_background"))
-    assert "from_carrier=chrT_1_6_s00" in desc0 and "carrier_pct_acc=10.0" in desc0, desc0
-    assert "baseline=chrT_1_6_s01" in desc0 and "baseline_pct_acc=80.0" in desc0, desc0
-    print("self-test OK:", len(recs), "seqs;", desc0)
+        f.write("seq_id\tsamples\tn_haps\tact_mean\tre_seq\n")
+        # the 'full' (carrier) AGTTAC and the 'background' AACAAC are both natural
+        f.write("chrT_1_6_s00\tcar1\t1\t0.10\tAGTTAC\n")
+        f.write("chrT_1_6_s01\tnon1,non2\t2\t0.80\tAACAAC\n")
+    recs, skip = build(aln, pm, rv)
+    seqs = [r["seq"] for r in recs]
+    assert len(seqs) == len(set(seqs)), "not unique"
+    byseq = {r["seq"]: r for r in recs}
+    # full = carrier AGTTAC, annotated natural=s00 AND role d1:full
+    full = byseq["AGTTAC"]
+    assert "d1:full" in full["roles"] and full["natural"][0] == "chrT_1_6_s00", full
+    # background = AACAAC, natural=s01 (2 haps) AND role d1:background
+    bg = byseq["AACAAC"]
+    assert "d1:background" in bg["roles"] and bg["natural"][0] == "chrT_1_6_s01", bg
+    assert bg["natural"][1] == "2", bg["natural"]
+    # the single edits are synthetic (no natural match)
+    syn = [r for r in recs if r["natural"] is None]
+    assert all(any(":RE" in role for role in r["roles"]) for r in syn), syn
+    print("self-test OK:", len(recs), "unique;",
+          "synthetic:", len(syn), "| full+bg are existing haplotypes")
 
 
 if __name__ == "__main__":

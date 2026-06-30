@@ -219,7 +219,7 @@ hsca-hapsel = { cmd = [
     "run_name=hsca_hapsel",
     "peak_ids=config/hsca_hapsel_peak_ids.txt",
     "-j",
-    "400",
+    "250",
 ] }
 # Install selectiveInference + its CRAN deps into the pixi-managed R library.
 # selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.

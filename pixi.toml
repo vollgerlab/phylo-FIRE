@@ -199,7 +199,7 @@ hsca-stage = { cmd = [
     "run_name=hsca_stage",
     "peak_ids=config/hsca_stage_peak_ids.txt",
     "-j",
-    "200",
+    "400",
 ] }
 # Install selectiveInference + its CRAN deps into the pixi-managed R library.
 # selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.

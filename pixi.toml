@@ -198,8 +198,6 @@ hsca-stage = { cmd = [
     "--config",
     "run_name=hsca_stage",
     "peak_ids=config/hsca_stage_peak_ids.txt",
-    "--profile",
-    "profiles/slurm",
     "-j",
     "200",
 ] }

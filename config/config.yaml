@@ -56,6 +56,10 @@ run_name: "default"
 # Plot selection (data-driven, post-aggregate). Every peak with >=1 driver and
 # every heritable-but-no-driver peak is plotted (unlimited); plus this many
 # seeded-random peaks as controls.
+# Write interactive HTML plots (~4 MB each) alongside the PDF. Off by default;
+# enable with --config plot_html=true.
+plot_html: false
+
 random_n: 100
 random_seed: 42
 

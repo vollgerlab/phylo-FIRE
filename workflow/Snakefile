@@ -25,6 +25,11 @@ RUN = config.get("run_name", "default")
 RESULTS = f"results/{RUN}"
 TEMP = f"temp/{RUN}"
 
+# Interactive HTML plots are ~4 MB each; OFF by default (the static PDF is always
+# written). Enable with `--config plot_html=true`. (str() because --config values
+# arrive as strings, where bool("false") would be truthy.)
+PLOT_HTML = str(config.get("plot_html", "false")).lower() in ("true", "1", "yes")
+
 
 def count_unique_seqs(fa_path: str) -> int:
     """Count unique sequences in a FASTA (handles multi-line format)."""
@@ -103,8 +108,9 @@ def aggregate_outputs(wildcards):
         peaks = [
             line.strip() for line in Path(manifest).read_text().splitlines() if line.strip()
         ]
-        out += expand(RESULTS + "/plots/{cat}/{peak_id}.html", cat=cat, peak_id=peaks)
         out += expand(RESULTS + "/plots/{cat}/{peak_id}.pdf", cat=cat, peak_id=peaks)
+        if PLOT_HTML:
+            out += expand(RESULTS + "/plots/{cat}/{peak_id}.html", cat=cat, peak_id=peaks)
     return out
 
 
@@ -685,10 +691,11 @@ SNP effect is annotated above the MSA at its alignment column.
         phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
         script=workflow.source_path("scripts/plot_tree_actuation_html.py"),
     output:
-        html=RESULTS + "/plots/{category}/{peak_id}.html",
+        **({"html": RESULTS + "/plots/{category}/{peak_id}.html"} if PLOT_HTML else {}),
         pdf=RESULTS + "/plots/{category}/{peak_id}.pdf",
     params:
         peak_id=lambda wc: wc.peak_id,
+        html_arg=lambda wc, output: f"--html {output.html}" if PLOT_HTML else "",
         pclai_arg=lambda wc, input: (
             f"--pclai-bed {shlex.quote(str(input.pclai[0]))}" if input.pclai else ""
         ),
@@ -699,10 +706,9 @@ SNP effect is annotated above the MSA at its alignment column.
             --tree        {input.tree} \
             --actuation   {input.actuation} \
             --alignment   {input.alignment} \
-            --html        {output.html} \
             --pdf         {output.pdf} \
             --peak-id     {params.peak_id} \
             --phylo-mm    {input.phylo_mm} \
             --flank       {params.flank} \
-            {params.pclai_arg}
+            {params.html_arg} {params.pclai_arg}
         """

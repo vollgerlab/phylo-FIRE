@@ -2152,7 +2152,7 @@ def main() -> None:
     parser.add_argument("--actuation", required=True, type=Path)
     parser.add_argument("--alignment", required=True, type=Path,
                         help="MAFFT-aligned FASTA (aligned/{peak_id}.fa)")
-    parser.add_argument("--html",      required=True, type=Path,
+    parser.add_argument("--html",      required=False, default=None, type=Path,
                         help="Output HTML path")
     parser.add_argument("--pdf",       required=True, type=Path,
                         help="Output PDF path (via kaleido)")
@@ -2205,18 +2205,18 @@ def main() -> None:
         panel=panel,
     )
 
-    args.html.parent.mkdir(parents=True, exist_ok=True)
-
-    # HTML – self-contained, toolbar "Download" button saves SVG
-    fig.write_html(
-        str(args.html),
-        include_plotlyjs="cdn",
-        config={
-            "toImageButtonOptions": {"format": "svg", "filename": peak_id},
-            "displayModeBar": True,
-        },
-    )
-    print(f"Saved {args.html}", file=sys.stderr)
+    # HTML is optional (interactive but ~4 MB each) — only when --html is given.
+    if args.html is not None:
+        args.html.parent.mkdir(parents=True, exist_ok=True)
+        fig.write_html(
+            str(args.html),
+            include_plotlyjs="cdn",
+            config={
+                "toImageButtonOptions": {"format": "svg", "filename": peak_id},
+                "displayModeBar": True,
+            },
+        )
+        print(f"Saved {args.html}", file=sys.stderr)
 
     # PDF via kaleido. Fail loudly: snakemake declares `pdf` as a required
     # output, so a silent PDF failure produces a confusing "missing outputs"

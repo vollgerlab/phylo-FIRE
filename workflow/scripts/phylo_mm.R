@@ -68,7 +68,10 @@ parse_args <- function(args) {
 opt <- parse_args(commandArgs(trailingOnly = TRUE))
 stopifnot(!is.null(opt$tree), !is.null(opt$actuation),
           !is.null(opt$alignment),
-          !is.null(opt$tsv), !is.null(opt$pdf))
+          !is.null(opt$tsv))
+# --pdf is optional: the per-peak diagnostic PDF is no longer produced in the
+# pipeline (everything it showed is in the TSV header + the main category plot,
+# which only renders for the plotted subset). Pass --pdf for ad-hoc debugging.
 peak_id <- if (is.null(opt[["peak-id"]])) tools::file_path_sans_ext(basename(opt$tree)) else opt[["peak-id"]]
 
 # Reproducibility: MCMCglmm (MCMC) and cv.glmnet (random CV folds) are both
@@ -203,9 +206,11 @@ write_empty_header <- function(reason) {
         paste0("# note=", reason)
     )
     writeLines(c(header, paste(empty_branch_cols, collapse = "\t")), opt$tsv)
-    pdf(opt$pdf, width = 6, height = 4)
-    plot.new(); title(main = paste(peak_id, "—", reason))
-    dev.off()
+    if (!is.null(opt$pdf)) {
+        pdf(opt$pdf, width = 6, height = 4)
+        plot.new(); title(main = paste(peak_id, "—", reason))
+        dev.off()
+    }
 }
 
 if (length(common) < 4) {
@@ -663,7 +668,8 @@ writeLines(header, con)
 write.table(branch_df, con, sep = "\t", row.names = FALSE, quote = FALSE, na = "NA")
 close(con)
 
-# ── PDF diagnostics: H² posteriors + LASSO selection plot ─────────────────────
+# ── PDF diagnostics (ad-hoc only; the pipeline does NOT pass --pdf) ────────────
+if (!is.null(opt$pdf)) {
 pdf(opt$pdf, width = 9, height = 7)
 op <- par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
 
@@ -714,3 +720,4 @@ if (nrow(branch_df) > 0L && any(branch_df$selected_by_lasso)) {
 }
 par(op)
 dev.off()
+}

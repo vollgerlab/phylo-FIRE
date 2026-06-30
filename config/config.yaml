@@ -47,6 +47,18 @@ agc: "resources/HPRC_r2_assemblies_0.6.1.agc"
 h2_hpd_width_max: 0.5
 h2_hpd_lower_min: 0.1
 
+# Run name: all outputs are namespaced under results/{run_name}/ and
+# temp/{run_name}/ so separate runs never clobber or orphan each other (and can
+# run concurrently). Each pixi task sets this to its own name; override per run
+# with --config run_name=<name>.
+run_name: "default"
+
+# Plot selection (data-driven, post-aggregate). Every peak with >=1 driver and
+# every heritable-but-no-driver peak is plotted (unlimited); plus this many
+# seeded-random peaks as controls.
+random_n: 100
+random_seed: 42
+
 # MAFFT parameters
 mafft_maxiterate: 1000
 

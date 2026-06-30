@@ -10,6 +10,22 @@ min_version("8.0")
 configfile: "config/config.yaml"
 
 
+# Plot outputs live in a category subdir (results/plots/{category}/{peak}); pin
+# the category to the known set and keep peak_id from swallowing the slash.
+wildcard_constraints:
+    category="drivers|heritable_no_driver|random",
+    peak_id=r"[^/]+",
+
+
+# All outputs are namespaced under a run name so separate runs (test,
+# hap-selective-30, the cluster run, …) get their own results/ + temp/ subtree
+# and never clobber or orphan each other. Each pixi task sets `run_name=<task>`;
+# the default lands under results/default/.
+RUN = config.get("run_name", "default")
+RESULTS = f"results/{RUN}"
+TEMP = f"temp/{RUN}"
+
+
 def count_unique_seqs(fa_path: str) -> int:
     """Count unique sequences in a FASTA (handles multi-line format)."""
     seqs: set[str] = set()
@@ -43,27 +59,53 @@ def count_unique_seqs_phylip(phy_path: str) -> int:
 # ── aggregate (resolves after checkpoint) ─────────────────────────────────────
 
 
-def aggregate_outputs(wildcards):
-    """Return tree + plot paths for the peaks listed in the run manifest.
+def _run_peak_ids():
+    """The authoritative peak set for this run, from the extract_fastas manifest
+    (``results/fastas/peak_ids.txt``). Reading it instead of globbing keeps stale
+    per-peak files from previous fixtures out of the build graph."""
+    manifest = Path(RESULTS + "/fastas/peak_ids.txt")
+    return [line.strip() for line in manifest.read_text().splitlines() if line.strip()]
 
-    The manifest at ``results/fastas/peak_ids.txt`` is the *authoritative* set
-    of peaks for the current run — written by ``extract_fastas.py`` (union BED
-    mode) or by ``_ingest_preextracted`` (preextracted-dir mode). Reading it
-    instead of globbing ensures stale per-peak files from previous fixtures
-    never enter the build graph.
-    """
+
+def _all_re_variants(wildcards):
+    """Every peak's re_variants table — the input to aggregate_results.
+
+    Requiring all of these forces the full per-peak computation (tree → phylo_mm
+    → re_variants) for the WHOLE peak set: stats for all, regardless of which
+    peaks get plotted."""
     checkpoints.extract_fastas.get(**wildcards)
-    manifest = Path("results/fastas/peak_ids.txt")
-    peak_ids = [
-        line.strip() for line in manifest.read_text().splitlines() if line.strip()
+    return expand(RESULTS + "/re_variants/{peak_id}.tsv", peak_id=_run_peak_ids())
+
+
+# Plot categories → the manifest aggregate_results writes for each. Plots are
+# rendered ONLY for peaks listed here (drivers + heritable-no-driver + random),
+# not for all 180K peaks.
+PLOT_CATEGORIES = {
+    "drivers": RESULTS + "/tables/plot_drivers.txt",
+    "heritable_no_driver": RESULTS + "/tables/plot_heritable_no_driver.txt",
+    "random": RESULTS + "/tables/plot_random.txt",
+}
+
+
+def aggregate_outputs(wildcards):
+    """Final targets: the unified parquet table + the categorized plots.
+
+    The table pulls the full per-peak stats (via aggregate_results → all
+    re_variants). The plots are data-driven: aggregate_results classifies peaks
+    and writes the three manifests, which we read here to expand the plot paths
+    into their category subdirs."""
+    checkpoints.aggregate_results.get(**wildcards)
+    out = [
+        RESULTS + "/tables/re_variants.parquet",
+        RESULTS + "/tables/re_variants.tsv.gz",
     ]
-    return (
-        expand("results/trees/{peak_id}.treefile", peak_id=peak_ids)
-        + expand("results/plots/{peak_id}.html", peak_id=peak_ids)
-        + expand("results/plots/{peak_id}.pdf", peak_id=peak_ids)
-        + expand("results/phylo_mm/{peak_id}.tsv", peak_id=peak_ids)
-        + expand("results/phylo_mm/{peak_id}.pdf", peak_id=peak_ids)
-    )
+    for cat, manifest in PLOT_CATEGORIES.items():
+        peaks = [
+            line.strip() for line in Path(manifest).read_text().splitlines() if line.strip()
+        ]
+        out += expand(RESULTS + "/plots/{cat}/{peak_id}.html", cat=cat, peak_id=peaks)
+        out += expand(RESULTS + "/plots/{cat}/{peak_id}.pdf", cat=cat, peak_id=peaks)
+    return out
 
 
 # ── rules ──────────────────────────────────────────────────────────────────────
@@ -137,7 +179,7 @@ files emitted by PARE's `extract_paralog_msas` rule).
         highlight=_highlight_input,
         script=workflow.source_path("scripts/extract_fastas.py"),
     output:
-        done=touch("results/fastas/.done"),
+        done=touch(RESULTS + "/fastas/.done"),
     threads: config.get("bgzip_threads", 16)
     resources:
         mem_mb=32768,
@@ -152,7 +194,7 @@ files emitted by PARE's `extract_paralog_msas` rule).
         haplotype_distinct=config.get("haplotype_distinct"),
     run:
         if params.preextracted:
-            n = _ingest_preextracted(Path(input.src), Path("results/fastas"))
+            n = _ingest_preextracted(Path(input.src), Path(RESULTS + "/fastas"))
             print(f"linked {n} pre-extracted FASTA/TSV pairs from {input.src}")
         else:
             # Sort by consensus_peak_id (col 5) so each peak's rows are
@@ -163,7 +205,7 @@ files emitted by PARE's `extract_paralog_msas` rule).
                 f"bgzip -cd -@ {threads} {shlex.quote(str(input.src))}",
                 "| (sed -u 1q; sort -t$'\\t' -k5,5 -S 50%)",
                 f"| python {shlex.quote(str(input.script))}",
-                "--outdir results/fastas",
+                f"--outdir {RESULTS}/fastas",
                 f"--min-seqs {params.min_seqs}",
             ]
             if params.primary_only:
@@ -190,11 +232,11 @@ PanSN asm_chr in the per-peak TSV. Only instantiated when `flank > 0` (the
 so the checkpoint's peak manifest stays independent of flank.
 """
     input:
-        fa="results/fastas/{peak_id}.fa",
-        tsv="results/fastas/{peak_id}.tsv",
+        fa=RESULTS + "/fastas/{peak_id}.fa",
+        tsv=RESULTS + "/fastas/{peak_id}.tsv",
         script=workflow.source_path("scripts/add_flanks.py"),
     output:
-        fa=temp("results/flanked/{peak_id}.fa"),
+        fa=temp(TEMP + "/flanked/{peak_id}.fa"),
     threads: 4
     resources:
         mem_mb=4096,
@@ -217,8 +259,8 @@ so the checkpoint's peak manifest stays independent of flank.
 def _mafft_input(wildcards):
     """RE-only FASTA, or the flanked FASTA when flanking is enabled."""
     if int(config.get("flank", 0)) > 0:
-        return f"results/flanked/{wildcards.peak_id}.fa"
-    return f"results/fastas/{wildcards.peak_id}.fa"
+        return f"{TEMP}/flanked/{wildcards.peak_id}.fa"
+    return f"{RESULTS}/fastas/{wildcards.peak_id}.fa"
 
 
 rule mafft:
@@ -226,7 +268,7 @@ rule mafft:
     input:
         fa=_mafft_input,
     output:
-        fa=temp("results/aligned/{peak_id}.fa"),
+        fa=temp(TEMP + "/aligned/{peak_id}.fa"),
     threads: 4
     resources:
         mem_mb=8192,
@@ -252,18 +294,18 @@ treats gaps as missing data and indel-only splits collapse to zero-length
 branches.
 """
     input:
-        fa="results/aligned/{peak_id}.fa",
+        fa=TEMP + "/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/encode_indels.py"),
     output:
-        nex="results/coded/{peak_id}/{peak_id}.nex",
-        nuc="results/coded/{peak_id}/{peak_id}_nucleic.phy",
+        nex=RESULTS + "/coded/{peak_id}/{peak_id}.nex",
+        nuc=RESULTS + "/coded/{peak_id}/{peak_id}_nucleic.phy",
     threads: 1
     resources:
         mem_mb=2048,
         runtime=10,
     params:
         peak_id=lambda wc: wc.peak_id,
-        out_dir=lambda wc: f"results/coded/{wc.peak_id}",
+        out_dir=lambda wc: f"{RESULTS}/coded/{wc.peak_id}",
     shell:
         """
         python {input.script} \
@@ -284,16 +326,16 @@ widened with flanking sequence, switch the DNA partition to ModelFinder by
 dropping its model from the charpartition.)
 """
     input:
-        nex="results/coded/{peak_id}/{peak_id}.nex",
-        nuc="results/coded/{peak_id}/{peak_id}_nucleic.phy",
+        nex=RESULTS + "/coded/{peak_id}/{peak_id}.nex",
+        nuc=RESULTS + "/coded/{peak_id}/{peak_id}_nucleic.phy",
     output:
-        treefile="results/trees/{peak_id}.treefile",
+        treefile=RESULTS + "/trees/{peak_id}.treefile",
     threads: 4
     resources:
         mem_mb=16384,
         runtime=120,
     params:
-        prefix=lambda wc: os.path.abspath(f"results/trees/{wc.peak_id}"),
+        prefix=lambda wc: os.path.abspath(f"{RESULTS}/trees/{wc.peak_id}"),
         peak_id=lambda wc: wc.peak_id,
         # Enable ultrafast bootstrap only when the alignment has >=4 unique sequences;
         # IQ-TREE deduplicates internally and refuses bootstrap on fewer distinct taxa.
@@ -335,11 +377,11 @@ molecular-clock assumption, so the reference allele sits at the base on
 every peak. Needs the alignment to compute the consensus.
 """
     input:
-        treefile="results/trees/{peak_id}.treefile",
-        alignment="results/aligned/{peak_id}.fa",
+        treefile=RESULTS + "/trees/{peak_id}.treefile",
+        alignment=TEMP + "/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/root_tree.R"),
     output:
-        rooted="results/trees/{peak_id}.rooted.nwk",
+        rooted=RESULTS + "/trees/{peak_id}.rooted.nwk",
     threads: 1
     resources:
         mem_mb=1024,
@@ -358,10 +400,10 @@ every peak. Needs the alignment to compute the consensus.
 rule re_trim:
     """Slice the flanked MSA down to the RE columns."""
     input:
-        fa="results/aligned/{peak_id}.fa",
+        fa=TEMP + "/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/trim_to_re.py"),
     output:
-        fa=temp("results/re/aligned/{peak_id}.fa"),
+        fa=temp(TEMP + "/re/aligned/{peak_id}.fa"),
     threads: 1
     resources:
         mem_mb=1024,
@@ -375,18 +417,18 @@ rule re_trim:
 rule re_encode_indels:
     """encode_indels on the RE-only alignment (mirrors rule encode_indels)."""
     input:
-        fa="results/re/aligned/{peak_id}.fa",
+        fa=TEMP + "/re/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/encode_indels.py"),
     output:
-        nex="results/re/coded/{peak_id}/{peak_id}.nex",
-        nuc="results/re/coded/{peak_id}/{peak_id}_nucleic.phy",
+        nex=RESULTS + "/re/coded/{peak_id}/{peak_id}.nex",
+        nuc=RESULTS + "/re/coded/{peak_id}/{peak_id}_nucleic.phy",
     threads: 1
     resources:
         mem_mb=2048,
         runtime=10,
     params:
         peak_id=lambda wc: wc.peak_id,
-        out_dir=lambda wc: f"results/re/coded/{wc.peak_id}",
+        out_dir=lambda wc: f"{RESULTS}/re/coded/{wc.peak_id}",
     shell:
         """
         python {input.script} \
@@ -406,17 +448,17 @@ unavailable regardless of the tree's topology, so the fallback only needs
 the right tip set.
 """
     input:
-        nex="results/re/coded/{peak_id}/{peak_id}.nex",
-        nuc="results/re/coded/{peak_id}/{peak_id}_nucleic.phy",
-        main_tree="results/trees/{peak_id}.treefile",
+        nex=RESULTS + "/re/coded/{peak_id}/{peak_id}.nex",
+        nuc=RESULTS + "/re/coded/{peak_id}/{peak_id}_nucleic.phy",
+        main_tree=RESULTS + "/trees/{peak_id}.treefile",
     output:
-        treefile="results/re/trees/{peak_id}.treefile",
+        treefile=RESULTS + "/re/trees/{peak_id}.treefile",
     threads: 4
     resources:
         mem_mb=16384,
         runtime=120,
     params:
-        prefix=lambda wc: os.path.abspath(f"results/re/trees/{wc.peak_id}"),
+        prefix=lambda wc: os.path.abspath(f"{RESULTS}/re/trees/{wc.peak_id}"),
         peak_id=lambda wc: wc.peak_id,
         bootstrap=lambda wc, input: (
             "-B 1000" if count_unique_seqs_phylip(str(input.nuc)) >= 4 else ""
@@ -438,11 +480,11 @@ the right tip set.
 rule re_root_tree:
     """Ancestral-proxy root the RE-only tree (mirrors rule root_tree)."""
     input:
-        treefile="results/re/trees/{peak_id}.treefile",
-        alignment="results/re/aligned/{peak_id}.fa",
+        treefile=RESULTS + "/re/trees/{peak_id}.treefile",
+        alignment=TEMP + "/re/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/root_tree.R"),
     output:
-        rooted="results/re/trees/{peak_id}.rooted.nwk",
+        rooted=RESULTS + "/re/trees/{peak_id}.rooted.nwk",
     threads: 1
     resources:
         mem_mb=1024,
@@ -455,15 +497,15 @@ def _re_tree(wildcards):
     """RE-only rooted tree: the trimmed-then-rebuilt tree when flank>0, else
     the main tree (with no flank the RE *is* the whole alignment)."""
     if config.get("flank", 0) > 0:
-        return f"results/re/trees/{wildcards.peak_id}.rooted.nwk"
-    return f"results/trees/{wildcards.peak_id}.rooted.nwk"
+        return f"{RESULTS}/re/trees/{wildcards.peak_id}.rooted.nwk"
+    return f"{RESULTS}/trees/{wildcards.peak_id}.rooted.nwk"
 
 
 def _re_alignment(wildcards):
     """RE-only alignment paired with `_re_tree`."""
     if config.get("flank", 0) > 0:
-        return f"results/re/aligned/{wildcards.peak_id}.fa"
-    return f"results/aligned/{wildcards.peak_id}.fa"
+        return f"{TEMP}/re/aligned/{wildcards.peak_id}.fa"
+    return f"{TEMP}/aligned/{wildcards.peak_id}.fa"
 
 
 def _pclai_bed_for_plot(_wildcards):
@@ -493,19 +535,20 @@ TSV header carries the 3-prior phylogenetic heritability sensitivity
 (h2_alpha{1000,1,025}), the alpha.V=1 posterior ESS + a convergence flag,
 and the LASSO branch-selection summary. Data rows are per-internal-branch:
 a Welch t-test scan of clade-vs-rest actuation (p_fdr is the headline),
-plus LASSO-selected branches with selectiveInference beta/CI. The PDF shows
-the three H²_p posterior densities + the selected-branch effect sizes.
+plus LASSO-selected branches with selectiveInference beta/CI. No per-peak
+diagnostic PDF is emitted (it was redundant with the TSV header + the main
+category plot, and would be 180K files at scale); pass --pdf to phylo_mm.R
+by hand for ad-hoc debugging.
 """
     input:
-        tree="results/trees/{peak_id}.rooted.nwk",
-        actuation="results/fastas/{peak_id}.tsv",
-        alignment="results/aligned/{peak_id}.fa",
+        tree=RESULTS + "/trees/{peak_id}.rooted.nwk",
+        actuation=RESULTS + "/fastas/{peak_id}.tsv",
+        alignment=TEMP + "/aligned/{peak_id}.fa",
         re_tree=_re_tree,
         re_alignment=_re_alignment,
         script=workflow.source_path("scripts/phylo_mm.R"),
     output:
-        tsv="results/phylo_mm/{peak_id}.tsv",
-        pdf="results/phylo_mm/{peak_id}.pdf",
+        tsv=RESULTS + "/phylo_mm/{peak_id}.tsv",
     threads: 1
     resources:
         mem_mb=4096,
@@ -524,12 +567,76 @@ the three H²_p posterior densities + the selected-branch effect sizes.
             --re-tree      {input.re_tree} \
             --re-alignment {input.re_alignment} \
             --tsv       {output.tsv} \
-            --pdf       {output.pdf} \
             --peak-id   {wildcards.peak_id} \
             --min-cov   {params.min_cov} \
             --flank     {params.flank} \
             --h2-width-max {params.h2_width_max} \
             --h2-lower-min {params.h2_lower_min}
+        """
+
+
+rule re_variants:
+    """Per-peak re_variants table: one row per unique RE sequence.
+
+The clonable/validatable unit for plasmid work — each unique RE sequence with
+its actuation, the driver allele(s) it carries (and the model-predicted
+``driver_delta``), and the cheapest single-variable validation contrast
+(``nearest_noncarrier_seq_id`` / ``clean_pair`` / ``minimal_edit``). Built from
+already-produced files (alignment + actuation + phylo_mm TSV); no re-modeling.
+"""
+    input:
+        aligned=TEMP + "/aligned/{peak_id}.fa",
+        actuation=RESULTS + "/fastas/{peak_id}.tsv",
+        phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
+        script=workflow.source_path("scripts/build_re_variants.py"),
+    output:
+        tsv=RESULTS + "/re_variants/{peak_id}.tsv",
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=10,
+    shell:
+        """
+        python {input.script} \
+            --aligned   {input.aligned} \
+            --actuation {input.actuation} \
+            --phylo-mm  {input.phylo_mm} \
+            --out       {output.tsv}
+        """
+
+
+checkpoint aggregate_results:
+    """Concatenate every peak's re_variants into one parquet + gzipped TSV, and
+write the three plot manifests (drivers / heritable-no-driver / random) that
+drive data-driven plotting. A checkpoint because the plot targets in `rule all`
+depend on which peaks land in each manifest.
+"""
+    input:
+        tables=_all_re_variants,
+        script=workflow.source_path("scripts/aggregate_re_variants.py"),
+    output:
+        parquet=RESULTS + "/tables/re_variants.parquet",
+        tsv=RESULTS + "/tables/re_variants.tsv.gz",
+        drivers=RESULTS + "/tables/plot_drivers.txt",
+        heritable=RESULTS + "/tables/plot_heritable_no_driver.txt",
+        random=RESULTS + "/tables/plot_random.txt",
+    resources:
+        mem_mb=16384,
+        runtime=120,
+    params:
+        rdir=RESULTS,
+        random_n=config.get("random_n", 100),
+        seed=config.get("random_seed", 42),
+    shell:
+        """
+        python {input.script} \
+            --indir {params.rdir}/re_variants \
+            --peaks {params.rdir}/fastas/peak_ids.txt \
+            --out-parquet {output.parquet} \
+            --out-tsv {output.tsv} \
+            --manifest-dir {params.rdir}/tables \
+            --random-n {params.random_n} \
+            --seed {params.seed}
         """
 
 
@@ -545,15 +652,15 @@ statistical overlay: header summary (H²_p), and the top variable-site
 SNP effect is annotated above the MSA at its alignment column.
 """
     input:
-        tree="results/trees/{peak_id}.rooted.nwk",
-        actuation="results/fastas/{peak_id}.tsv",
-        alignment="results/aligned/{peak_id}.fa",
+        tree=RESULTS + "/trees/{peak_id}.rooted.nwk",
+        actuation=RESULTS + "/fastas/{peak_id}.tsv",
+        alignment=TEMP + "/aligned/{peak_id}.fa",
         pclai=_pclai_bed_for_plot,
-        phylo_mm="results/phylo_mm/{peak_id}.tsv",
+        phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
         script=workflow.source_path("scripts/plot_tree_actuation_html.py"),
     output:
-        html="results/plots/{peak_id}.html",
-        pdf="results/plots/{peak_id}.pdf",
+        html=RESULTS + "/plots/{category}/{peak_id}.html",
+        pdf=RESULTS + "/plots/{category}/{peak_id}.pdf",
     params:
         peak_id=lambda wc: wc.peak_id,
         pclai_arg=lambda wc, input: (

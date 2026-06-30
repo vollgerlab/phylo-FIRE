@@ -21,7 +21,7 @@ pixi run fmt                       # snakefmt workflow/Snakefile
 
 # Cluster (CHPC) production run — uses the asm-coord union BED + AGC paths:
 pixi run -- snakemake --configfile config/cluster.yaml \
-    --config peak_ids=<peaks.txt> --profile profiles/slurm -j <N>
+    --config run_name=<name> peak_ids=<peaks.txt> --profile profiles/slurm -j <N>
 ```
 
 There is **no `clean` task**: snakemake handles its own state via
@@ -154,8 +154,10 @@ Three Snakemake steps driven by a checkpoint:
    `ci_lower`/`ci_upper`/`p`. Epigenetic peaks (flanks resolve the tree but the
    RE is monomorphic) get a real H² with an empty variant table.
 
-5. `rule plot` -- produces `results/plots/{peak_id}.html` and `results/plots/{peak_id}.pdf`
-   via `workflow/scripts/plot_tree_actuation_html.py`. Layout left → right:
+5. `rule plot` -- produces `results/plots/{category}/{peak_id}.html` and `.pdf`
+   via `workflow/scripts/plot_tree_actuation_html.py`. `{category}` is one of
+   `drivers` / `heritable_no_driver` / `random` (see `aggregate_results` below) —
+   plots are NOT rendered for every peak, only the selected subset. Layout left → right:
    ancestral-proxy-rooted ladderized tree, leaf labels, **PCLAI ancestry stripe**,
    FIRE actuation heatmap (light-grey gaps with dark box outlines around
    contiguous `-` runs, N/unmapped stay dark grey), MSA with per-cell
@@ -178,6 +180,39 @@ Three Snakemake steps driven by a checkpoint:
    lines run from each tip to the sample-name column. The PCLAI column is shown
    only when `config["pclai_bed"]` points at a valid bgzipped + tabix-indexed
    BED; otherwise it collapses to zero width.
+
+6. `rule re_variants` (`workflow/scripts/build_re_variants.py`) -- the
+   **validation deliverable**: one row per *unique RE sequence* per peak, built
+   from already-produced files (the mafft alignment + actuation TSV + the
+   `phylo_mm` TSV), no re-modeling. Haplotypes identical over the attributed band
+   collapse to one row. Grain columns: `re_seq` (literal clonable DNA), `re_len`,
+   `gc_frac`, cov-weighted `act_mean`+spread, `act_values` (comma-sep raw per-hap
+   actuations), `samples` (provenance). Driver columns (inline): `has_driver`,
+   `driver_ids`/`driver_positions`/`driver_betas`/`driver_p` (comma-sep when a
+   sequence carries >1), and `driver_delta` = sum of the joint β of the driver
+   alleles it carries = the additive model's predicted actuation shift vs the
+   non-carrier baseline (the number to validate). **Plasmid-design helpers**
+   (within-peak Hamming): `nearest_noncarrier_seq_id`, `n_other_diffs` (diffs
+   OUTSIDE the driver columns; `0` ⇒ a natural single-variable pair exists),
+   `clean_pair`, `minimal_edit` (`RE80 c->g`, the exact mutagenesis). The
+   attributed band = RE band normally, whole alignment in `region` mode (so the
+   clonable unit always contains the drivers). RE-relative positions are
+   alignment-column-based (`col - re_first_col + 1`, matching the plot).
+
+7. `checkpoint aggregate_results`
+   (`workflow/scripts/aggregate_re_variants.py`) -- concatenates every peak's
+   `re_variants` TSV into `results/tables/re_variants.parquet` (+ `.tsv.gz`), the
+   unified table, and writes three plot manifests that drive data-driven
+   plotting: `plot_drivers.txt` (peaks with ≥1 selected driver), 
+   `plot_heritable_no_driver.txt` (H² identified — `h2_re_ok` or `h2_region_ok` —
+   but 0 drivers; **unlimited**), and `plot_random.txt` (`config["random_n"]`=100
+   seeded-random peaks, truly random so it may overlap the other two; its own
+   subdir makes the duplicate render harmless). It is a **checkpoint** because
+   `rule all`'s plot targets depend on which peaks land in each manifest.
+   `rule all` = the parquet table + the categorized plots; requiring the table
+   forces the full per-peak stats (tree → phylo_mm → re_variants) for the WHOLE
+   peak set, so stats are computed for all peaks and only the selected subset is
+   plotted.
 
 ## Key implementation decisions
 
@@ -326,13 +361,25 @@ resources/
         preextracted_pg_31_all_haps/        full-cohort version (319 seqs, 78 haps)
 profiles/
     slurm/config.yaml         SLURM executor profile (CHPC Redwood)
-results/                      all pipeline outputs (gitignored)
-    fastas/    {peak_id}.fa  {peak_id}.tsv  peak_ids.txt
-    aligned/   {peak_id}.fa  (temp, deleted after plot)
-    trees/     {peak_id}.treefile
-    phylo_mm/  {peak_id}.tsv  {peak_id}.pdf
-    plots/     {peak_id}.html  {peak_id}.pdf
+results/{run_name}/           all pipeline outputs (gitignored)
+    fastas/      {peak_id}.fa  {peak_id}.tsv  peak_ids.txt
+    trees/       {peak_id}.treefile  {peak_id}.rooted.nwk
+    phylo_mm/    {peak_id}.tsv          (no PDF; --pdf is ad-hoc only)
+    re_variants/ {peak_id}.tsv          per-peak unique-RE-sequence rows
+    tables/      re_variants.parquet  re_variants.tsv.gz  plot_*.txt  (aggregate)
+    plots/       {category}/{peak_id}.html  .pdf   (category ∈ drivers/heritable_no_driver/random)
+temp/{run_name}/              all temp() intermediates (gitignored; kept by --notemp)
+    flanked/     {peak_id}.fa
+    aligned/     {peak_id}.fa
+    re/aligned/  {peak_id}.fa
 ```
+
+**Run namespacing**: every output is under `results/{run_name}/` + `temp/{run_name}/`
+(`run_name` config, default `default`; each pixi task sets its own). Separate
+runs never clobber or orphan each other and can run concurrently (separate
+manifests). All `temp()` outputs live under `temp/{run_name}/`, so the pixi test
+tasks (which pass `--notemp`) leave every intermediate in one inspectable dir;
+production runs without `--notemp` delete them.
 
 ## Cross-repo: PARE
 

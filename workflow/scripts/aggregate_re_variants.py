@@ -34,19 +34,38 @@ def main() -> None:
     indir = Path(args.indir)
     peaks = [p.strip() for p in Path(args.peaks).read_text().splitlines() if p.strip()]
 
-    frames = []
+    # Pin column types so per-file inference can't disagree across 180K files.
+    # Without this, a peak whose numeric column is entirely empty (e.g.
+    # attribution_mode=none → blank h2_re_*, non-carrier rows → blank
+    # n_other_diffs) infers String, and vertical_relaxed then coerces the WHOLE
+    # column to String. read_csv reads "" as null for typed numeric/bool columns.
+    schema = {
+        "gc_frac": pl.Float64, "act_mean": pl.Float64, "act_sd": pl.Float64,
+        "act_min": pl.Float64, "act_max": pl.Float64, "total_cov": pl.Float64,
+        "driver_delta": pl.Float64,
+        "h2_re_mean": pl.Float64, "h2_re_lower": pl.Float64, "h2_re_upper": pl.Float64,
+        "h2_region_mean": pl.Float64, "h2_region_lower": pl.Float64,
+        "h2_region_upper": pl.Float64,
+        "re_len": pl.Int64, "n_haps": pl.Int64, "n_other_diffs": pl.Int64,
+        "n_unique_seqs": pl.Int64, "n_variants_selected": pl.Int64,
+        "has_driver": pl.Boolean, "clean_pair": pl.Boolean,
+        "h2_re_ok": pl.Boolean, "h2_region_ok": pl.Boolean,
+    }
+
+    frames, missing = [], 0
     for peak in peaks:
         f = indir / f"{peak}.tsv"
         if not f.exists():
+            missing += 1
             continue
-        df = pl.read_csv(f, separator="\t", infer_schema_length=10000)
+        df = pl.read_csv(f, separator="\t", schema_overrides=schema)
         if df.height:
             frames.append(df)
+    if missing:
+        print(f"[aggregate] WARNING: {missing}/{len(peaks)} peak TSVs missing "
+              f"(failed/incomplete?) — omitted from the table", flush=True)
 
-    if frames:
-        table = pl.concat(frames, how="vertical_relaxed")
-    else:
-        table = pl.DataFrame()
+    table = pl.concat(frames, how="vertical") if frames else pl.DataFrame()
 
     Path(args.out_parquet).parent.mkdir(parents=True, exist_ok=True)
     table.write_parquet(args.out_parquet)

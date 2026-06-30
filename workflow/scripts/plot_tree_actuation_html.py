@@ -658,6 +658,50 @@ def _branch_group_key(b: dict) -> frozenset:
     return frozenset(b.get("descendants") or ())
 
 
+# Synthetic mutagenesis constructs (from make_mutagenesis_panel --aligned-out)
+# render as grey pseudo-leaf rows for visual validation: same MSA column frame,
+# no tree branch, no actuation. A distinct label colour sets them apart.
+PANEL_LABEL_COLOR = "#1f6f8b"
+
+
+class _PanelRow:
+    """A synthetic construct shown as a pseudo-leaf row next to its parent."""
+    __slots__ = ("name", "label")
+
+    def __init__(self, name: str, label: str):
+        self.name = name
+        self.label = label
+
+
+def load_panel(path: Path) -> list[dict]:
+    """make_mutagenesis_panel --aligned-out FASTA → [{name, seq, anchor, label}].
+
+    Each header is ``>NAME anchor_leaf=… type=… edit=… label=…``; the sequence
+    is in the SAME alignment column frame as the main MSA (so it slots in)."""
+    rows: list[dict] = []
+    name, hdr, buf = None, {}, []
+
+    def add():
+        rows.append({
+            "name": name, "seq": "".join(buf),
+            "anchor": hdr.get("anchor_leaf", ""), "label": hdr.get("label", name),
+        })
+
+    for line in Path(path).read_text().splitlines():
+        if line.startswith(">"):
+            if name is not None:
+                add()
+            parts = line[1:].split()
+            name = parts[0]
+            hdr = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
+            buf = []
+        else:
+            buf.append(line)
+    if name is not None:
+        add()
+    return rows
+
+
 def make_figure(
     tree,
     actuation: dict[str, float | None],
@@ -667,6 +711,7 @@ def make_figure(
     pclai_bed: Path | None = None,
     phylo_mm: dict | None = None,
     flank: int = 0,
+    panel: list[dict] | None = None,
 ) -> go.Figure:
     # The tree is already midpoint-rooted upstream (rule root_tree) — the SAME
     # rooting phylo_mm sees — so we do NOT re-root here. Just ladderize for a
@@ -709,6 +754,34 @@ def make_figure(
         _disp.extend(run)
         _i = _j
     leaves = [leaves[k] for k in _disp]
+
+    # Optional: splice synthetic mutagenesis constructs in as pseudo-leaf rows
+    # right after the carrier leaf each was built from. They carry an aligned
+    # sequence (so the MSA shows the single-base edits) but NO tree branch and NO
+    # actuation — grey rows purely for validating the panel. Inserting rows shifts
+    # the y of everything below, but tree branches read the SAME pos[]["y"], so
+    # the tree just gains gaps where constructs sit and stays in sync.
+    construct_names: set[str] = set()
+    construct_label: dict[str, str] = {}
+    if panel:
+        by_anchor: dict[str, list[dict]] = {}
+        for p in panel:
+            by_anchor.setdefault(p["anchor"], []).append(p)
+        augmented: list = []
+        for _lf in leaves:
+            augmented.append(_lf)
+            for p in by_anchor.get(_lf.name, []):
+                obj = _PanelRow(p["name"], p["label"])
+                pos[id(obj)] = {"x": pos[id(_lf)]["x"], "y": 0.0}
+                alignment[p["name"]] = p["seq"]
+                actuation[p["name"]] = None
+                coverage[p["name"]] = None
+                construct_names.add(p["name"])
+                construct_label[p["name"]] = p["label"]
+                augmented.append(obj)
+        leaves = augmented
+    n = len(leaves)
+
     for _row, _lf in enumerate(leaves):
         pos[id(_lf)]["y"] = float(_row)
 
@@ -726,7 +799,18 @@ def make_figure(
     # Per-leaf metadata + colour assignment (paralog-aware).
     metas = [parse_leaf_meta(nm) for nm in names]
     paralog_color_map, leaf_text_colors, has_paralogs = assign_paralog_colors(metas)
-    n_unique_seqs = len({alignment.get(nm, "") for nm in names if alignment.get(nm)})
+    if construct_names:
+        # constructs get a distinct label colour and are excluded from the
+        # real-haplotype unique-sequence stat.
+        leaf_text_colors = [
+            PANEL_LABEL_COLOR if nm in construct_names else c
+            for nm, c in zip(names, leaf_text_colors)
+        ]
+    n_unique_seqs = len({
+        alignment.get(nm, "")
+        for nm in names
+        if alignment.get(nm) and nm not in construct_names
+    })
 
     # Actuation
     acts   = [actuation.get(nm) for nm in names]
@@ -901,11 +985,13 @@ def make_figure(
     # short RE-only peaks, cap so very long flanked/paralog alignments don't
     # produce an absurd canvas.
     fig_width   = max(1500, min(5200, int(msa_disp_n * 4.5)))
+    if n_drv:                       # room for the (narrow, stacked) violin panel
+        fig_width = min(6000, fig_width + 300)
     target_h    = 2200
     row_h       = max(4, min(18, target_h // max(n, 1)))
     label_fs    = max(7, min(12, row_h - 1))
     show_labels = label_fs >= 8 and row_h >= 9
-    fig_height  = max(420, n * row_h + 160)
+    fig_height  = max(480, n * row_h + (300 if n_drv else 160))   # +bottom legend
 
     # ── Adaptive horizontal layout ────────────────────────────────────────────
     # Horizontal columns:  tree | leaf labels | PCLAI stripe | actuation | MSA
@@ -920,15 +1006,21 @@ def make_figure(
         label_px   = 0.0
         label_frac = 0.0
     act_frac        = 0.05
-    drv_frac        = min(0.06, 0.016 * n_drv)   # per-driver carrier columns
+    drv_frac        = min(0.06, 0.016 * n_drv)   # per-driver carrier columns (left)
     par_frac        = 0.018 if has_paralogs else 0.0
     pcl_frac        = 0.018 if pclai_present else 0.0
     gap             = 0.005
-    msa_frac        = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + drv_frac + gap * 7) - 0.20
-    tree_frac       = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + drv_frac + msa_frac + gap * 7)
-    # Slide order: TREE | LABEL | PAR | PCL | ACT | MSA. PAR/PCL collapse to
-    # zero width when their respective data isn't present; their traces stay
-    # in the figure to keep trace indices stable.
+    # Right-of-MSA driver panels: a per-driver SHAPE column (which haps feed each
+    # violin) + the violins (carrier vs rest % actuation). Zero-width when there
+    # are no drivers.
+    mark_frac       = min(0.02, 0.008 * n_drv)   # tight: one symbol col per driver
+    vio_frac        = min(0.14, 240 / fig_width) if n_drv else 0.0   # ~2 inch wide
+    tree_frac       = 0.20
+    msa_frac        = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + drv_frac
+                             + mark_frac + vio_frac + tree_frac + gap * 9)
+    # Slide order: TREE | LABEL | PAR | PCL | ACT | DRV | MSA | MARK | VIO.
+    # PAR/PCL/DRV/MARK/VIO collapse to zero width when their data isn't present;
+    # traces stay in the figure to keep trace indices stable.
     cur = 0.0
     TREE_X  = [cur, cur + tree_frac];   cur = TREE_X[1]  + gap
     LABEL_X = [cur, cur + label_frac];  cur = LABEL_X[1] + gap
@@ -936,7 +1028,14 @@ def make_figure(
     PCL_X   = [cur, cur + pcl_frac];    cur = PCL_X[1]   + gap
     ACT_X   = [cur, cur + act_frac];    cur = ACT_X[1]   + gap
     DRV_X   = [cur, cur + drv_frac];    cur = DRV_X[1]   + gap * 2
-    MSA_X   = [cur, 1.00]
+    if n_drv:
+        MSA_X   = [cur, cur + msa_frac]; cur = MSA_X[1]  + gap * 2
+        MARK_X  = [cur, cur + mark_frac]; cur = MARK_X[1] + gap
+        VIO_X   = [cur, 1.00]
+    else:
+        MSA_X   = [cur, 1.00]
+        MARK_X  = [0.998, 0.999]   # hidden — no drivers, no shape column/violins
+        VIO_X   = [0.999, 1.00]
 
     # Vertical layout: title strip (top, ~40 px) | freq chart (~50 px) | main.
     # The title strip stays a fixed pixel height regardless of figure tallness,
@@ -945,6 +1044,15 @@ def make_figure(
     LOGO_BAND_FRAC   = min(0.08, 50.0 / fig_height)
     LOGO_Y           = [1.0 - TITLE_STRIP_FRAC - LOGO_BAND_FRAC, 1.0 - TITLE_STRIP_FRAC]
     MAIN_Y           = [0.00, LOGO_Y[0] - 0.005]
+    # Violins are fixed ~2-inch boxes stacked from the top of the right column;
+    # they only shrink when n_drv would overflow the available height.
+    if n_drv:
+        _plot_h_px = max(400, fig_height - 20 - 170)            # minus t/b margins
+        _per_vio   = 200.0 / _plot_h_px                          # ~2 inch each
+        _vio_band  = min(MAIN_Y[1] - MAIN_Y[0], n_drv * _per_vio * 1.15)
+        VIO_Y3     = [MAIN_Y[1] - _vio_band, MAIN_Y[1]]
+    else:
+        VIO_Y3     = MAIN_Y
 
     max_depth = max((pos[id(lf)]["x"] for lf in leaves), default=1.0)
 
@@ -1207,6 +1315,132 @@ def make_figure(
                 xaxis="x8", yaxis="y1",
             ))
 
+    # ── Driver SHAPE column (right of MSA) + per-driver violins ────────────────
+    # A distinct marker symbol per driver ties two panels together: the symbol in
+    # the shape column marks which haplotypes CARRY that driver (= feed the
+    # carrier side of its violin), and the violin to the right plots those same
+    # haps' % actuation (LEFT half) against the rest (RIGHT half). Read a row's
+    # symbol, find its point in the matching violin. The Δ (mean_in − mean_out)
+    # and joint β are annotated above each violin.
+    DRIVER_SYMBOLS = ["cross", "circle", "star", "diamond", "triangle-up",
+                      "x", "square", "hexagram"]
+    group_symbol = {
+        key: DRIVER_SYMBOLS[i % len(DRIVER_SYMBOLS)]
+        for i, (key, _m) in enumerate(sorted_groups)
+    }
+
+    def _hex_rgba(h: str, a: float) -> str:
+        h = h.lstrip("#")
+        if len(h) == 6:
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            return f"rgba({r},{g},{b},{a})"
+        return h
+
+    vio_ticktext: list[str] = []
+    if sorted_groups:
+        _sh_ly = {
+            parse_leaf_meta(names[i])["sample_hap"]: ly[i]
+            for i in range(n) if names[i] not in construct_names
+        }
+        _sh_act = {
+            parse_leaf_meta(names[i])["sample_hap"]: acts[i]
+            for i in range(n)
+            if names[i] not in construct_names and acts[i] is not None
+        }
+        all_sh = set(_sh_act)
+        driver_carriers = [
+            {parse_leaf_meta(d)["sample_hap"] for d in m[0].get("descendants", ())}
+            for _, m in sorted_groups
+        ]
+        for j, (key, members) in enumerate(sorted_groups):
+            sym, col = group_symbol[key], group_color[key]
+            carrier_sh = driver_carriers[j]
+            # Comparison group = the LOCAL contrast, not the whole tree. If this
+            # driver is NESTED (its carriers ⊂ another driver's), compare against
+            # the smallest ENCLOSING driver's OTHER carriers (the sister context);
+            # otherwise against everything else. This matches the joint β — a
+            # nested reversing variant (opposite-sign β) then reads correctly in
+            # the violin instead of being washed out by the distant high/low clade.
+            parents = [k for k in range(len(driver_carriers))
+                       if k != j and driver_carriers[k] > carrier_sh]
+            if parents:
+                comp_sh = driver_carriers[
+                    min(parents, key=lambda k: len(driver_carriers[k]))
+                ] - carrier_sh
+            else:
+                comp_sh = all_sh - carrier_sh
+            # (a) shape column — carriers get the driver's filled symbol; the
+            #     local comparison group (what Δ/β is measured against) gets a
+            #     small grey open circle.
+            car_ly  = [_sh_ly[s] for s in carrier_sh if s in _sh_ly]
+            rest_ly = [_sh_ly[s] for s in comp_sh if s in _sh_ly]
+            if rest_ly:
+                fig.add_trace(go.Scatter(
+                    x=[j] * len(rest_ly), y=rest_ly, mode="markers",
+                    marker=dict(symbol="circle-open", color="#cccccc", size=3),
+                    hoverinfo="skip", showlegend=False, xaxis="x9", yaxis="y1",
+                ))
+            if car_ly:
+                fig.add_trace(go.Scatter(
+                    x=[j] * len(car_ly), y=car_ly, mode="markers",
+                    marker=dict(symbol=sym, color=col, size=7,
+                                line=dict(width=0.5, color="white")),
+                    hoverinfo="skip", showlegend=False, xaxis="x9", yaxis="y1",
+                ))
+            # (b) violin — HORIZONTAL, one driver per row (y = driver, stacked),
+            #     % actuation on x. Carriers below the row line, comparison above.
+            car_x  = [_sh_act[s] * 100 for s in carrier_sh if s in _sh_act]
+            rest_x = [_sh_act[s] * 100 for s in comp_sh if s in _sh_act]
+            if rest_x:
+                fig.add_trace(go.Violin(
+                    y=[j] * len(rest_x), x=rest_x, orientation="h",
+                    side="positive", width=0.9,
+                    line_color="#bbbbbb", fillcolor="rgba(180,180,180,0.22)",
+                    points="all", pointpos=0.4, jitter=0.3,
+                    marker=dict(symbol="circle-open", color="#999999", size=3),
+                    meanline_visible=True, scalemode="width", spanmode="hard",
+                    hoverinfo="x", showlegend=False, xaxis="x10", yaxis="y3",
+                ))
+            if car_x:
+                fig.add_trace(go.Violin(
+                    y=[j] * len(car_x), x=car_x, orientation="h",
+                    side="negative", width=0.9,
+                    line_color=col, fillcolor=_hex_rgba(col, 0.25),
+                    points="all", pointpos=-0.4, jitter=0.3,
+                    marker=dict(symbol=sym, color=col, size=5),
+                    meanline_visible=True, scalemode="width", spanmode="hard",
+                    hoverinfo="x", showlegend=False, xaxis="x10", yaxis="y3",
+                ))
+            _ls = group_links.get(key) or frozenset()
+            vio_ticktext.append(_site_label(min(_ls)) if _ls else f"d{j}")
+            _b = members[0].get("beta")
+            _bits = []
+            # Δ is the LOCAL contrast (carriers − comparison group), so it agrees
+            # with the joint β; for a nested reversing driver both come out
+            # positive even though the marginal-vs-whole-tree Δ would be ~0.
+            if car_x and rest_x:
+                _bits.append(f"Δ={(sum(car_x) / len(car_x) - sum(rest_x) / len(rest_x)):+.0f}%")
+            if isinstance(_b, float):
+                _bits.append(f"β={_b:+.2f}")
+            if _bits:
+                fig.add_annotation(
+                    x=111, y=j, xref="x10", yref="y3", text="  ".join(_bits),
+                    showarrow=False, font=dict(size=8, color=col), xanchor="right",
+                )
+        # one-time legend keys: filled symbol = carrier, open ○ = compared-against
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(symbol="circle", color="#555555", size=7),
+            name="violin: driver carriers", legendgroup="vio", showlegend=True,
+            legendrank=4000, xaxis="x9", yaxis="y1",
+        ))
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(symbol="circle-open", color="#999999", size=6),
+            name="violin: compared against (rest)", legendgroup="vio", showlegend=True,
+            legendrank=4001, xaxis="x9", yaxis="y1",
+        ))
+
     # Helper for compact p-value formatting (None → "NA").
     def _fmt_p(p):
         return f"{p:.2g}" if isinstance(p, float) else "NA"
@@ -1382,7 +1616,10 @@ def make_figure(
         # Display the bare sample-hap (last "__"-segment) — paralog/highlight
         # identity is already conveyed by the colour + paralog stripe + chip
         # legend, so the tag prefix would just clutter the label.
-        display_labels = [m["sample_hap"] for m in metas]
+        display_labels = [
+            construct_label.get(nm) or m["sample_hap"]
+            for nm, m in zip(names, metas)
+        ]
         fig.add_trace(go.Scatter(
             x=[0.0] * n, y=ly,
             mode="text",
@@ -1447,22 +1684,20 @@ def make_figure(
     ))
 
     # ── 4. Legend dummy traces for actuation bins ─────────────────────────────
-    for color, label in zip(ACT_COLORS, ACT_LABELS):
+    for _ri, (color, label) in enumerate(zip(ACT_COLORS, ACT_LABELS)):
         fig.add_trace(go.Bar(
             x=[None], y=[None],
             orientation="h",
             marker=dict(color=color, line=dict(color="#aaaaaa", width=0.4)),
             name=label,
-            legendgroup="act",
-            showlegend=True,
+            showlegend=True, legendrank=100 + _ri,
         ))
     fig.add_trace(go.Bar(
         x=[None], y=[None],
         orientation="h",
         marker=dict(color=ACT_MISSING, line=dict(color="#aaaaaa", width=0.4)),
         name="FIRE missing",
-        legendgroup="act",
-        showlegend=True,
+        showlegend=True, legendrank=120,
     ))
 
     # ── 4b. MSA cell legend chips ─────────────────────────────────────────────
@@ -1627,12 +1862,13 @@ def make_figure(
             )
             # Uniform legend entry per contributing variant — so a variant whose
             # carriers aren't a clade (no branch drawn) still appears.
+            _short = _site_label(min(group_links[key])) if group_links.get(key) else "driver"
             fig.add_trace(go.Scatter(
                 x=[None], y=[None], mode="lines",
                 line=dict(color=group_color[key], width=3.0),
-                name=f"β={_beta} p={_p}  pos: {pos_str}",
+                name=f"{_short} β={_beta}",
                 legendgroup=f"sig_group_{id(key)}",
-                showlegend=True,
+                showlegend=True, legendrank=3000 + _i,
                 xaxis="x3", yaxis="y1",
             ))
 
@@ -1665,14 +1901,15 @@ def make_figure(
         # Wipe out the default Plotly template so its heatmap colorscale
         # does not override the explicit colorscale on the MSA trace.
         template="none",
-        margin=dict(l=10, r=150, t=20, b=44),
+        margin=dict(l=10, r=30, t=20, b=170),
         font=dict(family="Arial"),
         legend=dict(
-            title=dict(text="FIRE actuation", font=dict(size=10)),
-            x=1.01, y=0.5,
-            xanchor="left", yanchor="middle",
-            tracegroupgap=0,
-            font=dict(size=10),
+            title=dict(text="", font=dict(size=10)),
+            orientation="h",
+            x=0.0, y=-0.085,
+            xanchor="left", yanchor="top",
+            tracegroupgap=14, entrywidth=0,
+            font=dict(size=8),
         ),
 
         # ── Axes ──────────────────────────────────────────────────────────────
@@ -1747,7 +1984,28 @@ def make_figure(
             title=dict(text="freq.", font=dict(size=9)),
             showgrid=False, zeroline=False, tickfont=dict(size=8),
         ),
-
+        # Shape column (carrier markers, leaf-row axis) + violins (% actuation).
+        xaxis9=dict(
+            domain=MARK_X, anchor="y1",
+            range=[-0.5, max(0.5, n_drv - 0.5)],
+            title=dict(text="in violin", font=dict(size=8)) if n_drv else None,
+            showticklabels=False, showgrid=False, zeroline=False,
+            visible=bool(n_drv),
+        ),
+        xaxis10=dict(
+            domain=VIO_X, anchor="y3", range=[-5, 112],
+            title=dict(text="% FIRE", font=dict(size=9)) if n_drv else None,
+            tickvals=[0, 50, 100], tickfont=dict(size=8),
+            showgrid=True, gridcolor="#eeeeee", zeroline=False,
+            visible=bool(n_drv),
+        ),
+        yaxis3=dict(
+            domain=VIO_Y3, anchor="x10",
+            range=[max(0.7, n_drv - 0.3), -0.7],   # driver 0 at top, stacked down
+            tickvals=list(range(len(vio_ticktext))), ticktext=vio_ticktext,
+            tickfont=dict(size=8), showgrid=False, zeroline=False,
+            visible=bool(n_drv),
+        ),
     )
 
     # DNA nucleotide legend — placed to the right of the logo panel
@@ -1919,6 +2177,13 @@ def main() -> None:
              "count, and LASSO-selected branches are annotated on the tree "
              "with their linked MSA columns highlighted.",
     )
+    parser.add_argument(
+        "--panel", type=Path, default=None,
+        help="Optional make_mutagenesis_panel --aligned-out FASTA. Its synthetic "
+             "constructs render as grey pseudo-leaf rows (MSA + edits, no branch, "
+             "no actuation) next to the carrier leaf each was built from, for "
+             "visually validating the single-change panel.",
+    )
     args = parser.parse_args()
 
     tree                = Phylo.read(str(args.tree), "newick")
@@ -1930,12 +2195,14 @@ def main() -> None:
     peak_id             = args.peak_id or args.tree.stem
 
     phylo_mm = load_phylo_mm(args.phylo_mm) if args.phylo_mm else {"meta": {}, "branches": []}
+    panel = load_panel(args.panel) if args.panel else None
 
     fig = make_figure(
         tree, actuation, coverage, alignment, peak_id,
         pclai_bed=args.pclai_bed,
         phylo_mm=phylo_mm,
         flank=args.flank,
+        panel=panel,
     )
 
     args.html.parent.mkdir(parents=True, exist_ok=True)

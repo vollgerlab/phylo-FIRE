@@ -325,11 +325,17 @@ compute_h2 <- function(tree_in, aln_in) {
                 sigma_p = NA_real_, sigma_r = NA_real_)
     fail <- list(n_unique = NA_integer_, ok = FALSE,
                  a1000 = NA3, a1 = NA3, a025 = NA3, tightR = NA3, fits = list())
-    strings <- vapply(aln_in[common], function(s) s, character(1))
+    # Restrict to tips present in BOTH this scope's tree and alignment. The
+    # RE-scoped alignment/tree can be missing tips the main scope has; without
+    # this, aln_in[common] re-introduces NULLs and vapply() errors hard (which
+    # would fail the whole peak instead of degrading to ok=FALSE).
+    common_h <- intersect(intersect(common, tree_in$tip.label), names(aln_in))
+    if (length(common_h) < 4L) return(fail)
+    strings <- vapply(aln_in[common_h], function(s) s, character(1))
     cidx <- match(strings, unique(strings))
     n_unique <- max(cidx)
     if (n_unique < 2L) { fail$n_unique <- n_unique; return(fail) }
-    reps <- common[!duplicated(cidx)]
+    reps <- common_h[!duplicated(cidx)]
     tip_to_rep <- reps[cidx]
     # Ultrametrify for inverseA(scale=TRUE); if chronos can't (fragile on
     # near-zero RE branches) fall back to the raw tree with scale=FALSE, and if
@@ -345,8 +351,8 @@ compute_h2 <- function(tree_in, aln_in) {
                      error = function(e) tryCatch(inverseA(tcol, scale = FALSE)$Ainv,
                                                   error = function(e2) NULL))
     if (is.null(invA)) { fail$n_unique <- n_unique; return(fail) }
-    df <- data.frame(animal = tip_to_rep, actuation = unname(y_logit[common]),
-                     mev = unname(mev_logit[common]), stringsAsFactors = FALSE)
+    df <- data.frame(animal = tip_to_rep, actuation = unname(y_logit[common_h]),
+                     mev = unname(mev_logit[common_h]), stringsAsFactors = FALSE)
     df$animal <- factor(df$animal, levels = tcol$tip.label)
     fit_h2 <- function(alpha_V, r_nu = 0.002, r_V = 1) {
         prior <- list(R = list(V = r_V, nu = r_nu),

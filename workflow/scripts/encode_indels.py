@@ -188,8 +188,11 @@ def main() -> None:
 
     _, indel_codes = simple_indel_code(seqs)
     n_indel = len(next(iter(indel_codes.values()))) if indel_codes else 0
-    if n_indel > 0:
-        write_phylip(args.out_dir / f"{args.peak_id}_indel.phy", taxa, indel_codes)
+    # Always write _indel.phy (0-column "{n} 0" when no codable indels) so it is
+    # a declarable Snakemake output (temp-cleaned with the rest of coded/). The
+    # .nex only references it when n_indel > 0.
+    write_phylip(args.out_dir / f"{args.peak_id}_indel.phy", taxa,
+                 indel_codes if n_indel > 0 else {t: "" for t in taxa})
 
     write_partition_nexus(
         args.out_dir / f"{args.peak_id}.nex", args.peak_id, n_dna, n_indel

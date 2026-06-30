@@ -5,6 +5,13 @@ jobs: 200
 latency-wait: 60
 max-jobs-per-second: 20
 
+# Batch the per-peak chain (add_flanks → … → re_variants, all tagged
+# `group: "peak_chain"`) so one SLURM job runs ~100 peaks' full chains instead
+# of submitting ~2M individual jobs at 180K scale. Tune the component count
+# against the per-job allocation (a staging run is the place to calibrate).
+group-components:
+  - peak_chain=100
+
 default-resources:
   - mem_mb=8192
   - runtime=120
@@ -24,6 +31,14 @@ set-resources:
     mem_mb: 16384
     runtime: 240
     threads: 8
+  re_iqtree:
+    mem_mb: 16384
+    runtime: 240
+    threads: 8
+  aggregate_results:
+    mem_mb: 49152
+    runtime: 240
+    threads: 4
 
 rerun-incomplete: true
 show-failed-logs: true

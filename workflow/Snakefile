@@ -237,6 +237,8 @@ so the checkpoint's peak manifest stays independent of flank.
         script=workflow.source_path("scripts/add_flanks.py"),
     output:
         fa=temp(TEMP + "/flanked/{peak_id}.fa"),
+    group:
+        "peak_chain"
     threads: 4
     resources:
         mem_mb=4096,
@@ -269,6 +271,8 @@ rule mafft:
         fa=_mafft_input,
     output:
         fa=temp(TEMP + "/aligned/{peak_id}.fa"),
+    group:
+        "peak_chain"
     threads: 4
     resources:
         mem_mb=8192,
@@ -297,15 +301,18 @@ branches.
         fa=TEMP + "/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/encode_indels.py"),
     output:
-        nex=RESULTS + "/coded/{peak_id}/{peak_id}.nex",
-        nuc=RESULTS + "/coded/{peak_id}/{peak_id}_nucleic.phy",
+        nex=temp(TEMP + "/coded/{peak_id}/{peak_id}.nex"),
+        nuc=temp(TEMP + "/coded/{peak_id}/{peak_id}_nucleic.phy"),
+        indel=temp(TEMP + "/coded/{peak_id}/{peak_id}_indel.phy"),
+    group:
+        "peak_chain"
     threads: 1
     resources:
         mem_mb=2048,
         runtime=10,
     params:
         peak_id=lambda wc: wc.peak_id,
-        out_dir=lambda wc: f"{RESULTS}/coded/{wc.peak_id}",
+        out_dir=lambda wc: f"{TEMP}/coded/{wc.peak_id}",
     shell:
         """
         python {input.script} \
@@ -326,10 +333,13 @@ widened with flanking sequence, switch the DNA partition to ModelFinder by
 dropping its model from the charpartition.)
 """
     input:
-        nex=RESULTS + "/coded/{peak_id}/{peak_id}.nex",
-        nuc=RESULTS + "/coded/{peak_id}/{peak_id}_nucleic.phy",
+        nex=TEMP + "/coded/{peak_id}/{peak_id}.nex",
+        nuc=TEMP + "/coded/{peak_id}/{peak_id}_nucleic.phy",
+        indel=TEMP + "/coded/{peak_id}/{peak_id}_indel.phy",
     output:
         treefile=RESULTS + "/trees/{peak_id}.treefile",
+    group:
+        "peak_chain"
     threads: 4
     resources:
         mem_mb=16384,
@@ -382,6 +392,8 @@ every peak. Needs the alignment to compute the consensus.
         script=workflow.source_path("scripts/root_tree.R"),
     output:
         rooted=RESULTS + "/trees/{peak_id}.rooted.nwk",
+    group:
+        "peak_chain"
     threads: 1
     resources:
         mem_mb=1024,
@@ -404,6 +416,8 @@ rule re_trim:
         script=workflow.source_path("scripts/trim_to_re.py"),
     output:
         fa=temp(TEMP + "/re/aligned/{peak_id}.fa"),
+    group:
+        "peak_chain"
     threads: 1
     resources:
         mem_mb=1024,
@@ -420,15 +434,18 @@ rule re_encode_indels:
         fa=TEMP + "/re/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/encode_indels.py"),
     output:
-        nex=RESULTS + "/re/coded/{peak_id}/{peak_id}.nex",
-        nuc=RESULTS + "/re/coded/{peak_id}/{peak_id}_nucleic.phy",
+        nex=temp(TEMP + "/re/coded/{peak_id}/{peak_id}.nex"),
+        nuc=temp(TEMP + "/re/coded/{peak_id}/{peak_id}_nucleic.phy"),
+        indel=temp(TEMP + "/re/coded/{peak_id}/{peak_id}_indel.phy"),
+    group:
+        "peak_chain"
     threads: 1
     resources:
         mem_mb=2048,
         runtime=10,
     params:
         peak_id=lambda wc: wc.peak_id,
-        out_dir=lambda wc: f"{RESULTS}/re/coded/{wc.peak_id}",
+        out_dir=lambda wc: f"{TEMP}/re/coded/{wc.peak_id}",
     shell:
         """
         python {input.script} \
@@ -448,11 +465,14 @@ unavailable regardless of the tree's topology, so the fallback only needs
 the right tip set.
 """
     input:
-        nex=RESULTS + "/re/coded/{peak_id}/{peak_id}.nex",
-        nuc=RESULTS + "/re/coded/{peak_id}/{peak_id}_nucleic.phy",
+        nex=TEMP + "/re/coded/{peak_id}/{peak_id}.nex",
+        nuc=TEMP + "/re/coded/{peak_id}/{peak_id}_nucleic.phy",
+        indel=TEMP + "/re/coded/{peak_id}/{peak_id}_indel.phy",
         main_tree=RESULTS + "/trees/{peak_id}.treefile",
     output:
         treefile=RESULTS + "/re/trees/{peak_id}.treefile",
+    group:
+        "peak_chain"
     threads: 4
     resources:
         mem_mb=16384,
@@ -485,6 +505,8 @@ rule re_root_tree:
         script=workflow.source_path("scripts/root_tree.R"),
     output:
         rooted=RESULTS + "/re/trees/{peak_id}.rooted.nwk",
+    group:
+        "peak_chain"
     threads: 1
     resources:
         mem_mb=1024,
@@ -549,6 +571,8 @@ by hand for ad-hoc debugging.
         script=workflow.source_path("scripts/phylo_mm.R"),
     output:
         tsv=RESULTS + "/phylo_mm/{peak_id}.tsv",
+    group:
+        "peak_chain"
     threads: 1
     resources:
         mem_mb=4096,
@@ -591,6 +615,8 @@ already-produced files (alignment + actuation + phylo_mm TSV); no re-modeling.
         script=workflow.source_path("scripts/build_re_variants.py"),
     output:
         tsv=RESULTS + "/re_variants/{peak_id}.tsv",
+    group:
+        "peak_chain"
     threads: 1
     resources:
         mem_mb=2048,
@@ -621,8 +647,8 @@ depend on which peaks land in each manifest.
         heritable=RESULTS + "/tables/plot_heritable_no_driver.txt",
         random=RESULTS + "/tables/plot_random.txt",
     resources:
-        mem_mb=16384,
-        runtime=120,
+        mem_mb=49152,  # reads all 180K per-peak TSVs into one concat
+        runtime=240,
     params:
         rdir=RESULTS,
         random_n=config.get("random_n", 100),

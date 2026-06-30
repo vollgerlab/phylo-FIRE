@@ -1,8 +1,8 @@
 # Cluster (CHPC Redwood) production paths. Overrides config/config.yaml.
 # Usage:
+#   pixi run hsca-peak-ids        # one-time: build config/hsca_peak_ids.txt
 #   pixi run -- snakemake --configfile config/cluster.yaml \
-#       --config peak_ids=<peaks.txt> --profile profiles/slurm -j <N>
-# (or add haplotype_distinct=<class> instead of peak_ids to select by class).
+#       --profile profiles/slurm -j <N>
 #
 # The union BED here is asm-coord-sorted; the extract_fastas checkpoint sorts it
 # by consensus_peak_id, and columns are resolved by header name, so it ingests
@@ -10,3 +10,11 @@
 # from config/config.yaml).
 input_table: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/fiber-seq-pilot/union-peaks-asm.bed.gz"
 agc: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_0.6.1.agc"
+
+# Pin the production peak set to the 180,684 HSCA peaks — without this,
+# peak_ids=null would target EVERY peak in the full union BED. Regenerate the
+# list with `pixi run hsca-peak-ids` (needs resources/hsca/, from `pixi run
+# setup-hsca`). Outputs land under results/hsca/ + temp/hsca/; override run_name
+# on the CLI for a different namespace (e.g. a staging slice).
+peak_ids: "config/hsca_peak_ids.txt"
+run_name: "hsca"

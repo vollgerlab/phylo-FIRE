@@ -13,7 +13,6 @@ test = { cmd = [
     "--config",
     "run_name=test",
     "peak_ids=config/test_peak_ids.txt",
-    "--config",
     "input_table=resources/test/test-union-peaks.bed.gz",
     "-j",
     "8",
@@ -23,7 +22,6 @@ dry-run = { cmd = [
     "--config",
     "run_name=test",
     "peak_ids=config/test_peak_ids.txt",
-    "--config",
     "input_table=resources/test/test-union-peaks.bed.gz",
     "-n",
     "--quiet",
@@ -34,7 +32,6 @@ replot = { cmd = [
     "--config",
     "run_name=test",
     "peak_ids=config/test_peak_ids.txt",
-    "--config",
     "input_table=resources/test/test-union-peaks.bed.gz",
     "--forcerun",
     "plot",
@@ -79,10 +76,12 @@ hap-selective-30 = { cmd = [
 ] }
 # 12 Genetically-haplotype-specific peaks chosen to exercise the dual-H² gate +
 # multi-variant attribution: 6 with LOW within-cluster spread + high unique-seq
-# count (identified RE-H² → driver-attributed; 3 come out 2-driver incl. the
-# nested chr14_100272296: 4-carrier inner block within a 21-carrier outer) and
+# count (identified RE-H² → driver-attributed; 3 come out 2-driver, e.g.
+# chr14_100272296 — two SAME-SIGN repressive blocks d8/d4 that co-occur in 4
+# haps, NOT functional nesting; d4's carriers ⊂ d8's only by co-occurrence) and
 # 6 with HIGH within-cluster RE spread (RE-H² fails → mode none — actuation not
 # sequence-driven). Screened from the HSCA table by within-cluster spread.
+# (No genuine nested case — opposite-sign inner-reverses-outer — in this set.)
 genetic-candidates = { cmd = [
     "snakemake",
     "--notemp",
@@ -135,6 +134,22 @@ hap-selective-5-samples = { cmd = [
 # Renamed from pg_64 in 2026-05; group ID shifted because the chr1 SD belt
 # rerun added NBPF26 as a 5th member, and union-find IDs aren't stable
 # across PARE runs.
+# Fabricated GENUINE nested-driver case (no real peak has one): a real
+# repressive driver (X=RE55, β≈-0.50) with a synthetic reversing variant
+# (Z=RE1, β≈+0.31, OPPOSITE sign) injected into a 15-hap SUBSET of X's 35
+# carriers. Exercises opposite-sign nested attribution + the violin/shape plot.
+# Built by workflow/scripts/make_nested_fixture.py from chr1_157664372.
+test-nested = { cmd = [
+    "snakemake",
+    "--notemp",
+    "--config",
+    "run_name=nested",
+    "preextracted_dir=resources/test/preextracted_nested",
+    "flank=0",
+    "min_seqs=2",
+    "-j",
+    "8",
+] }
 test-paralog = { cmd = [
     "snakemake",
     "--notemp",
@@ -166,6 +181,9 @@ setup-pclai = "bash workflow/scripts/build_pclai_bed.sh"
 # union BED into resources/hsca/ (hsca-peaks.bed.gz + hsca-index.tsv), a
 # reference table for minting new test cases quickly. Not run wholesale.
 setup-hsca = "bash workflow/scripts/build_hsca_table.sh"
+# Derive the production peak-id list (config/hsca_peak_ids.txt, ~180.7K ids)
+# from the HSCA index. Pinned by config/cluster.yaml. Run after setup-hsca.
+hsca-peak-ids = "bash -c 'tail -n +2 resources/hsca/hsca-index.tsv | cut -f6 > config/hsca_peak_ids.txt && echo wrote $(wc -l < config/hsca_peak_ids.txt) peak ids'"
 # Install selectiveInference + its CRAN deps into the pixi-managed R library.
 # selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.
 setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInference", quietly=TRUE)) install.packages("selectiveInference", repos="https://cloud.r-project.org") else cat("selectiveInference already installed\\n")'"""

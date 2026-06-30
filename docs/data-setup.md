@@ -87,11 +87,11 @@ pixi run setup-hsca && pixi run hsca-peak-ids
 # verify the partition/account first
 sinfo
 
-# stage on a slice (override run_name + a smaller peak list) before the full run
-head -5000 config/hsca_peak_ids.txt > config/hsca_stage.txt
-pixi run -- snakemake --configfile config/cluster.yaml \
-    --config run_name=hsca_stage peak_ids=config/hsca_stage.txt \
-    --profile profiles/slurm -j 200 -n          # dry-run first; watch DAG build + head RAM
+# stage on a 1000-peak slice before the full run (calibrate group-components +
+# watch head-process DAG RAM) — outputs under results/hsca_stage/
+pixi run hsca-stage-ids     # → config/hsca_stage_peak_ids.txt (first 1000 HSCA peaks)
+pixi run hsca-stage -n      # dry-run first: check DAG build + head RAM
+pixi run hsca-stage         # real staging run
 
 # full run — outputs under results/hsca/, temp under temp/hsca/
 pixi run -- snakemake --configfile config/cluster.yaml --profile profiles/slurm -j 200

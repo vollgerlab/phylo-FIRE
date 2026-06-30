@@ -184,6 +184,25 @@ setup-hsca = "bash workflow/scripts/build_hsca_table.sh"
 # Derive the production peak-id list (config/hsca_peak_ids.txt, ~180.7K ids)
 # from the HSCA index. Pinned by config/cluster.yaml. Run after setup-hsca.
 hsca-peak-ids = "bash -c 'tail -n +2 resources/hsca/hsca-index.tsv | cut -f6 > config/hsca_peak_ids.txt && echo wrote $(wc -l < config/hsca_peak_ids.txt) peak ids'"
+# First 1000 HSCA peaks → config/hsca_stage_peak_ids.txt (the staging slice).
+hsca-stage-ids = "bash -c 'head -1000 config/hsca_peak_ids.txt > config/hsca_stage_peak_ids.txt && echo wrote $(wc -l < config/hsca_stage_peak_ids.txt) staging peak ids'"
+# Staging run: the 1000-peak slice on SLURM (run_name=hsca_stage → results/hsca_stage/)
+# to calibrate group-components + watch head-process DAG RAM before the full
+# 180K. Run `pixi run hsca-stage-ids` first. Dry-run with `pixi run hsca-stage -n`,
+# then drop -n for the real run. The full run is the documented cluster command
+# (config/cluster.yaml, no --config needed).
+hsca-stage = { cmd = [
+    "snakemake",
+    "--configfile",
+    "config/cluster.yaml",
+    "--config",
+    "run_name=hsca_stage",
+    "peak_ids=config/hsca_stage_peak_ids.txt",
+    "--profile",
+    "profiles/slurm",
+    "-j",
+    "200",
+] }
 # Install selectiveInference + its CRAN deps into the pixi-managed R library.
 # selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.
 setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInference", quietly=TRUE)) install.packages("selectiveInference", repos="https://cloud.r-project.org") else cat("selectiveInference already installed\\n")'"""

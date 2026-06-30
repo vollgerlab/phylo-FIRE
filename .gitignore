@@ -20,3 +20,4 @@ resources/hsca/
 
 # Derived HSCA peak-id list (regenerate: pixi run hsca-peak-ids)
 config/hsca_peak_ids.txt
+config/hsca_stage_peak_ids.txt

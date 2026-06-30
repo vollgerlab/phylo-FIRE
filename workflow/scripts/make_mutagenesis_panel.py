@@ -159,7 +159,7 @@ def build(aligned, phylo_mm, re_variants=None, which=None):
     for drv in drivers:
         if which and drv["id"] != which:
             continue
-        carriers = [c for c in drv["carriers"] if c in seqs]
+        carriers = sorted(c for c in drv["carriers"] if c in seqs)   # deterministic rep
         noncarriers = [n for n in seqs if n not in set(drv["carriers"])]
         if not carriers or not noncarriers:
             continue
@@ -209,6 +209,58 @@ def build(aligned, phylo_mm, re_variants=None, which=None):
     return records, skipped
 
 
+VALIDATION_COLS = [
+    "peak_id", "source", "id", "re_len", "gc_frac", "n_haps", "mean_pct_acc",
+    "drivers", "roles", "clean_pair", "minimal_edit", "act_values", "samples", "re_seq",
+]
+
+
+def build_validation_table(records, re_variants_path, peak):
+    """Unified per-peak "sequences to clone" table: every natural unique RE
+    sequence (from re_variants) PLUS the synthetic add-back constructs, deduped
+    on sequence. A construct that equals a real haplotype merges into that
+    natural row (source=natural) with its role(s) attached; constructs with no
+    natural match are their own source=synthetic rows (mean_pct_acc=NA — that's
+    what you'd measure). Natural sequences that play no construct role still
+    appear (roles empty)."""
+    natural = {}   # seq_id -> row
+    if re_variants_path and Path(re_variants_path).exists():
+        lines = Path(re_variants_path).read_text().splitlines()
+        cols = lines[0].split("\t")
+        for line in lines[1:]:
+            r = dict(zip(cols, line.split("\t")))
+            sid = r.get("seq_id")
+            if not sid:
+                continue
+            natural[sid] = {
+                "peak_id": peak, "source": "natural", "id": sid,
+                "re_len": r.get("re_len", ""), "gc_frac": r.get("gc_frac", ""),
+                "n_haps": r.get("n_haps", ""), "mean_pct_acc": _pct(r.get("act_mean")),
+                "drivers": r.get("driver_ids", ""), "roles": [],
+                "clean_pair": r.get("clean_pair", ""),
+                "minimal_edit": r.get("minimal_edit", ""),
+                "act_values": r.get("act_values", ""), "samples": r.get("samples", ""),
+                "re_seq": r.get("re_seq", ""),
+            }
+    synthetic = []
+    for rec in records:
+        if rec["natural"] and rec["natural"][0] in natural:
+            natural[rec["natural"][0]]["roles"].extend(rec["roles"])
+        elif rec["natural"] is None:
+            synthetic.append({
+                "peak_id": peak, "source": "synthetic", "id": rec["name"],
+                "re_len": rec["re_len"], "gc_frac": rec["gc"], "n_haps": "0",
+                "mean_pct_acc": "NA",
+                "drivers": ",".join(sorted({role.split(":")[0] for role in rec["roles"]})),
+                "roles": list(rec["roles"]), "clean_pair": "", "minimal_edit": "",
+                "act_values": "", "samples": "", "re_seq": rec["seq"],
+            })
+    rows = list(natural.values()) + synthetic
+    for r in rows:
+        r["roles"] = "|".join(r["roles"])
+    return rows
+
+
 def _desc(r):
     nat = r["natural"]
     nat_s = (f"natural={nat[0]} natural_n_haps={nat[1]} natural_pct_acc={nat[2]}"
@@ -225,7 +277,10 @@ def main():
     ap.add_argument("--driver", help="restrict to one driver id, e.g. d3")
     ap.add_argument("--out", required=True, help="clonable (ungapped) FASTA, unique seqs")
     ap.add_argument("--aligned-out", help="alignment-frame FASTA for the validation plot")
-    ap.add_argument("--tsv", help="optional manifest TSV")
+    ap.add_argument("--tsv", help="optional construct manifest TSV (synthetic only)")
+    ap.add_argument("--validation-table",
+                    help="unified natural + synthetic 'sequences to clone' TSV "
+                         "(needs --re-variants)")
     args = ap.parse_args()
 
     records, skipped = build(args.aligned, args.phylo_mm, args.re_variants, args.driver)
@@ -259,6 +314,18 @@ def main():
                     "is_synthetic": nat is None, "seq": r["seq"],
                 }
                 fh.write("\t".join(str(row[c]) for c in MANIFEST_COLS) + "\n")
+
+    if args.validation_table:
+        peak0 = records[0]["peak"] if records else Path(args.phylo_mm).stem
+        vrows = build_validation_table(records, args.re_variants, peak0)
+        Path(args.validation_table).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.validation_table, "w") as fh:
+            fh.write("\t".join(VALIDATION_COLS) + "\n")
+            for r in vrows:
+                fh.write("\t".join(str(r[c]) for c in VALIDATION_COLS) + "\n")
+        n_nat = sum(1 for r in vrows if r["source"] == "natural")
+        print(f"[panel] validation table: {len(vrows)} rows "
+              f"({n_nat} natural, {len(vrows) - n_nat} synthetic)")
 
     peak = records[0]["peak"] if records else "(none)"
     n_syn = sum(1 for r in records if r["natural"] is None)

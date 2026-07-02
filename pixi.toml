@@ -17,15 +17,6 @@ test = { cmd = [
     "-j",
     "8",
 ] }
-dry-run = { cmd = [
-    "snakemake",
-    "--config",
-    "run_name=test",
-    "peak_ids=config/test_peak_ids.txt",
-    "input_table=resources/test/test-union-peaks.bed.gz",
-    "-n",
-    "--quiet",
-] }
 replot = { cmd = [
     "snakemake",
     "--notemp",
@@ -38,31 +29,15 @@ replot = { cmd = [
     "-j",
     "8",
 ] }
-# 20 HSCA peaks spanning the haplotype_distinct categories, pulled from the
-# full union-peaks-asm.bed.gz: 10 epigenetically-haplotype-selective, 6 genetic
-# Haplotype-selective, 2 mixed (epi+genetic), 2 Genetically-haplotype-specific,
-# across 14 chromosomes (~78 leaves/peak; the two chr9 Gspecific peaks ~41-45).
-# This is the primary hap-selective test case.
-hap-selective-20 = { cmd = [
-    "snakemake",
-    "--notemp",
-    "--config",
-    "run_name=hap-selective-20",
-    "peak_ids=config/hap_selective_20_peak_ids.txt",
-    "input_table=resources/hap-selective-20/hap-selective-20.bed.gz",
-    # min_seqs=1: pure-epigenetic peaks are monomorphic at the RE (the
-    # haplotype-selectivity is epigenetic, not sequence) so they have 1 unique
-    # RE sequence; the +500 bp flanks still resolve the tree (~10 unique), and
-    # they carry 0 RE-anchored branches — the epigenetic signature.
-    "min_seqs=1",
-    "-j",
-    "8",
-] }
-# hap-selective-20 + 10 Genetically-haplotype-specific peaks chosen for HIGH
-# haplotype-sequence diversity (47, 22, 20, 19, 17, 11, 9, 8, 5, 3 unique RE
-# seqs) across 9 chromosomes — i.e. likely MULTI-variant drivers, to exercise
-# the forward-selection variant attribution. Pulled from the HSCA reference
-# table (`pixi run setup-hsca`); see config/hap_selective_30_peak_ids.txt.
+# The primary hap-selective test case: 30 peaks (subsumes the old
+# hap-selective-20 — the 30 ⊇ those 20). 20 span the haplotype_distinct
+# categories (10 epigenetically-selective, 6 Haplotype-selective, 2 mixed,
+# 2 Genetically-haplotype-specific) + 10 Genetically-haplotype-specific chosen
+# for HIGH sequence diversity (47, 22, 20, 19, 17, 11, 9, 8, 5, 3 unique RE
+# seqs) → likely MULTI-variant drivers, to exercise forward-selection
+# attribution. min_seqs=1: pure-epigenetic peaks are monomorphic at the RE
+# (1 unique seq; the +500 bp flanks still resolve the tree, 0 RE branches).
+# From the HSCA table (`pixi run setup-hsca`); see config/hap_selective_30_peak_ids.txt.
 hap-selective-30 = { cmd = [
     "snakemake",
     "--notemp",

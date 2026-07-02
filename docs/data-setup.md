@@ -69,10 +69,12 @@ pixi task that points `peak_ids` + `input_table` + `run_name` at the fixture
 How the current fixtures were screened (for reference):
 - **genetic-candidates** — 12 Genetically-haplotype-specific peaks chosen by
   within-cluster actuation spread: 6 low-spread + high-unique-seq (identified
-  RE-H² → drivers, incl. the nested chr14_100272296) + 6 high-spread (RE-H²
+  RE-H² → drivers, incl. the 2-driver chr14_100272296 — two same-sign
+  co-occurring repressors, NOT functional nesting) + 6 high-spread (RE-H²
   fails → mode `none`).
-- **hap-selective-30** — hap-selective-20 + 10 high-unique-seq-count peaks
-  (likely multi-variant drivers).
+- **hap-selective-30** — 30 peaks (subsumes the old hap-selective-20): 20 across
+  the haplotype_distinct categories + 10 high-unique-seq-count peaks (likely
+  multi-variant drivers).
 
 Selection is eyeballing `hsca-index.tsv` (`haplotype_distinct`, `act_spread`)
 plus an occasional quick unique-sequence count.

@@ -764,6 +764,7 @@ SNP effect is annotated above the MSA at its alignment column.
         flank=config.get("flank", 0),
     shell:
         """
+        LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${{LD_LIBRARY_PATH:-}}" \
         python {input.script} \
             --tree        {input.tree} \
             --actuation   {input.actuation} \

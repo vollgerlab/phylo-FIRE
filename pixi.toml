@@ -235,3 +235,35 @@ r-mcmcglmm = ">=2.36,<2.37"
 r-glmnet = ">=5.0,<5.1"
 r-remotes = ">=2.5,<2.6"
 agc = ">=3.2.3,<3.3"
+
+# Headless-Chromium runtime shared libraries for Kaleido v1 (the `plot` rule's
+# PDF export via `fig.write_image`). Kaleido downloads its own Chromium but NOT
+# these libs, so on a slim cluster OS it dies with BrowserDepsError (libnss3,
+# libgbm1, libcups2, …). conda-forge provides them — no apt/sudo. linux-64 only:
+# these are the cluster's missing libs; macOS renders through system frameworks.
+# Versions float (transitive OS shims); pixi.lock pins the resolved builds.
+[target.linux-64.dependencies]
+nss = "*"
+nspr = "*"
+at-spi2-atk = "*"
+at-spi2-core = "*"
+"atk-1.0" = "*"
+libcups = "*"
+libgbm = "*"
+libxkbcommon = "*"
+alsa-lib = "*"
+dbus = "*"
+expat = "*"
+pango = "*"
+cairo = "*"
+libxcb = "*"
+xorg-libx11 = "*"
+xorg-libxext = "*"
+xorg-libxcomposite = "*"
+xorg-libxdamage = "*"
+xorg-libxfixes = "*"
+xorg-libxrandr = "*"
+xorg-libxtst = "*"
+xorg-libxrender = "*"
+xorg-libxi = "*"
+xorg-libxscrnsaver = "*"

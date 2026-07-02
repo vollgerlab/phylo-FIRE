@@ -98,10 +98,14 @@ def main() -> None:
             elif r.get("h2_re_ok") or r.get("h2_region_ok"):
                 heritable.append(pid)
 
-    # Truly-random sample across all peaks-with-data (may overlap drivers/heritable;
-    # its own subdir, so a duplicate render is harmless).
+    # Random NEGATIVE-CONTROL sample: peaks that are neither drivers NOR
+    # heritable-no-driver — the "background" (no selected driver, no identified
+    # H²; the epigenetic / not-sequence-driven majority). This is the visual
+    # contrast to the drivers dir, so it deliberately EXCLUDES driver/heritable
+    # peaks rather than sampling everything. Seeded → reproducible.
     rng = random.Random(args.seed)
-    pool = sorted(present)
+    exclude = set(drivers) | set(heritable)
+    pool = sorted(p for p in present if p not in exclude)
     rand = sorted(rng.sample(pool, min(args.random_n, len(pool)))) if pool else []
 
     mdir = Path(args.manifest_dir)
@@ -112,7 +116,7 @@ def main() -> None:
 
     print(f"[aggregate] {table.height} rows over {len(present)} peaks → "
           f"{len(drivers)} drivers, {len(heritable)} heritable-no-driver, "
-          f"{len(rand)} random")
+          f"{len(rand)} random-background")
 
 
 if __name__ == "__main__":

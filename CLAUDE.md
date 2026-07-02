@@ -206,8 +206,10 @@ Three Snakemake steps driven by a checkpoint:
    plotting: `plot_drivers.txt` (peaks with ≥1 selected driver), 
    `plot_heritable_no_driver.txt` (H² identified — `h2_re_ok` or `h2_region_ok` —
    but 0 drivers; **unlimited**), and `plot_random.txt` (`config["random_n"]`=100
-   seeded-random peaks, truly random so it may overlap the other two; its own
-   subdir makes the duplicate render harmless). It is a **checkpoint** because
+   seeded-random **background** peaks — sampled from those that are NEITHER
+   drivers NOR heritable-no-driver, i.e. the epigenetic / not-sequence-driven
+   majority — as the negative-control contrast to the drivers dir; it does NOT
+   overlap the other two). It is a **checkpoint** because
    `rule all`'s plot targets depend on which peaks land in each manifest.
    `rule all` = the parquet table + the categorized plots; requiring the table
    forces the full per-peak stats (tree → phylo_mm → re_variants) for the WHOLE

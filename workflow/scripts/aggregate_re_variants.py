@@ -34,12 +34,16 @@ def main() -> None:
     indir = Path(args.indir)
     peaks = [p.strip() for p in Path(args.peaks).read_text().splitlines() if p.strip()]
 
-    # Pin column types so per-file inference can't disagree across 180K files.
-    # Without this, a peak whose numeric column is entirely empty (e.g.
-    # attribution_mode=none → blank h2_re_*, non-carrier rows → blank
-    # n_other_diffs) infers String, and vertical_relaxed then coerces the WHOLE
-    # column to String. read_csv reads "" as null for typed numeric/bool columns.
-    schema = {
+    # Pin EVERY column's type up front so per-file inference can't disagree
+    # across peaks (concat how="vertical" requires identical schemas). Known
+    # numeric/bool columns get their type; read_csv reads "" as null for those,
+    # so a peak with an all-blank numeric column (e.g. attribution_mode=none →
+    # blank h2_re_*, non-carrier rows → blank n_other_diffs) stays numeric.
+    # EVERY OTHER column is forced to Utf8 — critically the comma-list columns
+    # (act_values, samples, driver_ids/positions/betas/p), which infer Float64
+    # in a peak whose rows each hold a single value ("0.55") and String in a peak
+    # with multiple ("0.1,0.55"); that mismatch is what breaks the concat.
+    numeric_bool = {
         "gc_frac": pl.Float64, "act_mean": pl.Float64, "act_sd": pl.Float64,
         "act_min": pl.Float64, "act_max": pl.Float64, "total_cov": pl.Float64,
         "driver_delta": pl.Float64,
@@ -51,6 +55,13 @@ def main() -> None:
         "has_driver": pl.Boolean, "clean_pair": pl.Boolean,
         "h2_re_ok": pl.Boolean, "h2_region_ok": pl.Boolean,
     }
+    first = next(
+        (indir / f"{p}.tsv" for p in peaks if (indir / f"{p}.tsv").exists()), None
+    )
+    header = (
+        pl.read_csv(first, separator="\t", n_rows=0).columns if first is not None else []
+    )
+    schema = {c: numeric_bool.get(c, pl.Utf8) for c in header}
 
     frames, missing = [], 0
     for peak in peaks:

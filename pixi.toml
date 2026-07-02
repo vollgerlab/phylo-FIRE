@@ -15,7 +15,7 @@ test = { cmd = [
     "peak_ids=config/test_peak_ids.txt",
     "input_table=resources/test/test-union-peaks.bed.gz",
     "-j",
-    "8",
+    "10",
 ] }
 replot = { cmd = [
     "snakemake",
@@ -27,7 +27,7 @@ replot = { cmd = [
     "--forcerun",
     "plot",
     "-j",
-    "8",
+    "10",
 ] }
 # The primary hap-selective test case: 30 peaks (subsumes the old
 # hap-selective-20 — the 30 ⊇ those 20). 20 span the haplotype_distinct
@@ -47,7 +47,7 @@ hap-selective-30 = { cmd = [
     "input_table=resources/hap-selective-30/hap-selective-30.bed.gz",
     "min_seqs=1",
     "-j",
-    "8",
+    "10",
 ] }
 # 12 Genetically-haplotype-specific peaks chosen to exercise the dual-H² gate +
 # multi-variant attribution: 6 with LOW within-cluster spread + high unique-seq
@@ -66,7 +66,7 @@ genetic-candidates = { cmd = [
     "input_table=resources/genetic-candidates/genetic-candidates.bed.gz",
     "min_seqs=1",
     "-j",
-    "8",
+    "10",
 ] }
 # 5 haplotype-selective peaks pulled from hyak's union-peaks-chm13.bed.gz via
 # tabix region query (see resources/hap-selective-5/README.md). 5 peaks x ~90
@@ -80,7 +80,7 @@ hap-selective-5 = { cmd = [
     "peak_ids=config/hap_selective_5_peak_ids.txt",
     "input_table=resources/hap-selective-5/hap-selective-5.bed.gz",
     "-j",
-    "8",
+    "10",
 ] }
 # Same 5 peaks, restricted per-peak to rows whose haplotype_distinct
 # classification is exactly "Haplotype-selective". Each peak's set of
@@ -96,7 +96,7 @@ hap-selective-5-samples = { cmd = [
     "highlight_file=config/hap_selective_5_highlights.tsv",
     "min_seqs=2",
     "-j",
-    "8",
+    "10",
 ] }
 # Per-paralog-group MSA test using a fixture pre-extracted by PARE's
 # `extract_paralog_msas` rule. Exercises the `preextracted_dir` ingestion path.
@@ -123,7 +123,7 @@ test-nested = { cmd = [
     "flank=0",
     "min_seqs=2",
     "-j",
-    "8",
+    "10",
 ] }
 test-paralog = { cmd = [
     "snakemake",
@@ -133,7 +133,7 @@ test-paralog = { cmd = [
     "preextracted_dir=resources/test/preextracted_pg_31",
     "flank=0",
     "-j",
-    "8",
+    "10",
 ] }
 # All-haps version of the pg_31 fixture: same 5 paralog peaks but pulled
 # from the full HPRCv2 union BED (45 individuals -> 78 primary haps after
@@ -146,7 +146,7 @@ test-paralog-all-haps = { cmd = [
     "preextracted_dir=resources/test/preextracted_pg_31_all_haps",
     "flank=0",
     "-j",
-    "8",
+    "10",
 ] }
 fmt = "snakefmt workflow/Snakefile"
 # One-time bulk fetch of HPRC R2 PCLAI BEDs (CHM13 + asm coord spaces)
@@ -173,6 +173,10 @@ hsca-stage = { cmd = [
     "--config",
     "run_name=hsca_stage",
     "peak_ids=config/hsca_stage_peak_ids.txt",
+    # mtime-only reruns: a resume (or an unrelated code edit) must NOT recompute
+    # the trees already on disk — only build what is missing or has newer inputs.
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "400",
 ] }
@@ -193,6 +197,10 @@ hsca-hapsel = { cmd = [
     "--config",
     "run_name=hsca_hapsel",
     "peak_ids=config/hsca_hapsel_peak_ids.txt",
+    # mtime-only reruns: a resume (or an unrelated code edit) must NOT recompute
+    # the trees already on disk — only build what is missing or has newer inputs.
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "250",
 ] }

@@ -61,15 +61,49 @@ def count_unique_seqs_phylip(phy_path: str) -> int:
     return len(seqs)
 
 
-# ── aggregate (resolves after checkpoint) ─────────────────────────────────────
+# ── static peak set (resolved at parse time, no checkpoint) ───────────────────
+
+
+def _sanitize_peak(p: str) -> str:
+    """Mirror extract_fastas.sanitize: peak_ids become filenames, `#`→`_`."""
+    return p.replace("#", "_")
 
 
 def _run_peak_ids():
-    """The authoritative peak set for this run, from the extract_fastas manifest
-    (``results/fastas/peak_ids.txt``). Reading it instead of globbing keeps stale
-    per-peak files from previous fixtures out of the build graph."""
+    """The peak set for this run, resolved at PARSE time so the per-peak DAG is
+    fully static — no ``extract_fastas`` checkpoint, whose re-evaluation on
+    resume hangs at "Updating checkpoint dependencies" once the peak count is in
+    the 100Ks. Resolution priority:
+
+      1. ``preextracted_dir`` → the source dir's ``*.fa`` (exists before the run).
+      2. the extract_fastas survivor manifest ``results/{run}/fastas/peak_ids.txt``
+         — EXACT (every listed peak has a FASTA). This is the resume case.
+      3. ``config["peak_ids"]`` — the pre-built request list, used on a fresh run
+         before extraction has written the manifest. A requested peak that
+         extraction later drops (all-NA / below ``min_seqs``) fails its own
+         ``fasta_ready`` job in isolation; re-running the pipeline then reads the
+         (now-written) survivor manifest and the DAG is clean.
+      4. last resort: glob the fastas dir.
+    """
+    pre = config.get("preextracted_dir")
+    if pre:
+        src = Path(pre)
+        return sorted(
+            _sanitize_peak(fa.stem)
+            for fa in src.glob("*.fa")
+            if (src / f"{fa.stem}.tsv").exists()
+        )
     manifest = Path(RESULTS + "/fastas/peak_ids.txt")
-    return [line.strip() for line in manifest.read_text().splitlines() if line.strip()]
+    if manifest.exists():
+        return [ln.strip() for ln in manifest.read_text().splitlines() if ln.strip()]
+    pi = config.get("peak_ids")
+    if pi and Path(pi).exists():
+        return [
+            _sanitize_peak(ln.strip())
+            for ln in Path(pi).read_text().splitlines()
+            if ln.strip()
+        ]
+    return sorted(_sanitize_peak(fa.stem) for fa in Path(RESULTS).glob("fastas/*.fa"))
 
 
 def _all_re_variants(wildcards):
@@ -77,8 +111,8 @@ def _all_re_variants(wildcards):
 
     Requiring all of these forces the full per-peak computation (tree → phylo_mm
     → re_variants) for the WHOLE peak set: stats for all, regardless of which
-    peaks get plotted."""
-    checkpoints.extract_fastas.get(**wildcards)
+    peaks get plotted. The peak set is static (from ``_run_peak_ids``), so this
+    no longer triggers a 180K checkpoint re-expansion."""
     return expand(RESULTS + "/re_variants/{peak_id}.tsv", peak_id=_run_peak_ids())
 
 
@@ -172,12 +206,17 @@ def _highlight_input(wildcards):
     return [hf] if hf else []
 
 
-checkpoint extract_fastas:
+rule extract_fastas:
     """One-pass extraction of per-peak FASTA + actuation TSV from the union-peaks table.
 
 If `preextracted_dir` is set, this becomes a noop wrapper that symlinks
 pre-extracted FASTA/TSV pairs into `results/fastas/` (e.g. per-paralog-group
 files emitted by PARE's `extract_paralog_msas` rule).
+
+NOT a checkpoint: the peak set is read statically from the survivor manifest
+(`peak_ids.txt`, this rule's output) by `_run_peak_ids`, so the per-peak DAG is
+built once instead of re-expanded on every resume. `rule fasta_ready` exposes
+the per-peak FASTAs (written here as a side effect) as individual targets.
 """
     input:
         src=_extract_fastas_input,
@@ -185,7 +224,19 @@ files emitted by PARE's `extract_paralog_msas` rule).
         highlight=_highlight_input,
         script=workflow.source_path("scripts/extract_fastas.py"),
     output:
+        # Declare every requested peak's FASTA/TSV (peak set read at parse from
+        # the peak-ids file — cheap even at 100K+ lines) so this rule is their
+        # producer: that's what lets ONE `snakemake` build the whole per-peak DAG
+        # with no checkpoint. A peak that yields nothing (all-NA, or below
+        # min_seqs) would leave a missing declared output; extract_fastas.py
+        # catches that and exits with the offending ids so you drop them from the
+        # list. At min_seqs=1 (the cluster default) only a truly empty peak — one
+        # with zero non-NA primary sequences — can fail this way, which the HSCA
+        # set shouldn't contain.
+        fa=expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=_run_peak_ids()),
+        tsv=expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=_run_peak_ids()),
         done=touch(RESULTS + "/fastas/.done"),
+        manifest=RESULTS + "/fastas/peak_ids.txt",
     threads: config.get("bgzip_threads", 16)
     resources:
         mem_mb=32768,
@@ -372,7 +423,7 @@ dropping its model from the charpartition.)
         # charpartition (GTR+I+G on DNA, GTR2+ASC on indels), so no -m needed.
         """
         (cd $(dirname {input.nex}) && iqtree -p {params.peak_id}.nex \
-            --prefix {params.prefix} -T {threads} {params.bootstrap} --redo)
+            --prefix {params.prefix} -T AUTO --threads-max {threads} {params.bootstrap} --redo)
         # Delete every IQ-TREE aux file sharing the prefix except the treefile,
         # so new aux extensions across IQ-TREE versions don't leak.
         find "$(dirname {params.prefix})" -maxdepth 1 \
@@ -498,7 +549,7 @@ the right tip set.
     shell:
         """
         if (cd $(dirname {input.nex}) && iqtree -p {params.peak_id}.nex \
-                --prefix {params.prefix} -T {threads} {params.bootstrap} --redo); then
+                --prefix {params.prefix} -T AUTO --threads-max {threads} {params.bootstrap} --redo); then
             find "$(dirname {params.prefix})" -maxdepth 1 \
                 -name "$(basename {params.prefix}).*" \
                 ! -name "$(basename {params.prefix}).treefile" -delete

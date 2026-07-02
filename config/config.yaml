@@ -1,5 +1,5 @@
 # Input table: bgzipped union-peaks BED. Columns are resolved by header name,
-# and the extract_fastas checkpoint sorts by consensus_peak_id, so the
+# and the extract_fastas rule sorts by consensus_peak_id, so the
 # asm-coord-sorted production BED works directly. This default points at the
 # local copy; `config/cluster.yaml` overrides it (+ agc) for CHPC runs.
 input_table: "resources/union-peaks-asm.bed.gz"
@@ -18,8 +18,15 @@ haplotype_distinct: null
 # Only use primary samples
 primary_only: true
 
-# Minimum number of unique sequences to build a tree
-min_seqs: 2
+# Minimum number of unique sequences for a peak to be kept. Default 1: the
+# deliverable is EVERY unique RE sequence, including monomorphic
+# (epigenetically-haplotype-selective) peaks — one clonable sequence with an
+# actuation spread and no driver. Those peaks still resolve a tree via the
+# +flank sequence. Keeping min_seqs=1 also means extract drops a peak only if it
+# has zero non-NA primary sequences, so the per-peak FASTA outputs the pipeline
+# declares are never silently missing. Raise to 2 only to intentionally exclude
+# monomorphic peaks.
+min_seqs: 1
 
 # Minimum per-leaf coverage (fibers) for a leaf to enter the per-branch
 # clade-vs-rest actuation test in phylo_mm.R. Leaves are also coverage-weighted

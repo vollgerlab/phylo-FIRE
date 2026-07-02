@@ -4,7 +4,7 @@
 #   pixi run -- snakemake --configfile config/cluster.yaml \
 #       --profile profiles/slurm -j <N>
 #
-# The union BED here is asm-coord-sorted; the extract_fastas checkpoint sorts it
+# The union BED here is asm-coord-sorted; the extract_fastas rule sorts it
 # by consensus_peak_id, and columns are resolved by header name, so it ingests
 # directly. The AGC supplies flank sequence (flank/min_coverage etc. inherited
 # from config/config.yaml).

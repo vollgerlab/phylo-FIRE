@@ -293,6 +293,21 @@ def main() -> None:
     manifest = args.outdir / "peak_ids.txt"
     manifest.write_text("\n".join(sorted(sanitize(p) for p in written)) + "\n")
 
+    # Each requested peak's FASTA is a DECLARED snakemake output, so a peak that
+    # produced nothing (all-NA, or fewer than --min-seqs unique) would leave a
+    # missing output and fail the run opaquely. Fail here first with the
+    # offending ids, so the fix (drop them from the peak-ids file, or lower
+    # --min-seqs) is obvious. At --min-seqs=1 only a truly empty peak trips this.
+    if allowed_peaks is not None:
+        dropped = sorted({sanitize(p) for p in allowed_peaks} - set(written))
+        if dropped:
+            sys.exit(
+                f"extract_fastas: {len(dropped)} requested peak(s) yielded no "
+                f"sequences (all-NA, or < --min-seqs={args.min_seqs} unique): "
+                f"{', '.join(dropped[:20])}{' …' if len(dropped) > 20 else ''}. "
+                "Remove them from the peak-ids file or lower --min-seqs."
+            )
+
 
 if __name__ == "__main__":
     main()

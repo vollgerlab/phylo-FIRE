@@ -25,6 +25,13 @@ RUN = config.get("run_name", "default")
 RESULTS = f"results/{RUN}"
 TEMP = f"temp/{RUN}"
 
+# Stable path to the scripts dir. workflow.source_path caches a script under a
+# per-invocation tmp path, so declaring it as an INPUT makes the resolved path
+# change every run and can trigger spurious reruns. The additive hg38-projection
+# rules must NOT rerun on that, so they reference scripts by this fixed path as a
+# PARAM (they only rerun when their real data inputs change).
+SCRIPT_DIR = os.path.join(workflow.basedir, "scripts")
+
 # Interactive HTML plots are ~4 MB each; OFF by default (the static PDF is always
 # written). Enable with `--config plot_html=true`. (str() because --config values
 # arrive as strings, where bool("false") would be truthy.)
@@ -809,7 +816,6 @@ rule peak_coords:
     input:
         src=config.get("input_table", ""),
         peak_ids=_peak_ids_input,
-        script=workflow.source_path("scripts/build_peak_coords.py"),
     output:
         RESULTS + "/tables/peak_coords.tsv",
     threads: config.get("bgzip_threads", 8)
@@ -817,12 +823,13 @@ rule peak_coords:
         mem_mb=4096,
         runtime=120,
     params:
+        script=f"{SCRIPT_DIR}/build_peak_coords.py",
         peak_ids_arg=lambda wc, input: (
             f"--peak-ids {input.peak_ids[0]}" if input.peak_ids else ""
         ),
     shell:
         "bgzip -cd -@ {threads} {input.src} | "
-        "python {input.script} --out {output} {params.peak_ids_arg}"
+        "python {params.script} --out {output} {params.peak_ids_arg}"
 
 
 rule project_variants:
@@ -830,8 +837,8 @@ rule project_variants:
     input:
         fa=RESULTS + "/fastas/{peak_id}.fa",
         tsv=RESULTS + "/fastas/{peak_id}.tsv",
+        phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
         coords=RESULTS + "/tables/peak_coords.tsv",
-        script=workflow.source_path("scripts/project_variants.py"),
     output:
         RESULTS + "/hg38/{peak_id}.tsv",
     threads: 2
@@ -839,12 +846,11 @@ rule project_variants:
         mem_mb=4096,
         runtime=30,
     params:
+        script=f"{SCRIPT_DIR}/project_variants.py",
         agc=config.get("agc", ""),
-        # ambient (not an input) so the temp alignment is never regenerated
-        phylo_mm=lambda wc: f"{RESULTS}/phylo_mm/{wc.peak_id}.tsv",
     shell:
-        "python {input.script} --fa {input.fa} --tsv {input.tsv} "
-        "--phylo-mm {params.phylo_mm} --peak-id {wildcards.peak_id} "
+        "python {params.script} --fa {input.fa} --tsv {input.tsv} "
+        "--phylo-mm {input.phylo_mm} --peak-id {wildcards.peak_id} "
         "--coords-table {input.coords} --agc {params.agc} "
         "--threads {threads} --out {output}"
 
@@ -858,7 +864,6 @@ rule aggregate_hg38:
     input:
         tables=_all_hg38,
         coords=RESULTS + "/tables/peak_coords.tsv",
-        script=workflow.source_path("scripts/aggregate_hg38.py"),
     output:
         variants=RESULTS + "/tables/variants.hg38.tsv.gz",
         variants_bed=RESULTS + "/tables/variants.hg38.bed",
@@ -867,9 +872,10 @@ rule aggregate_hg38:
         mem_mb=8192,
         runtime=120,
     params:
+        script=f"{SCRIPT_DIR}/aggregate_hg38.py",
         rdir=RESULTS,
     shell:
-        "python {input.script} --indir {params.rdir}/hg38 "
+        "python {params.script} --indir {params.rdir}/hg38 "
         "--peaks {params.rdir}/fastas/peak_ids.txt --coords {input.coords} "
         "--out-variants {output.variants} --out-variants-bed {output.variants_bed} "
         "--out-elements-bed {output.elements_bed}"

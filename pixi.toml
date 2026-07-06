@@ -204,6 +204,28 @@ hsca-hapsel = { cmd = [
     "-j",
     "250",
 ] }
+# Project EVERY variable site in every peak back to CHM13 + hg38 (+ each
+# carrier's assembly), flagging drivers, for GWAS-enrichment intersection.
+# ADDITIVE: runs on a FINISHED run without recomputing trees/stats (reads only
+# fastas + the union BED + AGC; phylo_mm read ambiently). Targets the hg38 BEDs
+# directly (not `rule all`) so it doesn't drag in aggregate_results. Change
+# run_name + the target paths for a different run (e.g. hsca). Needs hg38 +
+# CHM13 in the AGC. Outputs: results/<run>/tables/{variants,elements}.hg38.bed
+# + variants.hg38.tsv.gz. The plink/bedtools enrichment is downstream (not here).
+project-hg38 = { cmd = [
+    "snakemake",
+    "--configfile",
+    "config/cluster.yaml",
+    "--config",
+    "run_name=hsca_stage",
+    "peak_ids=config/hsca_stage_peak_ids.txt",
+    "--rerun-triggers",
+    "mtime",
+    "-j",
+    "250",
+    "results/hsca_stage/tables/variants.hg38.bed",
+    "results/hsca_stage/tables/elements.hg38.bed",
+] }
 # Install selectiveInference + its CRAN deps into the pixi-managed R library.
 # selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.
 setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInference", quietly=TRUE)) install.packages("selectiveInference", repos="https://cloud.r-project.org") else cat("selectiveInference already installed\\n")'"""

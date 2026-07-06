@@ -162,6 +162,7 @@ def _hg38_targets(wildcards):
         return []
     return [
         RESULTS + "/tables/variants.hg38.tsv.gz",
+        RESULTS + "/tables/variants.hg38.vcf",
         RESULTS + "/tables/variants.hg38.bed",
         RESULTS + "/tables/elements.hg38.bed",
     ]
@@ -862,6 +863,7 @@ rule aggregate_hg38:
         coords=RESULTS + "/tables/peak_coords.tsv",
     output:
         variants=RESULTS + "/tables/variants.hg38.tsv.gz",
+        vcf=RESULTS + "/tables/variants.hg38.vcf",
         variants_bed=RESULTS + "/tables/variants.hg38.bed",
         elements_bed=RESULTS + "/tables/elements.hg38.bed",
     resources:
@@ -873,5 +875,6 @@ rule aggregate_hg38:
     shell:
         "python {params.script} --indir {params.rdir}/hg38 "
         "--peaks {params.rdir}/fastas/peak_ids.txt --coords {input.coords} "
-        "--out-variants {output.variants} --out-variants-bed {output.variants_bed} "
+        "--out-variants {output.variants} --out-vcf {output.vcf} "
+        "--out-variants-bed {output.variants_bed} "
         "--out-elements-bed {output.elements_bed}"

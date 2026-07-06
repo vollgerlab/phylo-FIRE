@@ -197,18 +197,22 @@ def main() -> None:
         _, hg38_map = orient_and_map(aln["__hg38__"], hg38_fwd, hg38_s0)
 
     hap_names = [n for n in aln if not n.startswith("__")]
+    # Alignment orientation vs the genome. Refs are pulled FORWARD; if the CHM13
+    # ref aligned as reverse-complement, the whole column set is minus-strand, so
+    # haplotype alleles get revcomp'd to report forward-genomic (matching REF).
+    aln_is_rev = _rev_orient(aln.get("__CHM13__", ""), cons_fwd) if cons_fwd else False
 
     rows = []
     for col in range(aln_len):
         col_bases = {n: aln[n][col].upper() for n in hap_names}
-        alleles = {b for b in col_bases.values() if b not in ("-", "N")}
-        if len(alleles) < 2:
-            continue  # invariant / all-gap
-        # minor allele = least frequent non-gap base
-        counts = {}
+        # SNV sites only for now (>=2 distinct NON-gap bases). Indels (gap vs
+        # base) are handled separately — TODO.
+        counts: dict[str, int] = {}
         for b in col_bases.values():
             if b not in ("-", "N"):
                 counts[b] = counts.get(b, 0) + 1
+        if len(counts) < 2:
+            continue
         minor = min(counts, key=counts.get)
         major = max(counts, key=counts.get)
         carriers = sorted(n for n, b in col_bases.items() if b == minor)
@@ -218,12 +222,15 @@ def main() -> None:
         is_driver = cset in drivers
         beta = drivers.get(cset, "NA")
 
-        cons_pos = cons_map.get(col) if cons_map else None
-        hg38_pos = hg38_map.get(col) if hg38_map else None
-        # forward-orient alleles when the alignment is on the minus strand vs hg38
-        maj_f, min_f = major, minor
-        if hg38_map is not None and _rev_orient(aln.get("__hg38__", ""), hg38_fwd):
-            maj_f, min_f = revcomp(major), revcomp(minor)
+        cons_pos0 = cons_map.get(col) if cons_map else None
+        hg38_pos0 = hg38_map.get(col) if hg38_map else None
+        # REF = the reference base straight from the forward pull at the mapped
+        # position (== the true CHM13/hg38 reference base; also self-validates the
+        # coordinate — re-fetching that position returns this base).
+        cons_ref = cons_fwd[cons_pos0 - cons_s0].upper() if cons_pos0 is not None else "NA"
+        hg38_ref = (hg38_fwd[hg38_pos0 - hg38_s0].upper()
+                    if (hg38_fwd and hg38_pos0 is not None) else "NA")
+        maj_f, min_f = (revcomp(major), revcomp(minor)) if aln_is_rev else (major, minor)
 
         # per-carrier assembly coordinates (asm_start + ungapped offset in that hap)
         asm_hits = []
@@ -237,12 +244,15 @@ def main() -> None:
             "peak_id": args.peak_id,
             # position within the peak (1-based, from CHM13 genomic); NA/≤0 for
             # sites in the extraction overhang outside the peak interval.
-            "re_pos": (cons_pos - args.cons_start + 1) if cons_pos is not None else "NA",
+            "re_pos": (cons_pos0 - args.cons_start + 1) if cons_pos0 is not None else "NA",
             "cons_chr": args.cons_chr,
-            "cons_pos": (cons_pos + 1) if cons_pos is not None else "NA",   # 1-based
-            "hg38_chr": args.hg38_chr if hg38_pos is not None else "NA",
-            "hg38_pos": (hg38_pos + 1) if hg38_pos is not None else "NA",   # 1-based
-            "ref_allele": maj_f, "alt_allele": min_f,
+            "cons_pos": (cons_pos0 + 1) if cons_pos0 is not None else "NA",   # 1-based
+            "cons_ref": cons_ref,
+            "hg38_chr": args.hg38_chr if hg38_pos0 is not None else "NA",
+            "hg38_pos": (hg38_pos0 + 1) if hg38_pos0 is not None else "NA",   # 1-based
+            "hg38_ref": hg38_ref,
+            "hap_major": maj_f,
+            "hap_minor": min_f,
             "n_carriers": len(carriers),
             "is_driver": "TRUE" if is_driver else "FALSE",
             "beta": beta,
@@ -258,9 +268,9 @@ def main() -> None:
           f"({sum(r['is_driver']=='TRUE' for r in rows)} drivers)", file=sys.stderr)
 
 
-_COLS = ["peak_id", "re_pos", "cons_chr", "cons_pos", "hg38_chr", "hg38_pos",
-         "ref_allele", "alt_allele", "n_carriers", "is_driver", "beta",
-         "carriers", "asm_coords"]
+_COLS = ["peak_id", "re_pos", "cons_chr", "cons_pos", "cons_ref",
+         "hg38_chr", "hg38_pos", "hg38_ref", "hap_major", "hap_minor",
+         "n_carriers", "is_driver", "beta", "carriers", "asm_coords"]
 
 
 def _header() -> str:

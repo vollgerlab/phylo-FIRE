@@ -162,7 +162,7 @@ def _hg38_targets(wildcards):
         return []
     return [
         RESULTS + "/tables/variants.hg38.tsv.gz",
-        RESULTS + "/tables/variants.hg38.vcf",
+        RESULTS + "/tables/variants.hg38.vcf.gz",
         RESULTS + "/tables/variants.hg38.bed",
         RESULTS + "/tables/elements.hg38.bed",
     ]
@@ -863,18 +863,23 @@ rule aggregate_hg38:
         coords=RESULTS + "/tables/peak_coords.tsv",
     output:
         variants=RESULTS + "/tables/variants.hg38.tsv.gz",
-        vcf=RESULTS + "/tables/variants.hg38.vcf",
+        vcf=RESULTS + "/tables/variants.hg38.vcf.gz",
+        tbi=RESULTS + "/tables/variants.hg38.vcf.gz.tbi",
         variants_bed=RESULTS + "/tables/variants.hg38.bed",
         elements_bed=RESULTS + "/tables/elements.hg38.bed",
+    threads: 2
     resources:
         mem_mb=8192,
         runtime=120,
     params:
         script=workflow.source_path("scripts/aggregate_hg38.py"),
         rdir=RESULTS,
+        vcf=RESULTS + "/tables/variants.hg38.vcf",  # plain; bgzipped below
     shell:
+        # aggregate writes a sorted plain VCF, then bgzip + tabix it
         "python {params.script} --indir {params.rdir}/hg38 "
         "--peaks {params.rdir}/fastas/peak_ids.txt --coords {input.coords} "
-        "--out-variants {output.variants} --out-vcf {output.vcf} "
+        "--out-variants {output.variants} --out-vcf {params.vcf} "
         "--out-variants-bed {output.variants_bed} "
-        "--out-elements-bed {output.elements_bed}"
+        "--out-elements-bed {output.elements_bed} && "
+        "bgzip -f -@ {threads} {params.vcf} && tabix -f -p vcf {output.vcf}"

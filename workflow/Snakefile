@@ -30,10 +30,12 @@ TEMP = f"temp/{RUN}"
 # arrive as strings, where bool("false") would be truthy.)
 PLOT_HTML = str(config.get("plot_html", "false")).lower() in ("true", "1", "yes")
 
-# Opt-in hg38/CHM13 coordinate projection (for GWAS-enrichment). Additive: reads
-# only persisted outputs + the AGC, so it runs on a finished run WITHOUT
-# recomputing trees/stats. Enable with `--config project_hg38=true`.
-PROJECT_HG38 = str(config.get("project_hg38", "false")).lower() in ("true", "1", "yes")
+# hg38/CHM13 coordinate projection (for GWAS-enrichment). ON BY DEFAULT; it is
+# auto-skipped when it can't run — preextracted mode (no union BED / hg38 coords)
+# or no AGC available (see _hg38_targets). Additive: reads only persisted outputs
+# + the AGC, so it can also be run on a finished pipeline without recomputing
+# trees/stats. Disable with `--config project_hg38=false`.
+PROJECT_HG38 = str(config.get("project_hg38", "true")).lower() in ("true", "1", "yes")
 
 
 def count_unique_seqs(fa_path: str) -> int:
@@ -157,8 +159,16 @@ def aggregate_outputs(wildcards):
 
 
 def _hg38_targets(wildcards):
-    """The hg38-projection deliverables, only when project_hg38 is enabled."""
-    if not PROJECT_HG38:
+    """The hg38-projection deliverables (default on). Auto-skipped when it can't
+    run: preextracted mode (no union BED with hg38 coords) or the AGC isn't
+    available — so enabling it by default never breaks those runs."""
+    agc = config.get("agc")
+    if (
+        not PROJECT_HG38
+        or config.get("preextracted_dir")
+        or not agc
+        or not Path(agc).exists()
+    ):
         return []
     return [
         RESULTS + "/tables/variants.hg38.tsv.gz",

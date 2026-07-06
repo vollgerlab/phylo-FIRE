@@ -44,6 +44,13 @@ min_coverage: 4
 flank: 250
 agc: "resources/HPRC_r2_assemblies_0.6.1.agc"
 
+# Project every variable site back to CHM13 + hg38 (+ each carrier's assembly)
+# and emit the reference VCF/BEDs for GWAS-enrichment. ON by default; needs the
+# AGC above (with GRCh38 + CHM13) and a union BED carrying hg38 coords. Auto-
+# skipped for preextracted (PARE) runs and when the AGC file is absent. Set false
+# to turn off. See results/{run}/tables/variants.hg38.vcf.gz.
+project_hg38: true
+
 # Heritability gate for variant attribution. phylo_mm fits H2_p on the RE-only
 # tree first; variants are attributed only when actuation is a stable + heritable
 # function of sequence. "Stable" = the 95% HPD is no wider than h2_hpd_width_max

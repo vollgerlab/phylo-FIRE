@@ -37,6 +37,11 @@ PLOT_HTML = str(config.get("plot_html", "false")).lower() in ("true", "1", "yes"
 # trees/stats. Disable with `--config project_hg38=false`.
 PROJECT_HG38 = str(config.get("project_hg38", "true")).lower() in ("true", "1", "yes")
 
+# Plasmid fiber-seq construct panel (per the experimental-design notes). Opt-in.
+# Builds the ≤4-construct on/off-both-backgrounds panel for every single-driver
+# peak + a seeded ~N-site sample, and draws the constructs under the driver plots.
+PLASMID = str(config.get("plasmid", "false")).lower() in ("true", "1", "yes")
+
 
 def count_unique_seqs(fa_path: str) -> int:
     """Count unique sequences in a FASTA (handles multi-line format)."""
@@ -178,10 +183,21 @@ def _hg38_targets(wildcards):
     ]
 
 
+def _plasmid_targets(wildcards):
+    """The plasmid-construct panel deliverables, only when plasmid is enabled."""
+    if not PLASMID:
+        return []
+    return [
+        RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
+        RESULTS + "/plasmid_fiberseq/plasmid_sites.tsv",
+    ]
+
+
 rule all:
     input:
         aggregate_outputs,
         _hg38_targets,
+        _plasmid_targets,
 
 
 def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
@@ -762,6 +778,14 @@ depend on which peaks land in each manifest.
         """
 
 
+def _plot_panel(wildcards):
+    """The plasmid construct panel FASTA for this peak (only when plasmid on),
+    drawn as pseudo-leaf rows under the MSA."""
+    if not PLASMID:
+        return []
+    return f"{RESULTS}/plasmid_fiberseq/{wildcards.peak_id}.panel.fa"
+
+
 rule plot:
     """Interactive tree + FIRE actuation + MSA plot (HTML + PDF from one rule).
 
@@ -779,6 +803,7 @@ SNP effect is annotated above the MSA at its alignment column.
         alignment=TEMP + "/aligned/{peak_id}.fa",
         pclai=_pclai_bed_for_plot,
         phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
+        panel=_plot_panel,
         script=workflow.source_path("scripts/plot_tree_actuation_html.py"),
     output:
         **({"html": RESULTS + "/plots/{category}/{peak_id}.html"} if PLOT_HTML else {}),
@@ -788,6 +813,9 @@ SNP effect is annotated above the MSA at its alignment column.
         html_arg=lambda wc, output: f"--html {output.html}" if PLOT_HTML else "",
         pclai_arg=lambda wc, input: (
             f"--pclai-bed {shlex.quote(str(input.pclai[0]))}" if input.pclai else ""
+        ),
+        panel_arg=lambda wc, input: (
+            f"--panel {input.panel}" if PLASMID and input.panel else ""
         ),
         flank=config.get("flank", 0),
     shell:
@@ -801,7 +829,7 @@ SNP effect is annotated above the MSA at its alignment column.
             --peak-id     {params.peak_id} \
             --phylo-mm    {input.phylo_mm} \
             --flank       {params.flank} \
-            {params.html_arg} {params.pclai_arg}
+            {params.html_arg} {params.pclai_arg} {params.panel_arg}
         """
 
 
@@ -893,3 +921,59 @@ rule aggregate_hg38:
         "--out-variants-bed {output.variants_bed} "
         "--out-elements-bed {output.elements_bed} && "
         "bgzip -f -@ {threads} {params.vcf} && tabix -f -p vcf {output.vcf}"
+
+
+# ── plasmid fiber-seq construct panel (opt-in: plasmid=true) ──────────────────
+# Per single-driver peak: modal carrier vs modal outgroup rep, driver on/off both
+# backgrounds → ≤4 constructs. Reads the aligned MSA (so the panel matches the
+# plot frame) + actuation + phylo_mm (ambient param). Non-driver / multi-driver
+# peaks emit an empty table + panel.
+
+
+rule plasmid_constructs:
+    """One peak's plasmid constructs + a plot panel FASTA."""
+    input:
+        aligned=TEMP + "/aligned/{peak_id}.fa",
+        actuation=RESULTS + "/fastas/{peak_id}.tsv",
+    output:
+        tsv=RESULTS + "/plasmid_fiberseq/{peak_id}.tsv",
+        panel=RESULTS + "/plasmid_fiberseq/{peak_id}.panel.fa",
+    group:
+        "peak_chain"
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=10,
+    params:
+        script=workflow.source_path("scripts/build_plasmid_constructs.py"),
+        phylo_mm=lambda wc: f"{RESULTS}/phylo_mm/{wc.peak_id}.tsv",
+    shell:
+        "python {params.script} --aligned {input.aligned} --actuation {input.actuation} "
+        "--phylo-mm {params.phylo_mm} --peak-id {wildcards.peak_id} "
+        "--out {output.tsv} --aligned-out {output.panel}"
+
+
+def _all_plasmid(wildcards):
+    return expand(RESULTS + "/plasmid_fiberseq/{peak_id}.tsv", peak_id=_run_peak_ids())
+
+
+rule aggregate_plasmid:
+    """Concatenate per-peak constructs → the panel table + site audit + sample."""
+    input:
+        tables=_all_plasmid,
+    output:
+        constructs=RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
+        sites=RESULTS + "/plasmid_fiberseq/plasmid_sites.tsv",
+    resources:
+        mem_mb=8192,
+        runtime=60,
+    params:
+        script=workflow.source_path("scripts/aggregate_plasmid.py"),
+        rdir=RESULTS,
+        n=config.get("plasmid_n", 1000),
+        seed=config.get("random_seed", 42),
+    shell:
+        "python {params.script} --indir {params.rdir}/plasmid_fiberseq "
+        "--peaks {params.rdir}/fastas/peak_ids.txt "
+        "--out-constructs {output.constructs} --out-sites {output.sites} "
+        "--n {params.n} --seed {params.seed}"

@@ -46,6 +46,8 @@ hap-selective-30 = { cmd = [
     "peak_ids=config/hap_selective_30_peak_ids.txt",
     "input_table=resources/hap-selective-30/hap-selective-30.bed.gz",
     "min_seqs=1",
+    # also emit the plasmid fiber-seq construct panel (results/.../plasmid_fiberseq/)
+    "plasmid=true",
     "-j",
     "10",
 ] }

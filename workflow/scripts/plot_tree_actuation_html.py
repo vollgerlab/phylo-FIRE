@@ -755,30 +755,26 @@ def make_figure(
         _i = _j
     leaves = [leaves[k] for k in _disp]
 
-    # Optional: splice synthetic mutagenesis constructs in as pseudo-leaf rows
-    # right after the carrier leaf each was built from. They carry an aligned
-    # sequence (so the MSA shows the single-base edits) but NO tree branch and NO
-    # actuation — grey rows purely for validating the panel. Inserting rows shifts
-    # the y of everything below, but tree branches read the SAME pos[]["y"], so
-    # the tree just gains gaps where constructs sit and stays in sync.
+    # Optional: append synthetic constructs (mutagenesis / plasmid) as pseudo-leaf
+    # rows in a BLOCK at the BOTTOM of the MSA. They carry an aligned sequence (so
+    # the MSA shows the edits) but NO tree branch and NO actuation — grey rows for
+    # validating the panel. They keep their anchor leaf's x (an unused tree pos);
+    # tree branches read the SAME pos[]["y"], so the tree stays in sync and just
+    # ends above the construct block.
     construct_names: set[str] = set()
     construct_label: dict[str, str] = {}
     if panel:
-        by_anchor: dict[str, list[dict]] = {}
+        augmented: list = list(leaves)          # every real leaf first
+        anchor_x = {lf.name: pos[id(lf)]["x"] for lf in leaves}
         for p in panel:
-            by_anchor.setdefault(p["anchor"], []).append(p)
-        augmented: list = []
-        for _lf in leaves:
-            augmented.append(_lf)
-            for p in by_anchor.get(_lf.name, []):
-                obj = _PanelRow(p["name"], p["label"])
-                pos[id(obj)] = {"x": pos[id(_lf)]["x"], "y": 0.0}
-                alignment[p["name"]] = p["seq"]
-                actuation[p["name"]] = None
-                coverage[p["name"]] = None
-                construct_names.add(p["name"])
-                construct_label[p["name"]] = p["label"]
-                augmented.append(obj)
+            obj = _PanelRow(p["name"], p["label"])
+            pos[id(obj)] = {"x": anchor_x.get(p["anchor"], 0.0), "y": 0.0}
+            alignment[p["name"]] = p["seq"]
+            actuation[p["name"]] = None
+            coverage[p["name"]] = None
+            construct_names.add(p["name"])
+            construct_label[p["name"]] = p["label"]
+            augmented.append(obj)               # constructs grouped at the bottom
         leaves = augmented
     n = len(leaves)
 

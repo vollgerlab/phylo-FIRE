@@ -973,10 +973,7 @@ with the seeded ~N-site random sample flagged."""
         script=workflow.source_path("scripts/aggregate_plasmid.py"),
         rdir=RESULTS,
         tdir=TEMP,
-        n=config.get("plasmid_n", 1000),
-        seed=config.get("random_seed", 42),
     shell:
         "python {params.script} --indir {params.tdir}/plasmid_fiberseq "
         "--peaks {params.rdir}/fastas/peak_ids.txt "
-        "--out-constructs {output.constructs} --out-fa {output.fa} "
-        "--n {params.n} --seed {params.seed}"
+        "--out-constructs {output.constructs} --out-fa {output.fa}"

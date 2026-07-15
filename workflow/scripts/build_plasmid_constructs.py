@@ -175,14 +175,18 @@ def main():
         ("outgroup_bg_with", "outgroup", "TRUE", "TRUE", edited(o_seq, d_alleles), "outgroup",
          o_leaf, o_n, o_mean, edit_str(o_alleles, d_alleles)),
     ]
-    seen = {}
+    # Reserve the two NATIVE sequences first. When flipping the driver merely
+    # recreates the other native (driver is the reps' only difference), it's then
+    # the SYNTHETIC row that's NA'd -- we clone the two real haplotypes, and the
+    # synthetic edit has nothing new to build. Natives are never NA'd.
+    seen = {"".join(sp[4]) for sp in specs if sp[3] == "FALSE"}
     for role, bg, carries, synth, seq, rep, leaf, n, mean, edit in specs:
         key = "".join(seq)
-        # collapsed = this construct's sequence already exists (e.g. flipping the
-        # driver recreates the other native). Nothing new to synthesize -> NA seq,
-        # and it isn't drawn as a separate panel row (it equals a real leaf).
-        collapsed = "TRUE" if key in seen else "FALSE"
-        seen.setdefault(key, role)
+        # collapsed = a synthetic whose sequence already exists (equals a native
+        # or an earlier construct). Nothing new to synthesize -> NA seq, and it
+        # isn't drawn as a separate panel row (it equals a real leaf).
+        collapsed = "TRUE" if (synth == "TRUE" and key in seen) else "FALSE"
+        seen.add(key)
         if collapsed == "TRUE":
             re_seq, re_len = "NA", "NA"
         else:

@@ -178,22 +178,29 @@ def main():
     seen = {}
     for role, bg, carries, synth, seq, rep, leaf, n, mean, edit in specs:
         key = "".join(seq)
+        # collapsed = this construct's sequence already exists (e.g. flipping the
+        # driver recreates the other native). Nothing new to synthesize -> NA seq,
+        # and it isn't drawn as a separate panel row (it equals a real leaf).
         collapsed = "TRUE" if key in seen else "FALSE"
         seen.setdefault(key, role)
-        re_seq = "".join(seq[re_lo:re_hi + 1]).replace("-", "")
+        if collapsed == "TRUE":
+            re_seq, re_len = "NA", "NA"
+        else:
+            re_seq = "".join(seq[re_lo:re_hi + 1]).replace("-", "")
+            re_len = len(re_seq)
+            panel.append((f"PL_{args.peak_id}_{drv['id']}_{role}", leaf, role, "".join(seq)))
         rows.append({
             "peak_id": args.peak_id, "driver_id": drv["id"], "driver_beta": drv["beta"],
             "driver_re_cols": ",".join(str(c - re_lo + 1) for c in cols),
             "role": role, "background": bg, "carries_driver": carries, "is_synthetic": synth,
             "collapsed": collapsed, "source_rep": rep, "source_leaf": leaf,
             "source_n_haps": n, "source_act_mean": f"{mean:.4f}", "edit": edit or "NA",
-            "re_seq": re_seq, "re_len": len(re_seq),
+            "re_seq": re_seq, "re_len": re_len,
         })
-        panel.append((f"PL_{args.peak_id}_{drv['id']}_{role}", leaf, role, "".join(seq)))
 
     _write(args, rows, panel)
     print(f"[plasmid] {args.peak_id}: driver {drv['id']} -> "
-          f"{len({r['re_seq'] for r in rows})} unique constructs "
+          f"{len({r['re_seq'] for r in rows if r['re_seq'] != 'NA'})} unique constructs "
           f"(driver rep n={d_n} act={d_mean:.2f}; outgroup rep n={o_n} act={o_mean:.2f})",
           file=__import__("sys").stderr)
 

@@ -60,6 +60,8 @@ def load_actuation(path):
 def parse_phylo_mm(path):
     """(header dict, [drivers]) — driver = {id, cols(0-based aln), carriers, beta}."""
     header, cols, drivers = {}, [], []
+    if not path or not Path(path).exists():
+        return header, drivers
     for line in Path(path).read_text().splitlines():
         if line.startswith("#"):
             k, _, v = line[1:].partition("=")

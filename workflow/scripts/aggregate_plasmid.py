@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Concatenate per-peak plasmid-construct TSVs into the panel deliverables:
+"""Concatenate per-peak plasmid-construct TSVs into the single panel deliverable.
 
-  * plasmid_constructs.tsv — every construct (the clonable panel).
-  * plasmid_sites.tsv      — one row per (peak, driver): construct count, whether
-                            it collapsed to 2, the driver rep vs outgroup rep
-                            support + actuation, and an `in_random_sample` flag
-                            for the seeded ~N-site subset.
+One table, `plasmid_constructs.tsv` — every construct for every single-driver
+site, with its clonable `re_seq`, the driver + rep support/actuation, and an
+`in_random_sample` flag marking the seeded ~N-site subset to actually order. Plus
+`plasmid_constructs.fa` — the unique construct sequences (headers carry the
+peak/driver/role + in_sample), ready for synthesis.
+
+The per-peak inputs are temp() intermediates; this is the only persisted output.
 """
 import argparse
 import random
@@ -14,6 +16,7 @@ from pathlib import Path
 CCOLS = ["peak_id", "driver_id", "driver_beta", "driver_re_cols", "role", "background",
          "carries_driver", "is_synthetic", "collapsed", "source_rep", "source_leaf",
          "source_n_haps", "source_act_mean", "edit", "re_seq", "re_len"]
+OUT_COLS = CCOLS + ["in_random_sample"]
 
 
 def main() -> None:
@@ -21,7 +24,7 @@ def main() -> None:
     ap.add_argument("--indir", required=True, type=Path)
     ap.add_argument("--peaks", required=True, type=Path, help="run manifest")
     ap.add_argument("--out-constructs", required=True, type=Path)
-    ap.add_argument("--out-sites", required=True, type=Path)
+    ap.add_argument("--out-fa", required=True, type=Path)
     ap.add_argument("--n", type=int, default=1000, help="target sites for the random subset")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -36,51 +39,35 @@ def main() -> None:
             if ln.strip():
                 rows.append(dict(zip(CCOLS, ln.split("\t"))))
 
+    # seeded random sample of SITES = (peak, driver); flag every construct of a
+    # chosen site so `in_random_sample==TRUE` filters to the panel to order.
+    sites = sorted({(r["peak_id"], r["driver_id"]) for r in rows})
+    rng = random.Random(args.seed)
+    chosen = set(rng.sample(sites, min(args.n, len(sites)))) if sites else set()
+    for r in rows:
+        r["in_random_sample"] = "TRUE" if (r["peak_id"], r["driver_id"]) in chosen else "FALSE"
+
     args.out_constructs.parent.mkdir(parents=True, exist_ok=True)
     with args.out_constructs.open("w") as fh:
-        fh.write("\t".join(CCOLS) + "\n")
+        fh.write("\t".join(OUT_COLS) + "\n")
         for r in rows:
-            fh.write("\t".join(r[c] for c in CCOLS) + "\n")
+            fh.write("\t".join(r[c] for c in OUT_COLS) + "\n")
 
-    # one row per (peak, driver) site
-    sites: dict[tuple, dict] = {}
-    for r in rows:
-        key = (r["peak_id"], r["driver_id"])
-        s = sites.setdefault(key, {
-            "peak_id": r["peak_id"], "driver_id": r["driver_id"],
-            "driver_beta": r["driver_beta"], "n_constructs": 0, "collapsed": "FALSE",
-            "driver_n_haps": "NA", "driver_act_mean": "NA",
-            "outgroup_n_haps": "NA", "outgroup_act_mean": "NA",
-        })
-        s["n_constructs"] += 1
-        if r["collapsed"] == "TRUE":
-            s["collapsed"] = "TRUE"
-        if r["background"] == "driver":
-            s["driver_n_haps"], s["driver_act_mean"] = r["source_n_haps"], r["source_act_mean"]
-        else:
-            s["outgroup_n_haps"], s["outgroup_act_mean"] = r["source_n_haps"], r["source_act_mean"]
-    # n_constructs is over 4 role-rows; report UNIQUE sequences instead
-    for key in sites:
-        seqs = {r["re_seq"] for r in rows if (r["peak_id"], r["driver_id"]) == key}
-        sites[key]["n_unique_seqs"] = len(seqs)
+    # FASTA of the unique construct sequences (skip collapsed duplicates)
+    n_fa = 0
+    with args.out_fa.open("w") as fh:
+        for r in rows:
+            if r["collapsed"] == "TRUE" or not r["re_seq"]:
+                continue
+            hdr = (f"{r['peak_id']}__{r['driver_id']}__{r['role']} "
+                   f"in_sample={r['in_random_sample']} beta={r['driver_beta']} "
+                   f"n_haps={r['source_n_haps']} act={r['source_act_mean']}")
+            fh.write(f">{hdr}\n{r['re_seq']}\n")
+            n_fa += 1
 
-    # seeded random sample of sites
-    rng = random.Random(args.seed)
-    all_keys = sorted(sites)
-    chosen = set(rng.sample(all_keys, min(args.n, len(all_keys)))) if all_keys else set()
-
-    scols = ["peak_id", "driver_id", "driver_beta", "n_unique_seqs", "collapsed",
-             "driver_n_haps", "driver_act_mean", "outgroup_n_haps", "outgroup_act_mean",
-             "in_random_sample"]
-    with args.out_sites.open("w") as fh:
-        fh.write("\t".join(scols) + "\n")
-        for key in all_keys:
-            s = sites[key]
-            s["in_random_sample"] = "TRUE" if key in chosen else "FALSE"
-            fh.write("\t".join(str(s[c]) for c in scols) + "\n")
-
+    n_sample = sum(1 for r in rows if r["in_random_sample"] == "TRUE")
     print(f"[plasmid] {len(rows)} constructs over {len(sites)} driver sites "
-          f"({len(chosen)} in the random-{args.n} sample)")
+          f"({len(chosen)} in random-{args.n} sample -> {n_sample} rows); {n_fa} seqs in FASTA")
 
 
 if __name__ == "__main__":

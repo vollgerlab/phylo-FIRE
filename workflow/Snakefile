@@ -189,7 +189,7 @@ def _plasmid_targets(wildcards):
         return []
     return [
         RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
-        RESULTS + "/plasmid_fiberseq/plasmid_sites.tsv",
+        RESULTS + "/plasmid_fiberseq/plasmid_constructs.fa",
     ]
 
 
@@ -783,7 +783,7 @@ def _plot_panel(wildcards):
     drawn as pseudo-leaf rows under the MSA."""
     if not PLASMID:
         return []
-    return f"{RESULTS}/plasmid_fiberseq/{wildcards.peak_id}.panel.fa"
+    return f"{TEMP}/plasmid_fiberseq/{wildcards.peak_id}.panel.fa"
 
 
 rule plot:
@@ -935,9 +935,11 @@ rule plasmid_constructs:
     input:
         aligned=TEMP + "/aligned/{peak_id}.fa",
         actuation=RESULTS + "/fastas/{peak_id}.tsv",
+        phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
     output:
-        tsv=RESULTS + "/plasmid_fiberseq/{peak_id}.tsv",
-        panel=RESULTS + "/plasmid_fiberseq/{peak_id}.panel.fa",
+        # temp: only the aggregate (table) + the plot (panel) consume these
+        tsv=temp(TEMP + "/plasmid_fiberseq/{peak_id}.tsv"),
+        panel=temp(TEMP + "/plasmid_fiberseq/{peak_id}.panel.fa"),
     group:
         "peak_chain"
     threads: 1
@@ -946,34 +948,35 @@ rule plasmid_constructs:
         runtime=10,
     params:
         script=workflow.source_path("scripts/build_plasmid_constructs.py"),
-        phylo_mm=lambda wc: f"{RESULTS}/phylo_mm/{wc.peak_id}.tsv",
     shell:
         "python {params.script} --aligned {input.aligned} --actuation {input.actuation} "
-        "--phylo-mm {params.phylo_mm} --peak-id {wildcards.peak_id} "
+        "--phylo-mm {input.phylo_mm} --peak-id {wildcards.peak_id} "
         "--out {output.tsv} --aligned-out {output.panel}"
 
 
 def _all_plasmid(wildcards):
-    return expand(RESULTS + "/plasmid_fiberseq/{peak_id}.tsv", peak_id=_run_peak_ids())
+    return expand(TEMP + "/plasmid_fiberseq/{peak_id}.tsv", peak_id=_run_peak_ids())
 
 
 rule aggregate_plasmid:
-    """Concatenate per-peak constructs → the panel table + site audit + sample."""
+    """Concatenate per-peak constructs → ONE table (+ a FASTA of the sequences),
+with the seeded ~N-site random sample flagged."""
     input:
         tables=_all_plasmid,
     output:
         constructs=RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
-        sites=RESULTS + "/plasmid_fiberseq/plasmid_sites.tsv",
+        fa=RESULTS + "/plasmid_fiberseq/plasmid_constructs.fa",
     resources:
         mem_mb=8192,
         runtime=60,
     params:
         script=workflow.source_path("scripts/aggregate_plasmid.py"),
         rdir=RESULTS,
+        tdir=TEMP,
         n=config.get("plasmid_n", 1000),
         seed=config.get("random_seed", 42),
     shell:
-        "python {params.script} --indir {params.rdir}/plasmid_fiberseq "
+        "python {params.script} --indir {params.tdir}/plasmid_fiberseq "
         "--peaks {params.rdir}/fastas/peak_ids.txt "
-        "--out-constructs {output.constructs} --out-sites {output.sites} "
+        "--out-constructs {output.constructs} --out-fa {output.fa} "
         "--n {params.n} --seed {params.seed}"

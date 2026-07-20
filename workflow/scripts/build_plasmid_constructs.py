@@ -147,6 +147,16 @@ def build_peak(aligned, actuation, phylo_mm, peak_id):
     o_leaf, o_n, o_mean = pick_rep(outgroup, aln, act, re_lo, re_hi, prefer_high=False)
     d_seq, o_seq = list(aln[d_leaf]), list(aln[o_leaf])
     cols = [c for c in drv["cols"] if 0 <= c < aln_len]
+    if not cols:
+        # Flank-driven split with no RE-scoped variant: the driver isn't in a
+        # column we can locate, so there's no clonable pair to build -- skip.
+        return rows, panel
+    # The clonable band spans the RE AND every driver column, so the sequence we
+    # emit always CONTAINS the edit. A region-mode (or flank-region) driver sits
+    # past re_last_col; slicing the RE band alone drops it, making all four
+    # constructs identical over the clonable unit (spurious duplicates).
+    band_lo = min(re_lo, min(cols))
+    band_hi = max(re_hi, max(cols))
     d_alleles = {c: d_seq[c] for c in cols}   # driver allele
     o_alleles = {c: o_seq[c] for c in cols}   # background/outgroup allele
 
@@ -156,8 +166,11 @@ def build_peak(aligned, actuation, phylo_mm, peak_id):
             s[c] = a
         return s
 
+    def band_seq(seq):
+        return "".join(seq[band_lo:band_hi + 1]).replace("-", "")
+
     def edit_str(frm, to):
-        parts = [f"RE{c - re_lo + 1}:{frm[c]}>{to[c]}" for c in cols]
+        parts = [f"RE{c - band_lo + 1}:{frm[c]}>{to[c]}" for c in cols]
         return ";".join(parts)
 
     # (role, background, carries, synthetic, aligned_seq, rep, leaf, n, mean, edit)
@@ -169,32 +182,33 @@ def build_peak(aligned, actuation, phylo_mm, peak_id):
         ("outgroup_bg_with", "outgroup", "TRUE", "TRUE", edited(o_seq, d_alleles), "outgroup",
          o_leaf, o_n, o_mean, edit_str(o_alleles, d_alleles)),
     ]
-    # Reserve the two NATIVE sequences first. When flipping the driver merely
-    # recreates the other native (driver is the reps' only difference), it's then
-    # the SYNTHETIC row that's NA'd -- we clone the two real haplotypes, and the
-    # synthetic edit has nothing new to build. Natives are never NA'd.
-    seen = {"".join(sp[4]) for sp in specs if sp[3] == "FALSE"}
+    # Dedup on the CLONABLE band sequence (== what we actually synthesize),
+    # reserving the two natives first so a synthetic that merely recreates a
+    # native is the NA'd row. Two constructs identical over the band are the SAME
+    # plasmid even when they differ elsewhere in the (uncloned) flank -- so the
+    # key is the band, not the full aligned sequence.
+    seen = {band_seq(sp[4]) for sp in specs if sp[3] == "FALSE"}
     for role, bg, carries, synth, seq, rep, leaf, n, mean, edit in specs:
-        key = "".join(seq)
-        # collapsed = a synthetic whose sequence already exists (equals a native
-        # or an earlier construct). Nothing new to synthesize -> NA seq, and it
-        # isn't drawn as a separate panel row (it equals a real leaf).
-        collapsed = "TRUE" if (synth == "TRUE" and key in seen) else "FALSE"
-        seen.add(key)
+        bseq = band_seq(seq)
+        collapsed = "TRUE" if (synth == "TRUE" and bseq in seen) else "FALSE"
+        seen.add(bseq)
         if collapsed == "TRUE":
             re_seq, re_len = "NA", "NA"
         else:
-            re_seq = "".join(seq[re_lo:re_hi + 1]).replace("-", "")
-            re_len = len(re_seq)
+            re_seq, re_len = bseq, len(bseq)
             panel.append((f"PL_{peak_id}_{drv['id']}_{role}", leaf, role, "".join(seq)))
         rows.append({
             "peak_id": peak_id, "driver_id": drv["id"], "driver_beta": drv["beta"],
-            "driver_re_cols": ",".join(str(c - re_lo + 1) for c in cols),
+            "driver_re_cols": ",".join(str(c - band_lo + 1) for c in cols),
             "role": role, "background": bg, "carries_driver": carries, "is_synthetic": synth,
             "collapsed": collapsed, "source_rep": rep, "source_leaf": leaf,
             "source_n_haps": n, "source_act_mean": f"{mean:.4f}", "edit": edit or "NA",
             "re_seq": re_seq, "re_len": re_len,
         })
+    # A testable pair needs >=2 distinct clonable sequences; otherwise the driver
+    # doesn't manifest in the clone (e.g. only gap columns) -- drop the peak.
+    if len({r["re_seq"] for r in rows if r["re_seq"] != "NA"}) < 2:
+        return [], []
     return rows, panel
 
 

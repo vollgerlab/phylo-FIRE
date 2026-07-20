@@ -87,7 +87,10 @@ def main() -> None:
     sites = [r for r in rows
              if r["hg38_chr"] != "NA" and r["hg38_pos"].lstrip("-").isdigit()
              and r["hg38_ref"] in ("A", "C", "G", "T")]
-    sites.sort(key=lambda r: (_chrom_key(r["hg38_chr"]), int(r["hg38_pos"])))
+    # Include the exact chrom string: many hg38 alt/random contigs share the same
+    # _chrom_key (1, 99), so without it distinct contigs interleave by position and
+    # tabix rejects the file ("Chromosome blocks not continuous").
+    sites.sort(key=lambda r: (_chrom_key(r["hg38_chr"]), r["hg38_chr"], int(r["hg38_pos"])))
 
     # VCF
     n_vcf = 0

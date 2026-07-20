@@ -26,6 +26,7 @@ Outputs a per-peak construct TSV and (optional) an aligned panel FASTA that the
 plot renders as grey pseudo-leaf rows under the MSA.
 """
 import argparse
+import sys
 from pathlib import Path
 
 
@@ -116,19 +117,16 @@ COLS = ["peak_id", "driver_id", "driver_beta", "driver_re_cols", "role", "backgr
         "source_n_haps", "source_act_mean", "edit", "re_seq", "re_len"]
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--aligned", required=True, type=Path, help="aligned/{peak}.fa (flanked MSA)")
-    ap.add_argument("--actuation", required=True, type=Path, help="fastas/{peak}.tsv")
-    ap.add_argument("--phylo-mm", required=True, type=Path)
-    ap.add_argument("--peak-id", required=True)
-    ap.add_argument("--out", required=True, type=Path, help="construct TSV")
-    ap.add_argument("--aligned-out", type=Path, default=None, help="panel FASTA for the plot")
-    args = ap.parse_args()
+def build_peak(aligned, actuation, phylo_mm, peak_id):
+    """Build the plasmid constructs for one peak from persisted files.
 
-    aln = read_fasta(args.aligned)
-    act = load_actuation(args.actuation)
-    header, drivers = parse_phylo_mm(args.phylo_mm)
+    Returns (rows, panel). rows == [] when the peak is excluded (no driver, >1
+    distinct driver effect, or a rep group is empty). Reusable both per-peak
+    (snakemake `main`) and by the single-pass whole-run builder.
+    """
+    aln = read_fasta(aligned)
+    act = load_actuation(actuation)
+    header, drivers = parse_phylo_mm(phylo_mm)
     aln_len = len(next(iter(aln.values()))) if aln else 0
     re_lo = int(header.get("re_first_col", 1)) - 1
     re_hi = int(header.get("re_last_col", aln_len)) - 1
@@ -137,17 +135,13 @@ def main():
     # Exclusion: keep only peaks with a SINGLE distinct driver EFFECT (one beta).
     betas = {d["beta"] for d in drivers}
     if len(drivers) == 0 or len(betas) > 1:
-        _write(args, rows, panel)
-        reason = "no_driver" if not drivers else f"multi_driver({len(betas)} betas)"
-        print(f"[plasmid] {args.peak_id}: excluded ({reason})", file=__import__("sys").stderr)
-        return
+        return rows, panel
     drv = drivers[0]
     all_names = [n for n in aln]
     carriers = [n for n in all_names if n in drv["carriers"]]
     outgroup = [n for n in all_names if n not in drv["carriers"]]
     if not carriers or not outgroup:
-        _write(args, rows, panel)
-        return
+        return rows, panel
 
     d_leaf, d_n, d_mean = pick_rep(carriers, aln, act, re_lo, re_hi, prefer_high=True)
     o_leaf, o_n, o_mean = pick_rep(outgroup, aln, act, re_lo, re_hi, prefer_high=False)
@@ -192,21 +186,32 @@ def main():
         else:
             re_seq = "".join(seq[re_lo:re_hi + 1]).replace("-", "")
             re_len = len(re_seq)
-            panel.append((f"PL_{args.peak_id}_{drv['id']}_{role}", leaf, role, "".join(seq)))
+            panel.append((f"PL_{peak_id}_{drv['id']}_{role}", leaf, role, "".join(seq)))
         rows.append({
-            "peak_id": args.peak_id, "driver_id": drv["id"], "driver_beta": drv["beta"],
+            "peak_id": peak_id, "driver_id": drv["id"], "driver_beta": drv["beta"],
             "driver_re_cols": ",".join(str(c - re_lo + 1) for c in cols),
             "role": role, "background": bg, "carries_driver": carries, "is_synthetic": synth,
             "collapsed": collapsed, "source_rep": rep, "source_leaf": leaf,
             "source_n_haps": n, "source_act_mean": f"{mean:.4f}", "edit": edit or "NA",
             "re_seq": re_seq, "re_len": re_len,
         })
+    return rows, panel
 
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--aligned", required=True, type=Path, help="aligned/{peak}.fa (flanked MSA)")
+    ap.add_argument("--actuation", required=True, type=Path, help="fastas/{peak}.tsv")
+    ap.add_argument("--phylo-mm", required=True, type=Path)
+    ap.add_argument("--peak-id", required=True)
+    ap.add_argument("--out", required=True, type=Path, help="construct TSV")
+    ap.add_argument("--aligned-out", type=Path, default=None, help="panel FASTA for the plot")
+    args = ap.parse_args()
+    rows, panel = build_peak(args.aligned, args.actuation, args.phylo_mm, args.peak_id)
     _write(args, rows, panel)
-    print(f"[plasmid] {args.peak_id}: driver {drv['id']} -> "
-          f"{len({r['re_seq'] for r in rows if r['re_seq'] != 'NA'})} unique constructs "
-          f"(driver rep n={d_n} act={d_mean:.2f}; outgroup rep n={o_n} act={o_mean:.2f})",
-          file=__import__("sys").stderr)
+    n_uniq = len({r["re_seq"] for r in rows if r["re_seq"] != "NA"})
+    print(f"[plasmid] {args.peak_id}: {n_uniq} unique constructs "
+          f"({len(rows) // 4} driver)", file=sys.stderr)
 
 
 def _write(args, rows, panel):

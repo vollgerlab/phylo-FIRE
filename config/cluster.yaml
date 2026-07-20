@@ -18,3 +18,12 @@ agc: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_
 # on the CLI for a different namespace (e.g. a staging slice).
 peak_ids: "config/hsca_peak_ids.txt"
 run_name: "hsca"
+
+# Build the plasmid fiber-seq construct panel (results/<run>/plasmid_fiberseq/)
+# by default for every cluster run. Cheap: it reads each driver peak's already-
+# produced alignment + phylo_mm. NOTE: only turns on cleanly for a FRESH run,
+# where the alignment is still on disk when plasmid_constructs consumes it. To
+# add the panel to an ALREADY-FINISHED run (temp alignments cleaned), don't flip
+# this and resume — that rebuilds MSAs; run workflow/scripts/build_plasmid_table.py
+# directly instead (single pass, no DAG, no re-alignment).
+plasmid: true

@@ -19,14 +19,49 @@ pixi run dry-run                   # DAG preview
 pixi run replot                    # force re-run of the plot rule on existing trees
 pixi run fmt                       # snakefmt workflow/Snakefile
 
-# Cluster (CHPC) production run — uses the asm-coord union BED + AGC paths:
-pixi run -- snakemake --configfile config/cluster.yaml \
-    --config run_name=<name> peak_ids=<peaks.txt> --profile profiles/slurm -j <N>
+# Cluster (CHPC) production run — TWO stages (see "Two-stage split" below):
+pixi run hsca-hapsel          # Stage 1: per-peak trees + phylo_mm (expensive)
+pixi run hsca-hapsel-stage2   # Stage 2: re_variants + hg38 + plasmid + plots (minutes)
+# full 180K: `pixi run -- snakemake --configfile config/cluster.yaml --rerun-triggers mtime -j 400`
+# then `pixi run hsca-stage2`.
 ```
 
 There is **no `clean` task**: snakemake handles its own state via
 `--forcerun <rule>`, `--rerun-incomplete`, or `--forceall`. Don't manually
 `rm -rf results/`.
+
+## Two-stage split
+
+The pipeline is split into two Snakemake entry points sharing one
+`results/{run}/` layout (a single 180K-peak DAG took a day+ just to *build*):
+
+- **Stage 1 — `workflow/Snakefile`** (expensive, run once): the per-peak
+  sequence → alignment → tree → `phylo_mm` chain. Persists
+  `results/{run}/aligned/` (the flanked MSA, now a real output — was `temp`),
+  `trees/{peak}.rooted.nwk`, `phylo_mm/{peak}.tsv`, and one consolidated
+  `tables/haplotypes.parquet` (per-hap RE seq + actuation + asm coords, replacing
+  the 180K `fastas/*` which are now `temp`). `rule all` targets exactly these.
+- **Stage 2 — `workflow/analysis.smk`** (cheap, rerunnable, ~6-node DAG that
+  builds in seconds): `re_variants_all → (aggregate) → project_all (hg38/CHM13) →
+  annotate_rsids → plasmid_all → plot_all`. Each is ONE single-pass script
+  looping peaks internally (the `build_plasmid_table.py` pattern), reading only
+  the Stage-1 dirs + `haplotypes.parquet` + the AGC — **never recomputes a
+  tree**. Run: `snakemake -s workflow/analysis.smk --config run_name=<run>
+  --rerun-triggers mtime -j <N>` (or the `*-stage2` pixi tasks). Add
+  `--config dbsnp=<dbsnp.vcf.gz>` to also emit `variants.hg38.rsid.vcf.gz`.
+
+**Why:** iterating on any downstream analysis (the hg38 projection fix, rs IDs,
+plasmid, plots) reruns only Stage 2 — no trees, no MCMCglmm. Stage 2 is
+pure Python/bcftools, so it also runs **locally** after downloading
+`results/{run}/{aligned,trees,phylo_mm}` + `tables/haplotypes.parquet` and using
+the local AGC (`resources/HPRC_r2_assemblies_0.6.1.agc`) — no genome fasta, no
+`fastas/` dir. Sequences come from the parquet + AGC; the AGC lacks actuation
+(the phenotype lives only in the union BED), which is why Stage 1 emits it once.
+
+**AGC is 0-based.** `agc getctg contig:S-E` returns the standard 1-based base
+`S+1`; `project_variants.py` passes 0-based starts directly (a historical `+1`
+had made every reported hg38/CHM13 position 1 too low — fixed, verified
+52764/52764 REF bases match GRCh38).
 
 ## Pipeline architecture
 

@@ -118,86 +118,28 @@ def _run_peak_ids():
     return sorted(_sanitize_peak(fa.stem) for fa in Path(RESULTS).glob("fastas/*.fa"))
 
 
-def _all_re_variants(wildcards):
-    """Every peak's re_variants table — the input to aggregate_results.
-
-    Requiring all of these forces the full per-peak computation (tree → phylo_mm
-    → re_variants) for the WHOLE peak set: stats for all, regardless of which
-    peaks get plotted. The peak set is static (from ``_run_peak_ids``), so this
-    no longer triggers a 180K checkpoint re-expansion."""
-    return expand(RESULTS + "/re_variants/{peak_id}.tsv", peak_id=_run_peak_ids())
-
-
-# Plot categories → the manifest aggregate_results writes for each. Plots are
-# rendered ONLY for peaks listed here (drivers + heritable-no-driver + random),
-# not for all 180K peaks.
-PLOT_CATEGORIES = {
-    "drivers": RESULTS + "/tables/plot_drivers.txt",
-    "heritable_no_driver": RESULTS + "/tables/plot_heritable_no_driver.txt",
-    "random": RESULTS + "/tables/plot_random.txt",
-}
-
-
-def aggregate_outputs(wildcards):
-    """Final targets: the unified parquet table + the categorized plots.
-
-    The table pulls the full per-peak stats (via aggregate_results → all
-    re_variants). The plots are data-driven: aggregate_results classifies peaks
-    and writes the three manifests, which we read here to expand the plot paths
-    into their category subdirs."""
-    checkpoints.aggregate_results.get(**wildcards)
-    out = [
-        RESULTS + "/tables/re_variants.parquet",
-        RESULTS + "/tables/re_variants.tsv.gz",
-    ]
-    for cat, manifest in PLOT_CATEGORIES.items():
-        peaks = [
-            line.strip() for line in Path(manifest).read_text().splitlines() if line.strip()
-        ]
-        out += expand(RESULTS + "/plots/{cat}/{peak_id}.pdf", cat=cat, peak_id=peaks)
-        if PLOT_HTML:
-            out += expand(RESULTS + "/plots/{cat}/{peak_id}.html", cat=cat, peak_id=peaks)
-    return out
+def _stage1_targets():
+    """Stage 1 (this Snakefile) = the persisted per-peak artifacts that Stage 2
+    consumes: the flanked MSA, the ancestral-proxy-rooted ML tree, the phylo_mm
+    stats, and the consolidated haplotypes.parquet (actuation + coords + RE seq).
+    Trees + MCMCglmm are the expensive, rarely-rerun work; ALL downstream analysis
+    (re_variants, aggregate, hg38/rs, plasmid, plots) lives in
+    ``workflow/analysis.smk`` as single-pass jobs and never re-enters this DAG."""
+    peaks = _run_peak_ids()
+    return (
+        expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=peaks)
+        + expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=peaks)
+        + expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=peaks)
+        + [RESULTS + "/tables/haplotypes.parquet"]
+    )
 
 
 # ── rules ──────────────────────────────────────────────────────────────────────
 
 
-def _hg38_targets(wildcards):
-    """The hg38-projection deliverables (default on). Auto-skipped when it can't
-    run: preextracted mode (no union BED with hg38 coords) or the AGC isn't
-    available — so enabling it by default never breaks those runs."""
-    agc = config.get("agc")
-    if (
-        not PROJECT_HG38
-        or config.get("preextracted_dir")
-        or not agc
-        or not Path(agc).exists()
-    ):
-        return []
-    return [
-        RESULTS + "/tables/variants.hg38.tsv.gz",
-        RESULTS + "/tables/variants.hg38.vcf.gz",
-        RESULTS + "/tables/variants.hg38.bed",
-        RESULTS + "/tables/elements.hg38.bed",
-    ]
-
-
-def _plasmid_targets(wildcards):
-    """The plasmid-construct panel deliverables, only when plasmid is enabled."""
-    if not PLASMID:
-        return []
-    return [
-        RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
-        RESULTS + "/plasmid_fiberseq/plasmid_constructs.fa",
-    ]
-
-
 rule all:
     input:
-        aggregate_outputs,
-        _hg38_targets,
-        _plasmid_targets,
+        _stage1_targets(),
 
 
 def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
@@ -223,6 +165,54 @@ def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
         linked.append(peak)
     (dst_dir / "peak_ids.txt").write_text("\n".join(linked) + "\n")
     return len(linked)
+
+
+def _haplotypes_parquet(fastas_dir: Path, out: Path) -> None:
+    """Consolidate per-peak fastas (.fa seq + .tsv actuation/coords) into one
+    haplotypes.parquet -- the preextracted-mode equivalent of what
+    extract_fastas.py writes inline on the union-BED path."""
+    import polars as pl
+
+    def read_fa(p: Path) -> dict[str, str]:
+        d: dict[str, list[str]] = {}
+        name = None
+        for ln in p.read_text().splitlines():
+            if ln.startswith(">"):
+                name = ln[1:].split()[0]
+                d[name] = []
+            elif name is not None:
+                d[name].append(ln.strip())
+        return {k: "".join(v) for k, v in d.items()}
+
+    cols = ["peak_id", "sample", "seq", "actuation", "coverage",
+            "fire_coverage", "asm_chr", "asm_start", "asm_end"]
+    rows: dict[str, list] = {c: [] for c in cols}
+    for fa in sorted(fastas_dir.glob("*.fa")):
+        peak = fa.stem
+        tsv = fastas_dir / f"{peak}.tsv"
+        if not tsv.exists():
+            continue
+        seqs = read_fa(fa)
+        lines = tsv.read_text().splitlines()
+        ix = {h: i for i, h in enumerate(lines[0].split("\t"))}
+        for ln in lines[1:]:
+            f = ln.split("\t")
+            s = f[ix["sample"]]
+            for k, v in zip(cols, (peak, s, seqs.get(s, ""), f[ix["actuation"]],
+                                   f[ix["coverage"]], f[ix["fire_coverage"]],
+                                   f[ix["asm_chr"]], f[ix["asm_start"]],
+                                   f[ix["asm_end"]])):
+                rows[k].append(v)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    (
+        pl.DataFrame(rows, schema={c: pl.Utf8 for c in cols})
+        .with_columns(
+            pl.col("actuation").cast(pl.Float64, strict=False),
+            pl.col("coverage").cast(pl.Float64, strict=False),
+            pl.col("fire_coverage").cast(pl.Float64, strict=False),
+        )
+        .write_parquet(out)
+    )
 
 
 def _extract_fastas_input(wildcards):
@@ -277,10 +267,14 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
         # list. At min_seqs=1 (the cluster default) only a truly empty peak — one
         # with zero non-NA primary sequences — can fail this way, which the HSCA
         # set shouldn't contain.
-        fa=expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=_run_peak_ids()),
-        tsv=expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=_run_peak_ids()),
+        # Per-peak fastas are Stage-1-internal now (mafft consumes the .fa,
+        # phylo_mm the .tsv) -> temp(). The consolidated haplotypes.parquet is
+        # the persisted Stage-2 source of actuation + coords + RE sequence.
+        fa=temp(expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=_run_peak_ids())),
+        tsv=temp(expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=_run_peak_ids())),
         done=touch(RESULTS + "/fastas/.done"),
         manifest=RESULTS + "/fastas/peak_ids.txt",
+        haplotypes=RESULTS + "/tables/haplotypes.parquet",
     threads: config.get("bgzip_threads", 16)
     resources:
         mem_mb=32768,
@@ -296,6 +290,7 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
     run:
         if params.preextracted:
             n = _ingest_preextracted(Path(input.src), Path(RESULTS + "/fastas"))
+            _haplotypes_parquet(Path(RESULTS + "/fastas"), Path(output.haplotypes))
             print(f"linked {n} pre-extracted FASTA/TSV pairs from {input.src}")
         else:
             # Sort by consensus_peak_id (col 5) so each peak's rows are
@@ -308,6 +303,7 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
                 f"| python {shlex.quote(str(input.script))}",
                 f"--outdir {RESULTS}/fastas",
                 f"--min-seqs {params.min_seqs}",
+                f"--haplotypes-parquet {output.haplotypes}",
             ]
             if params.primary_only:
                 parts.append("--primary-only")
@@ -371,7 +367,10 @@ rule mafft:
     input:
         fa=_mafft_input,
     output:
-        fa=temp(TEMP + "/aligned/{peak_id}.fa"),
+        # PERSISTED (not temp): the flanked MSA is the Stage-2 sequence source for
+        # re_variants / plasmid / plots (workflow/analysis.smk), so Stage 2 never
+        # rebuilds an alignment.
+        fa=RESULTS + "/aligned/{peak_id}.fa",
     group:
         "peak_chain"
     threads: 4
@@ -399,7 +398,7 @@ treats gaps as missing data and indel-only splits collapse to zero-length
 branches.
 """
     input:
-        fa=TEMP + "/aligned/{peak_id}.fa",
+        fa=RESULTS + "/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/encode_indels.py"),
     output:
         nex=temp(TEMP + "/coded/{peak_id}/{peak_id}.nex"),
@@ -491,7 +490,7 @@ every peak. Needs the alignment to compute the consensus.
 """
     input:
         treefile=TEMP + "/trees/{peak_id}.treefile",
-        alignment=TEMP + "/aligned/{peak_id}.fa",
+        alignment=RESULTS + "/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/root_tree.R"),
     output:
         rooted=RESULTS + "/trees/{peak_id}.rooted.nwk",
@@ -518,7 +517,7 @@ every peak. Needs the alignment to compute the consensus.
 rule re_trim:
     """Slice the flanked MSA down to the RE columns."""
     input:
-        fa=TEMP + "/aligned/{peak_id}.fa",
+        fa=RESULTS + "/aligned/{peak_id}.fa",
         script=workflow.source_path("scripts/trim_to_re.py"),
     output:
         fa=temp(TEMP + "/re/aligned/{peak_id}.fa"),
@@ -638,27 +637,7 @@ def _re_alignment(wildcards):
     """RE-only alignment paired with `_re_tree`."""
     if config.get("flank", 0) > 0:
         return f"{TEMP}/re/aligned/{wildcards.peak_id}.fa"
-    return f"{TEMP}/aligned/{wildcards.peak_id}.fa"
-
-
-def _pclai_bed_for_plot(_wildcards):
-    """Resolve the optional PCLAI bed path; only included as an input dep
-    when configured AND present on disk so missing-data runs don't fail.
-
-    Warns once (to stderr) when `pclai_bed` is configured but the file is
-    missing, so a typo'd path doesn't silently drop the ancestry stripe."""
-    p = config.get("pclai_bed")
-    if not p:
-        return []
-    if Path(p).exists():
-        return [p]
-    if not config.get("_pclai_warned"):
-        print(
-            f"WARNING: pclai_bed={p!r} not found; PCLAI stripe disabled",
-            file=sys.stderr,
-        )
-        config["_pclai_warned"] = True
-    return []
+    return f"{RESULTS}/aligned/{wildcards.peak_id}.fa"
 
 
 rule phylo_mm:
@@ -676,7 +655,7 @@ by hand for ad-hoc debugging.
     input:
         tree=RESULTS + "/trees/{peak_id}.rooted.nwk",
         actuation=RESULTS + "/fastas/{peak_id}.tsv",
-        alignment=TEMP + "/aligned/{peak_id}.fa",
+        alignment=RESULTS + "/aligned/{peak_id}.fa",
         re_tree=_re_tree,
         re_alignment=_re_alignment,
         script=workflow.source_path("scripts/phylo_mm.R"),
@@ -709,271 +688,3 @@ by hand for ad-hoc debugging.
             --h2-width-max {params.h2_width_max} \
             --h2-lower-min {params.h2_lower_min}
         """
-
-
-rule re_variants:
-    """Per-peak re_variants table: one row per unique RE sequence.
-
-The clonable/validatable unit for plasmid work — each unique RE sequence with
-its actuation, the driver allele(s) it carries (and the model-predicted
-``driver_delta``), and the cheapest single-variable validation contrast
-(``nearest_noncarrier_seq_id`` / ``clean_pair`` / ``minimal_edit``). Built from
-already-produced files (alignment + actuation + phylo_mm TSV); no re-modeling.
-"""
-    input:
-        aligned=TEMP + "/aligned/{peak_id}.fa",
-        actuation=RESULTS + "/fastas/{peak_id}.tsv",
-        phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
-        script=workflow.source_path("scripts/build_re_variants.py"),
-    output:
-        tsv=RESULTS + "/re_variants/{peak_id}.tsv",
-    group:
-        "peak_chain"
-    threads: 1
-    resources:
-        mem_mb=2048,
-        runtime=10,
-    shell:
-        """
-        POLARS_MAX_THREADS={threads} python {input.script} \
-            --aligned   {input.aligned} \
-            --actuation {input.actuation} \
-            --phylo-mm  {input.phylo_mm} \
-            --out       {output.tsv}
-        """
-
-
-checkpoint aggregate_results:
-    """Concatenate every peak's re_variants into one parquet + gzipped TSV, and
-write the three plot manifests (drivers / heritable-no-driver / random) that
-drive data-driven plotting. A checkpoint because the plot targets in `rule all`
-depend on which peaks land in each manifest.
-"""
-    input:
-        tables=_all_re_variants,
-        script=workflow.source_path("scripts/aggregate_re_variants.py"),
-    output:
-        parquet=RESULTS + "/tables/re_variants.parquet",
-        tsv=RESULTS + "/tables/re_variants.tsv.gz",
-        drivers=RESULTS + "/tables/plot_drivers.txt",
-        heritable=RESULTS + "/tables/plot_heritable_no_driver.txt",
-        random=RESULTS + "/tables/plot_random.txt",
-    resources:
-        mem_mb=49152,  # reads all 180K per-peak TSVs into one concat
-        runtime=240,
-    params:
-        rdir=RESULTS,
-        random_n=config.get("random_n", 100),
-        seed=config.get("random_seed", 42),
-    shell:
-        """
-        POLARS_MAX_THREADS={threads} python {input.script} \
-            --indir {params.rdir}/re_variants \
-            --peaks {params.rdir}/fastas/peak_ids.txt \
-            --out-parquet {output.parquet} \
-            --out-tsv {output.tsv} \
-            --manifest-dir {params.rdir}/tables \
-            --random-n {params.random_n} \
-            --seed {params.seed}
-        """
-
-
-def _plot_panel(wildcards):
-    """The plasmid construct panel FASTA for this peak (only when plasmid on),
-    drawn as pseudo-leaf rows under the MSA."""
-    if not PLASMID:
-        return []
-    return f"{TEMP}/plasmid_fiberseq/{wildcards.peak_id}.panel.fa"
-
-
-rule plot:
-    """Interactive tree + FIRE actuation + MSA plot (HTML + PDF from one rule).
-
-The aligned FASTA is temp() but Snakemake keeps it until this rule finishes.
-HTML: interactive, zoom/pan, MSA toggle button, toolbar exports SVG.
-PDF: static via kaleido (same Plotly figure, scale=2).
-
-The optional ``phylo_mm`` TSV (from rule phylo_mm) feeds the
-statistical overlay: header summary (H²_p), and the top variable-site
-SNP effect is annotated above the MSA at its alignment column.
-"""
-    input:
-        tree=RESULTS + "/trees/{peak_id}.rooted.nwk",
-        actuation=RESULTS + "/fastas/{peak_id}.tsv",
-        alignment=TEMP + "/aligned/{peak_id}.fa",
-        pclai=_pclai_bed_for_plot,
-        phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
-        panel=_plot_panel,
-        script=workflow.source_path("scripts/plot_tree_actuation_html.py"),
-    output:
-        **({"html": RESULTS + "/plots/{category}/{peak_id}.html"} if PLOT_HTML else {}),
-        pdf=RESULTS + "/plots/{category}/{peak_id}.pdf",
-    params:
-        peak_id=lambda wc: wc.peak_id,
-        html_arg=lambda wc, output: f"--html {output.html}" if PLOT_HTML else "",
-        pclai_arg=lambda wc, input: (
-            f"--pclai-bed {shlex.quote(str(input.pclai[0]))}" if input.pclai else ""
-        ),
-        panel_arg=lambda wc, input: (
-            f"--panel {input.panel}" if PLASMID and input.panel else ""
-        ),
-        flank=config.get("flank", 0),
-    shell:
-        """
-        LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${{LD_LIBRARY_PATH:-}}" \
-        python {input.script} \
-            --tree        {input.tree} \
-            --actuation   {input.actuation} \
-            --alignment   {input.alignment} \
-            --pdf         {output.pdf} \
-            --peak-id     {params.peak_id} \
-            --phylo-mm    {input.phylo_mm} \
-            --flank       {params.flank} \
-            {params.html_arg} {params.pclai_arg} {params.panel_arg}
-        """
-
-
-# ── hg38 / CHM13 coordinate projection (opt-in: project_hg38=true) ────────────
-# Projects EVERY variable site in every peak back to CHM13 + hg38 (+ each
-# carrier's assembly), flagging drivers, for GWAS-enrichment intersection.
-# ADDITIVE: consumes only persisted outputs (fastas + the union BED) + the AGC,
-# and reads phylo_mm as an ambient PARAM (not a tracked input) so it never pulls
-# the deleted temp alignment back into the DAG — it runs on a finished run
-# without recomputing trees/stats. Default (union-BED) mode only; needs hg38 +
-# CHM13 in the AGC.
-
-
-rule peak_coords:
-    """Peak -> CHM13 + hg38 coordinate table, straight from the union BED."""
-    input:
-        src=config.get("input_table", ""),
-        peak_ids=_peak_ids_input,
-    output:
-        RESULTS + "/tables/peak_coords.tsv",
-    threads: config.get("bgzip_threads", 8)
-    resources:
-        mem_mb=4096,
-        runtime=120,
-    params:
-        # script as a PARAM (not an input): workflow.source_path resolves to a
-        # per-invocation cache path, which as an input would trigger spurious
-        # reruns of these additive rules.
-        script=workflow.source_path("scripts/build_peak_coords.py"),
-        peak_ids_arg=lambda wc, input: (
-            f"--peak-ids {input.peak_ids[0]}" if input.peak_ids else ""
-        ),
-    shell:
-        "bgzip -cd -@ {threads} {input.src} | "
-        "python {params.script} --out {output} {params.peak_ids_arg}"
-
-
-rule project_variants:
-    """Project one peak's variable sites to CHM13 + hg38 + assembly (self-contained)."""
-    input:
-        fa=RESULTS + "/fastas/{peak_id}.fa",
-        tsv=RESULTS + "/fastas/{peak_id}.tsv",
-        phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
-        coords=RESULTS + "/tables/peak_coords.tsv",
-    output:
-        RESULTS + "/hg38/{peak_id}.tsv",
-    threads: 2
-    resources:
-        mem_mb=4096,
-        runtime=30,
-    params:
-        script=workflow.source_path("scripts/project_variants.py"),
-        agc=config.get("agc", ""),
-    shell:
-        "python {params.script} --fa {input.fa} --tsv {input.tsv} "
-        "--phylo-mm {input.phylo_mm} --peak-id {wildcards.peak_id} "
-        "--coords-table {input.coords} --agc {params.agc} "
-        "--threads {threads} --out {output}"
-
-
-def _all_hg38(wildcards):
-    return expand(RESULTS + "/hg38/{peak_id}.tsv", peak_id=_run_peak_ids())
-
-
-rule aggregate_hg38:
-    """Concatenate per-peak projections into the hg38 BEDs + variant table."""
-    input:
-        tables=_all_hg38,
-        coords=RESULTS + "/tables/peak_coords.tsv",
-    output:
-        variants=RESULTS + "/tables/variants.hg38.tsv.gz",
-        vcf=RESULTS + "/tables/variants.hg38.vcf.gz",
-        tbi=RESULTS + "/tables/variants.hg38.vcf.gz.tbi",
-        variants_bed=RESULTS + "/tables/variants.hg38.bed",
-        elements_bed=RESULTS + "/tables/elements.hg38.bed",
-    threads: 2
-    resources:
-        mem_mb=8192,
-        runtime=120,
-    params:
-        script=workflow.source_path("scripts/aggregate_hg38.py"),
-        rdir=RESULTS,
-        vcf=RESULTS + "/tables/variants.hg38.vcf",  # plain; bgzipped below
-    shell:
-        # aggregate writes a sorted plain VCF, then bgzip + tabix it
-        "python {params.script} --indir {params.rdir}/hg38 "
-        "--peaks {params.rdir}/fastas/peak_ids.txt --coords {input.coords} "
-        "--out-variants {output.variants} --out-vcf {params.vcf} "
-        "--out-variants-bed {output.variants_bed} "
-        "--out-elements-bed {output.elements_bed} && "
-        "bgzip -f -@ {threads} {params.vcf} && tabix -f -p vcf {output.vcf}"
-
-
-# ── plasmid fiber-seq construct panel (opt-in: plasmid=true) ──────────────────
-# Per single-driver peak: modal carrier vs modal outgroup rep, driver on/off both
-# backgrounds → ≤4 constructs. Reads the aligned MSA (so the panel matches the
-# plot frame) + actuation + phylo_mm (ambient param). Non-driver / multi-driver
-# peaks emit an empty table + panel.
-
-
-rule plasmid_constructs:
-    """One peak's plasmid constructs + a plot panel FASTA."""
-    input:
-        aligned=TEMP + "/aligned/{peak_id}.fa",
-        actuation=RESULTS + "/fastas/{peak_id}.tsv",
-        phylo_mm=RESULTS + "/phylo_mm/{peak_id}.tsv",
-    output:
-        # temp: only the aggregate (table) + the plot (panel) consume these
-        tsv=temp(TEMP + "/plasmid_fiberseq/{peak_id}.tsv"),
-        panel=temp(TEMP + "/plasmid_fiberseq/{peak_id}.panel.fa"),
-    group:
-        "peak_chain"
-    threads: 1
-    resources:
-        mem_mb=2048,
-        runtime=10,
-    params:
-        script=workflow.source_path("scripts/build_plasmid_constructs.py"),
-    shell:
-        "python {params.script} --aligned {input.aligned} --actuation {input.actuation} "
-        "--phylo-mm {input.phylo_mm} --peak-id {wildcards.peak_id} "
-        "--out {output.tsv} --aligned-out {output.panel}"
-
-
-def _all_plasmid(wildcards):
-    return expand(TEMP + "/plasmid_fiberseq/{peak_id}.tsv", peak_id=_run_peak_ids())
-
-
-rule aggregate_plasmid:
-    """Concatenate per-peak constructs → ONE table (+ a FASTA of the sequences),
-with the seeded ~N-site random sample flagged."""
-    input:
-        tables=_all_plasmid,
-    output:
-        constructs=RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
-        fa=RESULTS + "/plasmid_fiberseq/plasmid_constructs.fa",
-    resources:
-        mem_mb=8192,
-        runtime=60,
-    params:
-        script=workflow.source_path("scripts/aggregate_plasmid.py"),
-        rdir=RESULTS,
-        tdir=TEMP,
-    shell:
-        "python {params.script} --indir {params.tdir}/plasmid_fiberseq "
-        "--peaks {params.rdir}/fastas/peak_ids.txt "
-        "--out-constructs {output.constructs} --out-fa {output.fa}"

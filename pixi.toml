@@ -38,18 +38,12 @@ replot = { cmd = [
 # attribution. min_seqs=1: pure-epigenetic peaks are monomorphic at the RE
 # (1 unique seq; the +500 bp flanks still resolve the tree, 0 RE branches).
 # From the HSCA table (`pixi run setup-hsca`); see config/hap_selective_30_peak_ids.txt.
+# Two-stage local smoke: Stage 1 (Snakefile: trees + phylo_mm + haplotypes.parquet)
+# then Stage 2 (analysis.smk: re_variants + hg38 + plasmid + plots). plasmid=true
+# emits the construct panel. Same run_name/config across both stages.
 hap-selective-30 = { cmd = [
-    "snakemake",
-    "--notemp",
-    "--config",
-    "run_name=hap-selective-30",
-    "peak_ids=config/hap_selective_30_peak_ids.txt",
-    "input_table=resources/hap-selective-30/hap-selective-30.bed.gz",
-    "min_seqs=1",
-    # also emit the plasmid fiber-seq construct panel (results/.../plasmid_fiberseq/)
-    "plasmid=true",
-    "-j",
-    "10",
+    "bash", "-c",
+    "snakemake --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 -j 10 && snakemake -s workflow/analysis.smk --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 plasmid=true --rerun-triggers mtime -j 10",
 ] }
 # 12 Genetically-haplotype-specific peaks chosen to exercise the dual-H² gate +
 # multi-variant attribution: 6 with LOW within-cluster spread + high unique-seq
@@ -206,28 +200,47 @@ hsca-hapsel = { cmd = [
     "-j",
     "250",
 ] }
-# Project EVERY variable site in every peak back to CHM13 + hg38 (+ each
-# carrier's assembly), flagging drivers, for GWAS-enrichment intersection.
-# ADDITIVE: runs on a FINISHED run without recomputing trees/stats (reads only
-# fastas + the union BED + AGC; phylo_mm read ambiently). Targets the hg38 BEDs
-# directly (not `rule all`) so it doesn't drag in aggregate_results. Change
-# run_name + the target paths for a different run (e.g. hsca). Needs hg38 +
-# CHM13 in the AGC. Outputs: results/<run>/tables/{variants,elements}.hg38.bed
-# + variants.hg38.tsv.gz. The plink/bedtools enrichment is downstream (not here).
-project-hg38 = { cmd = [
+# ── Stage 2: analysis on the persisted Stage-1 outputs (workflow/analysis.smk) ──
+# The tasks above run STAGE 1 (per-peak trees + phylo_mm). Stage 2 is a separate,
+# ~6-node single-pass DAG (re_variants → aggregate → hg38 projection + rs-IDs →
+# plasmid → plots) that reads only results/<run>/{aligned,trees,phylo_mm} +
+# tables/haplotypes.parquet + the AGC, so it reruns in minutes with NO tree
+# recompute and can even run locally after downloading those. Add
+# `--config dbsnp=<dbsnp.vcf.gz>` to also annotate rs IDs. Same run_name as the
+# matching Stage-1 task; outputs land in the same results/<run>/... paths.
+hsca-hapsel-stage2 = { cmd = [
     "snakemake",
+    "-s",
+    "workflow/analysis.smk",
     "--configfile",
     "config/cluster.yaml",
     "--config",
-    "run_name=hsca_stage",
-    "peak_ids=config/hsca_stage_peak_ids.txt",
+    "run_name=hsca_hapsel",
+    "peak_ids=config/hsca_hapsel_peak_ids.txt",
+    "plasmid=true",
     "--rerun-triggers",
     "mtime",
     "-j",
     "250",
-    "results/hsca_stage/tables/variants.hg38.bed",
-    "results/hsca_stage/tables/elements.hg38.bed",
 ] }
+hsca-stage2 = { cmd = [
+    "snakemake",
+    "-s",
+    "workflow/analysis.smk",
+    "--configfile",
+    "config/cluster.yaml",
+    "--config",
+    "plasmid=true",
+    "--rerun-triggers",
+    "mtime",
+    "-j",
+    "400",
+] }
+# Generic LOCAL Stage-2 run: point run_name + input_table at a run whose Stage-1
+# dirs (+ haplotypes.parquet) you've downloaded, with the local AGC. e.g.
+#   pixi run -- snakemake -s workflow/analysis.smk --config run_name=<run> \
+#       input_table=<union.bed.gz> peak_ids=<peaks.txt> plasmid=true \
+#       --rerun-triggers mtime -j 8
 # Install selectiveInference + its CRAN deps into the pixi-managed R library.
 # selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.
 setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInference", quietly=TRUE)) install.packages("selectiveInference", repos="https://cloud.r-project.org") else cat("selectiveInference already installed\\n")'"""

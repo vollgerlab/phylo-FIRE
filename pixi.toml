@@ -200,6 +200,15 @@ hsca-hapsel = { cmd = [
     "-j",
     "250",
 ] }
+# Rebuild ONLY aligned/ for a pre-split hsca_hapsel run whose mafft output was
+# temp() and got deleted. `touch` the surviving fastas first so they out-date the
+# freshly-pulled scripts: this keeps the extract_fastas checkpoint from re-running
+# (which would re-extract a possibly-different fasta set), so add_flanks + mafft
+# reuse the EXACT fastas the trees were built from. mafft is deterministic, so the
+# rebuilt MSA is byte-identical to the original -- and only aligned/ is targeted,
+# so trees/phylo_mm are never touched. Run before hsca-hapsel-stage2 if aligned/
+# is missing.
+hsca-hapsel-aligned = { cmd = ["bash", "-c", "find results/hsca_hapsel/fastas -type f -exec touch {} + && snakemake aligned_only --configfile config/cluster.yaml --config run_name=hsca_hapsel peak_ids=config/hsca_hapsel_peak_ids.txt --rerun-triggers mtime -j 250"] }
 # ── Stage 2: analysis on the persisted Stage-1 outputs (workflow/analysis.smk) ──
 # The tasks above run STAGE 1 (per-peak trees + phylo_mm). Stage 2 is a separate,
 # ~6-node single-pass DAG (re_variants → aggregate → hg38 projection + rs-IDs →

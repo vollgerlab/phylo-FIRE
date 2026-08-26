@@ -50,9 +50,11 @@ def parse_agc_fasta(text: str) -> str:
     return "".join(l.strip() for l in text.splitlines() if l and not l.startswith(">"))
 
 
-def pull_agc(agc: str, contig: str, start1: int, end1: int) -> str | None:
-    """agc getctg <agc> <contig>:<start1>-<end1> (1-based inclusive)."""
-    region = f"{contig}:{start1}-{end1}"
+def pull_agc(agc: str, contig: str, start0: int, end0: int) -> str | None:
+    """agc getctg <agc> <contig>:<start>-<end>. NOTE: agc coords are 0-BASED
+    (verified on the archive: `agc getctg …chrN:N-N` returns the standard 1-based
+    base N+1), so callers pass a 0-based start DIRECTLY -- not BED-start+1."""
+    region = f"{contig}:{start0}-{end0}"
     try:
         res = subprocess.run(
             ["agc", "getctg", agc, region, "-p"],
@@ -174,14 +176,17 @@ def main() -> None:
     pad = args.pad
     refs: dict[str, str] = {}
     cons_s0 = max(0, args.cons_start - pad)          # 0-based padded ref start
-    cons_fwd = pull_agc(args.agc, f"CHM13#0#{args.cons_chr}", cons_s0 + 1, args.cons_end + pad)
+    # agc getctg is 0-based, so pass cons_s0 directly. The historical `+ 1` here
+    # assumed agc was 1-based and shifted every pulled base one position right,
+    # making reported CHM13/hg38 coords 1 too low (REF landed at pos+1).
+    cons_fwd = pull_agc(args.agc, f"CHM13#0#{args.cons_chr}", cons_s0, args.cons_end + pad)
     if cons_fwd:
         refs["__CHM13__"] = cons_fwd
     hg38_ok = args.hg38_chr != "NA" and str(args.hg38_start).isdigit()
     hg38_s0 = hg38_fwd = None
     if hg38_ok:
         hg38_s0 = max(0, int(args.hg38_start) - pad)
-        hg38_fwd = pull_agc(args.agc, f"GRCh38#0#{args.hg38_chr}", hg38_s0 + 1, int(args.hg38_end) + pad)
+        hg38_fwd = pull_agc(args.agc, f"GRCh38#0#{args.hg38_chr}", hg38_s0, int(args.hg38_end) + pad)
         if hg38_fwd:
             refs["__hg38__"] = hg38_fwd
 

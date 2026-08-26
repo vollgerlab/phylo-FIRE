@@ -126,6 +126,99 @@ def orient_and_map(aln_ref: str, fwd_seq: str, start0: int):
     return orient, col2pos
 
 
+def project_peak(peak_id, haps, asm, phylo_mm, cons_chr, cons_start, cons_end,
+                 hg38_chr="NA", hg38_start="NA", hg38_end="NA", agc="",
+                 threads=2, pad=25, min_carriers=2):
+    """Project one peak's variable SNV sites to CHM13 + hg38 + assembly.
+
+    ``haps``: {sample -> RE sequence}; ``asm``: {sample -> {chr,start,end}};
+    ``phylo_mm``: path or None. Returns a list of row dicts (schema ``_COLS``);
+    empty when <2 haplotypes. This is the reusable core called both by the
+    per-peak CLI (``main``) and the single-pass ``project_variants_all.py``."""
+    if len(haps) < 2:
+        return []
+    drivers = _load_drivers(phylo_mm) if phylo_mm else {}
+
+    refs: dict[str, str] = {}
+    cons_s0 = max(0, cons_start - pad)          # 0-based padded ref start
+    # agc getctg is 0-based -> pass cons_s0 directly (see the module docstring /
+    # pull_agc note; the historical +1 made reported coords 1 too low).
+    cons_fwd = pull_agc(agc, f"CHM13#0#{cons_chr}", cons_s0, cons_end + pad)
+    if cons_fwd:
+        refs["__CHM13__"] = cons_fwd
+    hg38_ok = hg38_chr != "NA" and str(hg38_start).isdigit()
+    hg38_s0 = hg38_fwd = None
+    if hg38_ok:
+        hg38_s0 = max(0, int(hg38_start) - pad)
+        hg38_fwd = pull_agc(agc, f"GRCh38#0#{hg38_chr}", hg38_s0, int(hg38_end) + pad)
+        if hg38_fwd:
+            refs["__hg38__"] = hg38_fwd
+
+    aln = mafft_align({**refs, **haps}, threads)
+    aln_len = len(next(iter(aln.values())))
+
+    cons_map = None
+    if "__CHM13__" in aln and cons_fwd:
+        _, cons_map = orient_and_map(aln["__CHM13__"], cons_fwd, cons_s0)
+    hg38_map = None
+    if "__hg38__" in aln and hg38_fwd and hg38_s0 is not None:
+        _, hg38_map = orient_and_map(aln["__hg38__"], hg38_fwd, hg38_s0)
+
+    hap_names = [n for n in aln if not n.startswith("__")]
+    aln_is_rev = _rev_orient(aln.get("__CHM13__", ""), cons_fwd) if cons_fwd else False
+
+    rows = []
+    for col in range(aln_len):
+        col_bases = {n: aln[n][col].upper() for n in hap_names}
+        counts: dict[str, int] = {}
+        for b in col_bases.values():
+            if b not in ("-", "N"):
+                counts[b] = counts.get(b, 0) + 1
+        if len(counts) < 2:
+            continue
+        minor = min(counts, key=counts.get)
+        major = max(counts, key=counts.get)
+        carriers = sorted(n for n, b in col_bases.items() if b == minor)
+        if min(len(carriers), sum(counts.values()) - len(carriers)) < min_carriers:
+            continue
+        cset = frozenset(carriers)
+        is_driver = cset in drivers
+        beta = drivers.get(cset, "NA")
+
+        cons_pos0 = cons_map.get(col) if cons_map else None
+        hg38_pos0 = hg38_map.get(col) if hg38_map else None
+        cons_ref = cons_fwd[cons_pos0 - cons_s0].upper() if cons_pos0 is not None else "NA"
+        hg38_ref = (hg38_fwd[hg38_pos0 - hg38_s0].upper()
+                    if (hg38_fwd and hg38_pos0 is not None) else "NA")
+        maj_f, min_f = (revcomp(major), revcomp(minor)) if aln_is_rev else (major, minor)
+
+        asm_hits = []
+        for nm in carriers:
+            off = _ungapped_offset(aln[nm], col)
+            a = asm.get(nm)
+            if a and off is not None and str(a["start"]).isdigit():
+                asm_hits.append(f"{nm}={a['chr']}:{int(a['start']) + off}")
+
+        rows.append({
+            "peak_id": peak_id,
+            "re_pos": (cons_pos0 - cons_start + 1) if cons_pos0 is not None else "NA",
+            "cons_chr": cons_chr,
+            "cons_pos": (cons_pos0 + 1) if cons_pos0 is not None else "NA",
+            "cons_ref": cons_ref,
+            "hg38_chr": hg38_chr if hg38_pos0 is not None else "NA",
+            "hg38_pos": (hg38_pos0 + 1) if hg38_pos0 is not None else "NA",
+            "hg38_ref": hg38_ref,
+            "hap_major": maj_f,
+            "hap_minor": min_f,
+            "n_carriers": len(carriers),
+            "is_driver": "TRUE" if is_driver else "FALSE",
+            "beta": beta,
+            "carriers": ",".join(carriers),
+            "asm_coords": ";".join(asm_hits) if asm_hits else "NA",
+        })
+    return rows
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fa", required=True, type=Path, help="fastas/{peak}.fa (RE-only)")
@@ -162,108 +255,13 @@ def main() -> None:
         sys.exit("project_variants: need --coords-table or --cons-chr/--cons-start/--cons-end")
 
     haps = read_fasta(args.fa)
-    if len(haps) < 2:
-        args.out.write_text(_header() + "")
-        print(f"[project_variants] {args.peak_id}: <2 haps, no variants", file=sys.stderr)
-        return
-
-    # Per-hap assembly coords (sample -> asm_chr/start/end) from the peak TSV.
     asm = _load_asm(args.tsv)
-    # Driver carrier sets from phylo_mm (frozenset(sample) -> beta).
-    drivers = _load_drivers(args.phylo_mm) if args.phylo_mm else {}
-
-    # ── pull refs + align [CHM13, hg38, haps] (refs first) ────────────────────
-    pad = args.pad
-    refs: dict[str, str] = {}
-    cons_s0 = max(0, args.cons_start - pad)          # 0-based padded ref start
-    # agc getctg is 0-based, so pass cons_s0 directly. The historical `+ 1` here
-    # assumed agc was 1-based and shifted every pulled base one position right,
-    # making reported CHM13/hg38 coords 1 too low (REF landed at pos+1).
-    cons_fwd = pull_agc(args.agc, f"CHM13#0#{args.cons_chr}", cons_s0, args.cons_end + pad)
-    if cons_fwd:
-        refs["__CHM13__"] = cons_fwd
-    hg38_ok = args.hg38_chr != "NA" and str(args.hg38_start).isdigit()
-    hg38_s0 = hg38_fwd = None
-    if hg38_ok:
-        hg38_s0 = max(0, int(args.hg38_start) - pad)
-        hg38_fwd = pull_agc(args.agc, f"GRCh38#0#{args.hg38_chr}", hg38_s0, int(args.hg38_end) + pad)
-        if hg38_fwd:
-            refs["__hg38__"] = hg38_fwd
-
-    combined = {**refs, **haps}
-    aln = mafft_align(combined, args.threads)
-    aln_len = len(next(iter(aln.values())))
-
-    cons_map = None
-    if "__CHM13__" in aln and cons_fwd:
-        _, cons_map = orient_and_map(aln["__CHM13__"], cons_fwd, cons_s0)
-    hg38_map = None
-    if "__hg38__" in aln and hg38_fwd and hg38_s0 is not None:
-        _, hg38_map = orient_and_map(aln["__hg38__"], hg38_fwd, hg38_s0)
-
-    hap_names = [n for n in aln if not n.startswith("__")]
-    # Alignment orientation vs the genome. Refs are pulled FORWARD; if the CHM13
-    # ref aligned as reverse-complement, the whole column set is minus-strand, so
-    # haplotype alleles get revcomp'd to report forward-genomic (matching REF).
-    aln_is_rev = _rev_orient(aln.get("__CHM13__", ""), cons_fwd) if cons_fwd else False
-
-    rows = []
-    for col in range(aln_len):
-        col_bases = {n: aln[n][col].upper() for n in hap_names}
-        # SNV sites only for now (>=2 distinct NON-gap bases). Indels (gap vs
-        # base) are handled separately — TODO.
-        counts: dict[str, int] = {}
-        for b in col_bases.values():
-            if b not in ("-", "N"):
-                counts[b] = counts.get(b, 0) + 1
-        if len(counts) < 2:
-            continue
-        minor = min(counts, key=counts.get)
-        major = max(counts, key=counts.get)
-        carriers = sorted(n for n, b in col_bases.items() if b == minor)
-        if min(len(carriers), sum(counts.values()) - len(carriers)) < args.min_carriers:
-            continue  # singleton/near-private — mirrors phylo_mm MIN_CARRIERS
-        cset = frozenset(carriers)
-        is_driver = cset in drivers
-        beta = drivers.get(cset, "NA")
-
-        cons_pos0 = cons_map.get(col) if cons_map else None
-        hg38_pos0 = hg38_map.get(col) if hg38_map else None
-        # REF = the reference base straight from the forward pull at the mapped
-        # position (== the true CHM13/hg38 reference base; also self-validates the
-        # coordinate — re-fetching that position returns this base).
-        cons_ref = cons_fwd[cons_pos0 - cons_s0].upper() if cons_pos0 is not None else "NA"
-        hg38_ref = (hg38_fwd[hg38_pos0 - hg38_s0].upper()
-                    if (hg38_fwd and hg38_pos0 is not None) else "NA")
-        maj_f, min_f = (revcomp(major), revcomp(minor)) if aln_is_rev else (major, minor)
-
-        # per-carrier assembly coordinates (asm_start + ungapped offset in that hap)
-        asm_hits = []
-        for nm in carriers:
-            off = _ungapped_offset(aln[nm], col)
-            a = asm.get(nm)
-            if a and off is not None and a["start"].isdigit():
-                asm_hits.append(f"{nm}={a['chr']}:{int(a['start'])+off}")
-
-        rows.append({
-            "peak_id": args.peak_id,
-            # position within the peak (1-based, from CHM13 genomic); NA/≤0 for
-            # sites in the extraction overhang outside the peak interval.
-            "re_pos": (cons_pos0 - args.cons_start + 1) if cons_pos0 is not None else "NA",
-            "cons_chr": args.cons_chr,
-            "cons_pos": (cons_pos0 + 1) if cons_pos0 is not None else "NA",   # 1-based
-            "cons_ref": cons_ref,
-            "hg38_chr": args.hg38_chr if hg38_pos0 is not None else "NA",
-            "hg38_pos": (hg38_pos0 + 1) if hg38_pos0 is not None else "NA",   # 1-based
-            "hg38_ref": hg38_ref,
-            "hap_major": maj_f,
-            "hap_minor": min_f,
-            "n_carriers": len(carriers),
-            "is_driver": "TRUE" if is_driver else "FALSE",
-            "beta": beta,
-            "carriers": ",".join(carriers),
-            "asm_coords": ";".join(asm_hits) if asm_hits else "NA",
-        })
+    rows = project_peak(
+        args.peak_id, haps, asm, args.phylo_mm,
+        args.cons_chr, args.cons_start, args.cons_end,
+        args.hg38_chr, args.hg38_start, args.hg38_end,
+        args.agc, args.threads, args.pad, args.min_carriers,
+    )
 
     with args.out.open("w") as fh:
         fh.write(_header())

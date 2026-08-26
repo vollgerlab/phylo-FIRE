@@ -201,14 +201,22 @@ hsca-hapsel = { cmd = [
     "250",
 ] }
 # Rebuild ONLY aligned/ for a pre-split hsca_hapsel run whose mafft output was
-# temp() and got deleted. `touch` the surviving fastas first so they out-date the
-# freshly-pulled scripts: this keeps the extract_fastas checkpoint from re-running
-# (which would re-extract a possibly-different fasta set), so add_flanks + mafft
-# reuse the EXACT fastas the trees were built from. mafft is deterministic, so the
-# rebuilt MSA is byte-identical to the original -- and only aligned/ is targeted,
-# so trees/phylo_mm are never touched. Run before hsca-hapsel-stage2 if aligned/
-# is missing.
-hsca-hapsel-aligned = { cmd = ["bash", "-c", "find results/hsca_hapsel/fastas -type f -exec touch {} + && snakemake aligned_only --configfile config/cluster.yaml --config run_name=hsca_hapsel peak_ids=config/hsca_hapsel_peak_ids.txt --rerun-triggers mtime -j 250"] }
+# temp() and got deleted. Standalone single-pass (rebuild_aligned.py): reads the
+# surviving fastas/*.fa directly (no extract_fastas checkpoint) and reruns the
+# SAME add_flanks + mafft with the SAME flags, so the rebuilt MSA is byte-identical
+# to the original (mafft is deterministic). Loops peaks with a thread pool +
+# progress and skips ones already present, so it starts instantly and resumes --
+# unlike `snakemake aligned_only`, which spends >10 min just building the ~46K-node
+# DAG for a 23K-peak run. trees/phylo_mm are never touched. Run before the hg38
+# task if aligned/ is missing. (The `aligned_only` Snakefile rule is kept as the
+# DAG-native equivalent.)
+hsca-hapsel-aligned = { cmd = ["python", "workflow/scripts/rebuild_aligned.py", "--fastas-dir", "results/hsca_hapsel/fastas", "--out-dir", "results/hsca_hapsel/aligned", "--agc", "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_0.6.1.agc", "--flank", "250", "--threads", "32"] }
+# Regenerate ONLY the hg38 tables with the driver-projection fix (Group A). Targets
+# variants.hg38.bed + the NEW drivers.unlifted.tsv; the missing unlifted output
+# forces project_all to rerun (regenerating the bed too) without touching the
+# already-current re_variants / manifests / plots. Needs aligned/ present first
+# (hsca-hapsel-aligned).
+hsca-hapsel-hg38 = { cmd = ["snakemake", "-s", "workflow/analysis.smk", "--configfile", "config/cluster.yaml", "--config", "run_name=hsca_hapsel", "peak_ids=config/hsca_hapsel_peak_ids.txt", "--rerun-triggers", "mtime", "-j", "64", "results/hsca_hapsel/tables/variants.hg38.bed", "results/hsca_hapsel/tables/drivers.unlifted.tsv"] }
 # ── Stage 2: analysis on the persisted Stage-1 outputs (workflow/analysis.smk) ──
 # The tasks above run STAGE 1 (per-peak trees + phylo_mm). Stage 2 is a separate,
 # ~6-node single-pass DAG (re_variants → aggregate → hg38 projection + rs-IDs →

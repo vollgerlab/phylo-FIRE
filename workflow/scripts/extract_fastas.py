@@ -82,6 +82,12 @@ def sanitize(peak_id: str) -> str:
     return peak_id.replace("#", "_")
 
 
+# Consolidated per-haplotype columns (the Stage-2 `haplotypes.parquet`): the same
+# fields the per-peak .tsv/.fa carry, in one file so Stage 2 needs no `fastas/` dir.
+HAP_COLS = ["peak_id", "sample", "seq", "actuation", "coverage",
+            "fire_coverage", "asm_chr", "asm_start", "asm_end"]
+
+
 def flush_peak(
     peak_id: str,
     entries: list[tuple[str, str, str, str, str, str, str, str]],
@@ -90,11 +96,15 @@ def flush_peak(
     min_seqs: int,
     haplotype_distinct_filter: str | None,
     written: list[str],
+    hap_cols: dict[str, list] | None = None,
 ) -> None:
     """Write one FASTA + actuation TSV if the peak passes the filters.
 
     entries: list of (fasta_header, sequence, actuation, coverage, fire_coverage,
                       asm_chr, asm_start, asm_end) tuples
+
+    When ``hap_cols`` is given, the written peak's rows are also appended to the
+    consolidated haplotypes-parquet accumulator (column-major to keep memory low).
     """
     if not entries:
         return
@@ -120,6 +130,13 @@ def flush_peak(
                 f"{header}\t{actuation}\t{coverage}\t{fire_coverage}\t"
                 f"{asm_chr}\t{asm_start}\t{asm_end}\n"
             )
+            if hap_cols is not None:
+                for k, v in zip(
+                    HAP_COLS,
+                    (safe_id, header, _, actuation, coverage, fire_coverage,
+                     asm_chr, asm_start, asm_end),
+                ):
+                    hap_cols[k].append(v)
 
     written.append(safe_id)
 
@@ -166,6 +183,15 @@ def main() -> None:
         "--highlight-tag", type=str, default="highlight",
         help="Tag inserted as the first '__' segment of highlighted leaf names",
     )
+    parser.add_argument(
+        "--haplotypes-parquet", type=Path, default=None,
+        help=(
+            "Also write one consolidated parquet (peak_id, sample, seq, "
+            "actuation, coverage, fire_coverage, asm_chr/start/end) covering "
+            "every written haplotype — the Stage-2 source of actuation + coords "
+            "+ RE sequence, replacing the per-peak fastas dir."
+        ),
+    )
     args = parser.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -189,6 +215,9 @@ def main() -> None:
                 highlight.add((pk.strip(), sm.strip()))
 
     written: list[str] = []
+    hap_cols: dict[str, list] | None = (
+        {k: [] for k in HAP_COLS} if args.haplotypes_parquet else None
+    )
     current_peak_id: str | None = None
     current_entries: list[tuple[str, str, str, str, str, str, str, str]] = []
     current_hd_values: set[str] = set()
@@ -232,6 +261,7 @@ def main() -> None:
                     args.min_seqs,
                     args.haplotype_distinct,
                     written,
+                    hap_cols,
                 )
             current_peak_id = peak_id
             current_entries = []
@@ -278,6 +308,25 @@ def main() -> None:
             args.min_seqs,
             args.haplotype_distinct,
             written,
+            hap_cols,
+        )
+
+    if hap_cols is not None:
+        import polars as pl
+
+        (
+            pl.DataFrame(hap_cols, schema={c: pl.Utf8 for c in HAP_COLS})
+            .with_columns(
+                pl.col("actuation").cast(pl.Float64, strict=False),
+                pl.col("coverage").cast(pl.Float64, strict=False),
+                pl.col("fire_coverage").cast(pl.Float64, strict=False),
+            )
+            .write_parquet(args.haplotypes_parquet)
+        )
+        print(
+            f"wrote {len(hap_cols['peak_id'])} haplotype rows to "
+            f"{args.haplotypes_parquet}",
+            file=sys.stderr,
         )
 
     print(

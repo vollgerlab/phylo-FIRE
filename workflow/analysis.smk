@@ -9,6 +9,7 @@ results/{run}/{aligned,trees,phylo_mm} + tables/haplotypes.parquet.
 
     snakemake -s workflow/analysis.smk --config run_name=<run> --rerun-triggers mtime -j <N>
 """
+
 import os
 import sys
 from pathlib import Path
@@ -57,6 +58,7 @@ def _targets(_wildcards):
             RESULTS + "/tables/variants.hg38.vcf.gz",
             RESULTS + "/tables/variants.hg38.bed",
             RESULTS + "/tables/elements.hg38.bed",
+            RESULTS + "/tables/drivers.unlifted.tsv",
         ]
         if config.get("dbsnp"):
             out.append(RESULTS + "/tables/variants.hg38.rsid.vcf.gz")
@@ -75,7 +77,7 @@ rule all:
 
 rule re_variants_all:
     """Every peak's re_variants (seqs from aligned/, actuation from the parquet,
-    drivers from phylo_mm) -> unified parquet + tsv.gz + the plot manifests."""
+drivers from phylo_mm) -> unified parquet + tsv.gz + the plot manifests."""
     input:
         haplotypes=HAP,
         peaks=PEAKS,
@@ -138,25 +140,29 @@ rule project_all:
         tbi=RESULTS + "/tables/variants.hg38.vcf.gz.tbi",
         variants_bed=RESULTS + "/tables/variants.hg38.bed",
         elements_bed=RESULTS + "/tables/elements.hg38.bed",
+        unlifted=RESULTS + "/tables/drivers.unlifted.tsv",
     threads: config.get("stage2_threads", 16)
     resources:
         mem_mb=32768,
         runtime=480,
     params:
         script=os.path.join(workflow.basedir, "scripts/project_variants_all.py"),
+        aligned=ALIGNED,
         phylo_mm=PHYLO_MM,
         outdir=RESULTS + "/tables",
         agc=config.get("agc", ""),
+        flank=config.get("flank", 0),
     shell:
         "python {params.script} --haplotypes {input.haplotypes} "
+        "--aligned-dir {params.aligned} "
         "--phylo-mm-dir {params.phylo_mm} --coords {input.coords} "
-        "--peaks {input.peaks} --agc {params.agc} --outdir {params.outdir} "
-        "--threads {threads}"
+        "--peaks {input.peaks} --agc {params.agc} --flank {params.flank} "
+        "--outdir {params.outdir} --threads {threads}"
 
 
 rule annotate_rsids:
     """Add dbSNP rs IDs to the hg38 VCF (bcftools annotate -c ID; allele-aware).
-    Opt-in: set config['dbsnp'] to a tabix-indexed dbSNP VCF."""
+Opt-in: set config['dbsnp'] to a tabix-indexed dbSNP VCF."""
     input:
         vcf=RESULTS + "/tables/variants.hg38.vcf.gz",
     output:
@@ -202,7 +208,7 @@ def _pclai_arg(_wildcards):
 
 rule plot_all:
     """Render the categorized plots (drivers/heritable/random) named in the
-    manifests -- one job over the subset, not per-peak."""
+manifests -- one job over the subset, not per-peak."""
     input:
         haplotypes=HAP,
         drivers=RESULTS + "/tables/plot_drivers.txt",
@@ -226,7 +232,7 @@ rule plot_all:
         plasmid_arg=("--plasmid" if PLASMID else ""),
         html_arg=("--html" if PLOT_HTML else ""),
     shell:
-        "LD_LIBRARY_PATH=\"$CONDA_PREFIX/lib:${{LD_LIBRARY_PATH:-}}\" "
+        'LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${{LD_LIBRARY_PATH:-}}" '
         "python {params.script} --haplotypes {input.haplotypes} "
         "--aligned-dir {params.aligned} --trees-dir {params.trees} "
         "--phylo-mm-dir {params.phylo_mm} --manifest-dir {params.manifest_dir} "

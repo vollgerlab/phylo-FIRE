@@ -203,8 +203,17 @@ def _haplotypes_parquet(fastas_dir: Path, out: Path) -> None:
                 d[name].append(ln.strip())
         return {k: "".join(v) for k, v in d.items()}
 
-    cols = ["peak_id", "sample", "seq", "actuation", "coverage",
-            "fire_coverage", "asm_chr", "asm_start", "asm_end"]
+    cols = [
+        "peak_id",
+        "sample",
+        "seq",
+        "actuation",
+        "coverage",
+        "fire_coverage",
+        "asm_chr",
+        "asm_start",
+        "asm_end",
+    ]
     rows: dict[str, list] = {c: [] for c in cols}
     for fa in sorted(fastas_dir.glob("*.fa")):
         peak = fa.stem
@@ -217,10 +226,20 @@ def _haplotypes_parquet(fastas_dir: Path, out: Path) -> None:
         for ln in lines[1:]:
             f = ln.split("\t")
             s = f[ix["sample"]]
-            for k, v in zip(cols, (peak, s, seqs.get(s, ""), f[ix["actuation"]],
-                                   f[ix["coverage"]], f[ix["fire_coverage"]],
-                                   f[ix["asm_chr"]], f[ix["asm_start"]],
-                                   f[ix["asm_end"]])):
+            for k, v in zip(
+                cols,
+                (
+                    peak,
+                    s,
+                    seqs.get(s, ""),
+                    f[ix["actuation"]],
+                    f[ix["coverage"]],
+                    f[ix["fire_coverage"]],
+                    f[ix["asm_chr"]],
+                    f[ix["asm_start"]],
+                    f[ix["asm_end"]],
+                ),
+            ):
                 rows[k].append(v)
     out.parent.mkdir(parents=True, exist_ok=True)
     (

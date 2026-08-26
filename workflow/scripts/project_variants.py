@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-"""Project every variable site in a peak's RE alignment to CHM13 + hg38 (+ each
+"""Project every variable site in a peak's alignment to CHM13 + hg38 (+ each
 carrier's assembly), flagging which sites are attribution drivers.
 
-Self-contained: consumes only PERSISTED pipeline outputs (the RE-only FASTA and
-its per-hap TSV, and the phylo_mm TSV) plus the AGC, so it can be added to a
-finished run without re-running trees/phylo_mm. It builds its OWN small
-alignment of [haplotypes + CHM13 ref + hg38 ref] rather than reusing the
-pipeline's temp alignment.
+Projects onto the PIPELINE'S OWN Stage-1 flanked alignment (aligned/{peak}.fa),
+NOT a fresh re-alignment. This matters: phylo_mm's driver `linked_sites` and
+`descendants` are defined on that alignment's columns, so reusing it lets us flag
+a driver at the SAME column the tree/MSA plot annotates -- including homoplastic
+drivers (whose carriers are NOT a clean column partition) and flank drivers,
+which a fresh RE-only re-alignment silently dropped. The CHM13/hg38 reference
+sequences are added onto that fixed alignment with `mafft --add` (which only
+inserts all-hap-gap columns, so hap columns -- and thus phylo_mm's -- are
+preserved), then alignment columns map to genomic coordinates.
 
-Coordinate logic: the CHM13/hg38 reference sequences are pulled FORWARD from the
-AGC. mafft --adjustdirection may flip the whole alignment; we detect each ref's
-orientation by comparing its ungapped aligned sequence to the forward pull, then
-map alignment columns to genomic coordinates (forward or reverse) so an internal
-CHM13↔hg38 indel or a minus-strand peak is handled correctly.
+A driver is emitted as a bed/VCF SNV when at least one of its `linked_sites`
+columns (or a column whose carriers equal its clade) is a real substitution.
+Drivers defined only by an indel (a contiguous gap run) can't be a single-base
+SNV, so they are returned separately as "unlifted" with a reason, not fabricated
+into a position.
 
-Emits one TSV row per (variable site), with CHM13 + hg38 coords, alleles,
-carrier count, is_driver + beta, and a comma-sep of per-carrier assembly
-coordinates.
+Emits one row per variable site (schema `_COLS`) plus a list of unlifted-driver
+rows (schema `_UNLIFTED_COLS`).
 """
 import argparse
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 _COMP = str.maketrans("ACGTNacgtn-", "TGCANtgcan-")
@@ -32,57 +36,7 @@ def revcomp(s: str) -> str:
 
 
 def read_fasta(path: Path) -> dict[str, str]:
-    out, name, parts = {}, None, []
-    for line in Path(path).read_text().splitlines():
-        if line.startswith(">"):
-            if name is not None:
-                out[name] = "".join(parts)
-            name, parts = line[1:].split()[0], []
-        else:
-            parts.append(line.strip())
-    if name is not None:
-        out[name] = "".join(parts)
-    return out
-
-
-def parse_agc_fasta(text: str) -> str:
-    """Return the single concatenated sequence from `agc getctg` stdout."""
-    return "".join(l.strip() for l in text.splitlines() if l and not l.startswith(">"))
-
-
-def pull_agc(agc: str, contig: str, start0: int, end0: int) -> str | None:
-    """agc getctg <agc> <contig>:<start>-<end>. NOTE: agc coords are 0-BASED
-    (verified on the archive: `agc getctg …chrN:N-N` returns the standard 1-based
-    base N+1), so callers pass a 0-based start DIRECTLY -- not BED-start+1."""
-    region = f"{contig}:{start0}-{end0}"
-    try:
-        res = subprocess.run(
-            ["agc", "getctg", agc, region, "-p"],
-            capture_output=True, text=True, check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as ex:
-        print(f"[project_variants] agc getctg failed for {region}: {ex}", file=sys.stderr)
-        return None
-    seq = parse_agc_fasta(res.stdout).upper()
-    return seq or None
-
-
-def mafft_align(seqs: dict[str, str], threads: int) -> dict[str, str]:
-    """mafft --adjustdirection over an ordered dict; returns aligned {name: seq}.
-    Strips mafft's `_R_` reversed-prefix from names."""
-    with tempfile.NamedTemporaryFile("w", suffix=".fa", delete=False) as fh:
-        for nm, sq in seqs.items():
-            fh.write(f">{nm}\n{sq}\n")
-        inp = fh.name
-    try:
-        res = subprocess.run(
-            ["mafft", "--auto", "--adjustdirection", "--thread", str(threads), inp],
-            capture_output=True, text=True, check=True,
-        )
-    finally:
-        Path(inp).unlink(missing_ok=True)
-    aln = read_fasta_str(res.stdout)
-    return {nm[3:] if nm.startswith("_R_") else nm: sq for nm, sq in aln.items()}
+    return read_fasta_str(Path(path).read_text())
 
 
 def read_fasta_str(text: str) -> dict[str, str]:
@@ -99,12 +53,55 @@ def read_fasta_str(text: str) -> dict[str, str]:
     return out
 
 
-def orient_and_map(aln_ref: str, fwd_seq: str, start0: int):
-    """Given a ref's aligned string and the FORWARD pulled sequence starting at
-    0-based genomic `start0`, return (orientation, col->pos0 map). pos0 is the
-    0-based genomic position of the ref base at a column (absent where gapped).
+def parse_agc_fasta(text: str) -> str:
+    return "".join(l.strip() for l in text.splitlines() if l and not l.startswith(">"))
 
-    orientation 'fwd': aligned ungapped == fwd_seq. 'rev': == revcomp(fwd_seq)."""
+
+def pull_agc(agc: str, contig: str, start0: int, end0: int) -> str | None:
+    """agc getctg <agc> <contig>:<start>-<end>. agc coords are 0-BASED (the base
+    returned for N is the standard 1-based base N+1), so callers pass a 0-based
+    start DIRECTLY -- not BED-start+1."""
+    region = f"{contig}:{start0}-{end0}"
+    try:
+        res = subprocess.run(
+            ["agc", "getctg", agc, region, "-p"],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as ex:
+        print(f"[project_variants] agc getctg failed for {region}: {ex}", file=sys.stderr)
+        return None
+    return parse_agc_fasta(res.stdout).upper() or None
+
+
+def add_refs(aln_haps: dict[str, str], refs: dict[str, str], threads: int) -> dict[str, str]:
+    """Add ungapped `refs` onto the fixed `aln_haps` alignment via `mafft --add`
+    (no --keeplength: ref insertions get their own all-hap-gap columns, so no ref
+    base is dropped and every hap column is preserved). Strips `_R_` prefixes."""
+    if not refs:
+        return dict(aln_haps)
+    with tempfile.NamedTemporaryFile("w", suffix=".aln.fa", delete=False) as ah:
+        for n, s in aln_haps.items():
+            ah.write(f">{n}\n{s}\n")
+        base = ah.name
+    with tempfile.NamedTemporaryFile("w", suffix=".ref.fa", delete=False) as rf:
+        for n, s in refs.items():
+            rf.write(f">{n}\n{s}\n")
+        addf = rf.name
+    try:
+        res = subprocess.run(
+            ["mafft", "--add", addf, "--adjustdirection", "--thread", str(threads), base],
+            capture_output=True, text=True, check=True,
+        )
+    finally:
+        Path(base).unlink(missing_ok=True)
+        Path(addf).unlink(missing_ok=True)
+    aln = read_fasta_str(res.stdout)
+    return {n[3:] if n.startswith("_R_") else n: s for n, s in aln.items()}
+
+
+def orient_and_map(aln_ref: str, fwd_seq: str, start0: int):
+    """(orientation, col->pos0) for a ref's aligned string vs its FORWARD pull
+    starting at 0-based `start0`. pos0 = 0-based genomic position at a column."""
     ungapped = aln_ref.replace("-", "").upper()
     end0 = start0 + len(fwd_seq)
     if ungapped == fwd_seq.upper():
@@ -112,8 +109,6 @@ def orient_and_map(aln_ref: str, fwd_seq: str, start0: int):
     elif ungapped == revcomp(fwd_seq).upper():
         orient = "rev"
     else:
-        # Imperfect (SNVs between ref pull and alignment consensus); fall back to
-        # whichever direction shares more bases, so a few mismatches don't break it.
         fwd_id = sum(a == b for a, b in zip(ungapped, fwd_seq.upper()))
         rev_id = sum(a == b for a, b in zip(ungapped, revcomp(fwd_seq).upper()))
         orient = "fwd" if fwd_id >= rev_id else "rev"
@@ -126,78 +121,208 @@ def orient_and_map(aln_ref: str, fwd_seq: str, start0: int):
     return orient, col2pos
 
 
-def project_peak(peak_id, haps, asm, phylo_mm, cons_chr, cons_start, cons_end,
+def _col_bridge(aln_haps: dict[str, str], aln_full: dict[str, str]) -> dict[int, int]:
+    """Map each aln_haps column -> the aln_full column that holds the same
+    alignment position. `mafft --add` only inserts all-hap-gap columns, so every
+    hap's k-th non-gap base occupies the same relative slot in both; we walk both
+    by ungapped offset (unambiguous, unlike counting all-gap columns)."""
+    names = [n for n in aln_haps if n in aln_full]
+    full_pos = {n: [i for i, ch in enumerate(aln_full[n]) if ch != "-"] for n in names}
+    L = len(next(iter(aln_haps.values())))
+    off = {n: 0 for n in names}
+    bridge: dict[int, int] = {}
+    for c in range(L):
+        for n in names:
+            if aln_haps[n][c] != "-":
+                bridge[c] = full_pos[n][off[n]]
+                off[n] += 1
+    return bridge
+
+
+def _col_carriers(aln_haps: dict[str, str], min_carriers: int):
+    """Per column: (minor_allele, major_allele, frozenset(minor carriers)) for
+    columns that are a real substitution (>=2 alleles). Small-carrier columns are
+    kept (a driver may have few carriers); the emit loop applies min_carriers."""
+    names = list(aln_haps)
+    L = len(next(iter(aln_haps.values())))
+    out = {}
+    for c in range(L):
+        bases = {n: aln_haps[n][c].upper() for n in names}
+        cnt = Counter(b for b in bases.values() if b not in ("-", "N"))
+        if len(cnt) < 2:
+            continue
+        minor = min(cnt, key=cnt.get)
+        major = max(cnt, key=cnt.get)
+        carr = frozenset(n for n, b in bases.items() if b == minor)
+        out[c] = (minor, major, carr)
+    return out
+
+
+def _driver_cols(colcar, drivers, re_band):
+    """For each driver, the SNV columns that represent it. Primary: its
+    `linked_sites` columns that are substitutions -- exactly what the tree/MSA
+    plot annotates, so the bed can't disagree with the plot. Fallback (only when
+    NONE of a driver's linked columns is a substitution -- e.g. a mono column
+    from a 1-col alignment nudge): a column whose minor-carriers equal its clade,
+    restricted to the RE band so a perfectly-linked flank hitchhiker isn't
+    mislabelled the causal variant. Returns (col->beta, list-of-unmatched).
+
+    `drivers`: {frozenset(desc): (beta, [linked_1based])}; `re_band`: (lo,hi)
+    0-based inclusive RE columns, or None to allow all. Unmatched drivers
+    (indel-only / unresolvable) are returned for the unlifted list."""
+    lo, hi = re_band if re_band else (0, 10**9)
+    by_carrier = {}
+    for c, (_, _, carr) in colcar.items():
+        if lo <= c <= hi:
+            by_carrier.setdefault(carr, []).append(c)
+    col_beta: dict[int, str] = {}
+    unmatched = []
+    for desc, (beta, linked) in drivers.items():
+        cols = {ls - 1 for ls in linked if (ls - 1) in colcar}   # 1-based -> 0-based
+        if not cols:
+            cols = set(by_carrier.get(desc, []))                 # homoplasy fallback
+        if cols:
+            for c in cols:
+                col_beta[c] = beta
+        else:
+            unmatched.append((desc, beta, linked))
+    return col_beta, unmatched
+
+
+def _re_band(phylo_mm, L):
+    """(lo, hi) 0-based inclusive RE columns from the phylo_mm header, or None
+    (whole alignment) for region-mode attribution / missing fields. `linked_sites`
+    are 1-based columns, so re_first/last_col are too -> subtract 1."""
+    if not phylo_mm or not Path(phylo_mm).exists():
+        return None
+    lo = hi = None
+    mode = ""
+    for line in Path(phylo_mm).read_text().splitlines():
+        if not line.startswith("#"):
+            break
+        if line.startswith("# attribution_mode="):
+            mode = line.split("=", 1)[1].strip()
+        elif line.startswith("# re_first_col="):
+            lo = int(line.split("=", 1)[1])
+        elif line.startswith("# re_last_col="):
+            hi = int(line.split("=", 1)[1])
+    if mode == "region" or lo is None or hi is None:
+        return None
+    return (lo - 1, hi - 1)
+
+
+def _load_drivers(phylo_mm) -> dict[frozenset, tuple]:
+    """frozenset(clade leaves) -> (beta, [linked_sites]) for is_split rows."""
+    out = {}
+    if not phylo_mm or not Path(phylo_mm).exists():
+        return out
+    lines = [l for l in Path(phylo_mm).read_text().splitlines() if not l.startswith("#")]
+    if not lines:
+        return out
+    idx = {h: i for i, h in enumerate(lines[0].split("\t"))}
+    if "is_split" not in idx or "descendants" not in idx:
+        return out
+    for ln in lines[1:]:
+        f = ln.split("\t")
+        if len(f) <= idx["descendants"] or f[idx["is_split"]].upper() not in ("TRUE", "1"):
+            continue
+        desc = frozenset(d for d in f[idx["descendants"]].split(",") if d)
+        beta = f[idx["beta"]] if "beta" in idx and len(f) > idx["beta"] else "NA"
+        linked = []
+        if "linked_sites" in idx and len(f) > idx["linked_sites"]:
+            linked = [int(x) for x in f[idx["linked_sites"]].split(",") if x.strip().isdigit()]
+        out[desc] = (beta, linked)
+    return out
+
+
+def _left_flank(aln_hap_gapped: str, re_seq: str) -> int | None:
+    """Length of assembly context before the RE within a hap's flanked sequence
+    (0 for RE-only fallback haps), so an alignment column maps to an assembly
+    offset. None if the RE can't be located (asm coord then reported NA)."""
+    if not re_seq:
+        return None
+    ung = aln_hap_gapped.replace("-", "").upper()
+    i = ung.find(re_seq.upper())
+    return i if i >= 0 else None
+
+
+def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start, cons_end,
                  hg38_chr="NA", hg38_start="NA", hg38_end="NA", agc="",
-                 threads=2, pad=25, min_carriers=2):
-    """Project one peak's variable SNV sites to CHM13 + hg38 + assembly.
+                 flank=0, threads=2, pad=25, min_carriers=2):
+    """Project a peak's variable sites (from its Stage-1 flanked alignment) to
+    CHM13 + hg38 + assembly, flagging drivers by their phylo_mm column identity.
 
-    ``haps``: {sample -> RE sequence}; ``asm``: {sample -> {chr,start,end}};
-    ``phylo_mm``: path or None. Returns a list of row dicts (schema ``_COLS``);
-    empty when <2 haplotypes. This is the reusable core called both by the
-    per-peak CLI (``main``) and the single-pass ``project_variants_all.py``."""
-    if len(haps) < 2:
-        return []
-    drivers = _load_drivers(phylo_mm) if phylo_mm else {}
+    ``aln_haps``: {sample -> gapped aligned seq} (aligned/{peak}.fa);
+    ``re_seqs``: {sample -> RE-only seq} (for the assembly-offset lookup);
+    ``asm``: {sample -> {chr,start,end}}; ``flank``: bp of context each side.
+    Returns ``(rows, unlifted)``. ``rows`` is the variable-site schema (``_COLS``);
+    ``unlifted`` is indel-only drivers that can't be a single-base SNV."""
+    if len(aln_haps) < 2:
+        return [], []
+    drivers = _load_drivers(phylo_mm)
+    hap_names = list(aln_haps)
+    L = len(next(iter(aln_haps.values())))
 
+    colcar = _col_carriers(aln_haps, min_carriers)
+    col_beta, unmatched = _driver_cols(colcar, drivers, _re_band(phylo_mm, L))
+
+    # Reference pulls span the FLANKED extent (peak +/- flank +/- pad) so flank
+    # columns also map to coordinates.
+    span = int(flank) + pad
     refs: dict[str, str] = {}
-    cons_s0 = max(0, cons_start - pad)          # 0-based padded ref start
-    # agc getctg is 0-based -> pass cons_s0 directly (see the module docstring /
-    # pull_agc note; the historical +1 made reported coords 1 too low).
-    cons_fwd = pull_agc(agc, f"CHM13#0#{cons_chr}", cons_s0, cons_end + pad)
+    cons_s0 = max(0, cons_start - span)
+    cons_fwd = pull_agc(agc, f"CHM13#0#{cons_chr}", cons_s0, cons_end + span)
     if cons_fwd:
         refs["__CHM13__"] = cons_fwd
     hg38_ok = hg38_chr != "NA" and str(hg38_start).isdigit()
     hg38_s0 = hg38_fwd = None
     if hg38_ok:
-        hg38_s0 = max(0, int(hg38_start) - pad)
-        hg38_fwd = pull_agc(agc, f"GRCh38#0#{hg38_chr}", hg38_s0, int(hg38_end) + pad)
+        hg38_s0 = max(0, int(hg38_start) - span)
+        hg38_fwd = pull_agc(agc, f"GRCh38#0#{hg38_chr}", hg38_s0, int(hg38_end) + span)
         if hg38_fwd:
             refs["__hg38__"] = hg38_fwd
 
-    aln = mafft_align({**refs, **haps}, threads)
-    aln_len = len(next(iter(aln.values())))
-
+    aln_full = add_refs(aln_haps, refs, threads)
+    bridge = _col_bridge(aln_haps, aln_full)
     cons_map = None
-    if "__CHM13__" in aln and cons_fwd:
-        _, cons_map = orient_and_map(aln["__CHM13__"], cons_fwd, cons_s0)
+    if "__CHM13__" in aln_full and cons_fwd:
+        _, cons_map = orient_and_map(aln_full["__CHM13__"], cons_fwd, cons_s0)
     hg38_map = None
-    if "__hg38__" in aln and hg38_fwd and hg38_s0 is not None:
-        _, hg38_map = orient_and_map(aln["__hg38__"], hg38_fwd, hg38_s0)
+    if "__hg38__" in aln_full and hg38_fwd and hg38_s0 is not None:
+        _, hg38_map = orient_and_map(aln_full["__hg38__"], hg38_fwd, hg38_s0)
+    aln_is_rev = (cons_fwd is not None and "__CHM13__" in aln_full
+                  and aln_full["__CHM13__"].replace("-", "").upper() != cons_fwd.upper()
+                  and aln_full["__CHM13__"].replace("-", "").upper() == revcomp(cons_fwd).upper())
 
-    hap_names = [n for n in aln if not n.startswith("__")]
-    aln_is_rev = _rev_orient(aln.get("__CHM13__", ""), cons_fwd) if cons_fwd else False
+    left_flank = {n: _left_flank(aln_haps[n], re_seqs.get(n, "")) for n in hap_names}
 
     rows = []
-    for col in range(aln_len):
-        col_bases = {n: aln[n][col].upper() for n in hap_names}
-        counts: dict[str, int] = {}
-        for b in col_bases.values():
-            if b not in ("-", "N"):
-                counts[b] = counts.get(b, 0) + 1
-        if len(counts) < 2:
+    for col in range(L):
+        if col not in colcar:
             continue
-        minor = min(counts, key=counts.get)
-        major = max(counts, key=counts.get)
-        carriers = sorted(n for n, b in col_bases.items() if b == minor)
-        if min(len(carriers), sum(counts.values()) - len(carriers)) < min_carriers:
+        minor, major, carriers = colcar[col]
+        is_driver = col in col_beta
+        n_car = len(carriers)
+        n_ref = len(hap_names) - n_car
+        if not is_driver and min(n_car, n_ref) < min_carriers:
             continue
-        cset = frozenset(carriers)
-        is_driver = cset in drivers
-        beta = drivers.get(cset, "NA")
 
-        cons_pos0 = cons_map.get(col) if cons_map else None
-        hg38_pos0 = hg38_map.get(col) if hg38_map else None
+        fcol = bridge.get(col)
+        cons_pos0 = cons_map.get(fcol) if (cons_map and fcol is not None) else None
+        hg38_pos0 = hg38_map.get(fcol) if (hg38_map and fcol is not None) else None
         cons_ref = cons_fwd[cons_pos0 - cons_s0].upper() if cons_pos0 is not None else "NA"
         hg38_ref = (hg38_fwd[hg38_pos0 - hg38_s0].upper()
                     if (hg38_fwd and hg38_pos0 is not None) else "NA")
         maj_f, min_f = (revcomp(major), revcomp(minor)) if aln_is_rev else (major, minor)
 
         asm_hits = []
-        for nm in carriers:
-            off = _ungapped_offset(aln[nm], col)
+        for nm in sorted(carriers):
             a = asm.get(nm)
-            if a and off is not None and str(a["start"]).isdigit():
-                asm_hits.append(f"{nm}={a['chr']}:{int(a['start']) + off}")
+            lf = left_flank.get(nm)
+            if a and lf is not None and str(a["start"]).isdigit():
+                # ungapped offset of this hap at `col`
+                off = sum(1 for ch in aln_haps[nm][:col] if ch != "-")
+                asm_hits.append(f"{nm}={a['chr']}:{int(a['start']) + off - lf}")
 
         rows.append({
             "peak_id": peak_id,
@@ -210,89 +335,35 @@ def project_peak(peak_id, haps, asm, phylo_mm, cons_chr, cons_start, cons_end,
             "hg38_ref": hg38_ref,
             "hap_major": maj_f,
             "hap_minor": min_f,
-            "n_carriers": len(carriers),
+            "n_carriers": n_car,
             "is_driver": "TRUE" if is_driver else "FALSE",
-            "beta": beta,
-            "carriers": ",".join(carriers),
+            "beta": col_beta.get(col, "NA"),
+            "carriers": ",".join(sorted(carriers)),
             "asm_coords": ";".join(asm_hits) if asm_hits else "NA",
         })
-    return rows
 
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--fa", required=True, type=Path, help="fastas/{peak}.fa (RE-only)")
-    ap.add_argument("--tsv", required=True, type=Path, help="fastas/{peak}.tsv (asm coords)")
-    ap.add_argument("--phylo-mm", type=Path, default=None, help="phylo_mm/{peak}.tsv")
-    ap.add_argument("--peak-id", required=True)
-    ap.add_argument("--coords-table", type=Path, default=None,
-                    help="peak_coords.tsv from build_peak_coords.py; if given, "
-                         "cons/hg38 coords are looked up by peak_id from it")
-    ap.add_argument("--cons-chr")
-    ap.add_argument("--cons-start", type=int, help="0-based (BED)")
-    ap.add_argument("--cons-end", type=int)
-    ap.add_argument("--hg38-chr", default="NA")
-    ap.add_argument("--hg38-start", default="NA")
-    ap.add_argument("--hg38-end", default="NA")
-    ap.add_argument("--agc", required=True)
-    ap.add_argument("--threads", type=int, default=2)
-    ap.add_argument("--min-carriers", type=int, default=2)
-    ap.add_argument("--pad", type=int, default=25,
-                    help="bp to pad each ref pull so an RE that overhangs the "
-                         "exact peak coords still projects fully")
-    ap.add_argument("--out", required=True, type=Path)
-    args = ap.parse_args()
-
-    # Resolve coords from the table (by peak_id) when supplied.
-    if args.coords_table:
-        row = _lookup_coords(args.coords_table, args.peak_id)
-        if row is None:
-            sys.exit(f"project_variants: {args.peak_id} not in {args.coords_table}")
-        args.cons_chr, args.cons_start, args.cons_end = row["cons_chr"], int(row["cons_start"]), int(row["cons_end"])
-        if str(row.get("exists_in_hg38", "")).upper() in ("TRUE", "1"):
-            args.hg38_chr, args.hg38_start, args.hg38_end = row["hg38_chr"], row["hg38_start"], row["hg38_end"]
-    if args.cons_chr is None or args.cons_start is None or args.cons_end is None:
-        sys.exit("project_variants: need --coords-table or --cons-chr/--cons-start/--cons-end")
-
-    haps = read_fasta(args.fa)
-    asm = _load_asm(args.tsv)
-    rows = project_peak(
-        args.peak_id, haps, asm, args.phylo_mm,
-        args.cons_chr, args.cons_start, args.cons_end,
-        args.hg38_chr, args.hg38_start, args.hg38_end,
-        args.agc, args.threads, args.pad, args.min_carriers,
-    )
-
-    with args.out.open("w") as fh:
-        fh.write(_header())
-        for r in rows:
-            fh.write("\t".join(str(r[c]) for c in _COLS) + "\n")
-    print(f"[project_variants] {args.peak_id}: {len(rows)} variable sites "
-          f"({sum(r['is_driver']=='TRUE' for r in rows)} drivers)", file=sys.stderr)
+    unlifted = [{
+        "peak_id": peak_id,
+        "n_carriers": len(desc),
+        "beta": beta,
+        "reason": "indel_only_no_snv_column",
+        "carriers": ",".join(sorted(desc)),
+    } for desc, beta, _ in unmatched]
+    return rows, unlifted
 
 
 _COLS = ["peak_id", "re_pos", "cons_chr", "cons_pos", "cons_ref",
          "hg38_chr", "hg38_pos", "hg38_ref", "hap_major", "hap_minor",
          "n_carriers", "is_driver", "beta", "carriers", "asm_coords"]
+_UNLIFTED_COLS = ["peak_id", "n_carriers", "beta", "reason", "carriers"]
 
 
 def _header() -> str:
     return "\t".join(_COLS) + "\n"
 
 
-def _rev_orient(aln_ref: str, fwd_seq: str | None) -> bool:
-    if not aln_ref or not fwd_seq:
-        return False
-    ung = aln_ref.replace("-", "").upper()
-    return ung != fwd_seq.upper() and ung == revcomp(fwd_seq).upper()
-
-
-def _ungapped_offset(aln_row: str, col: int) -> int | None:
-    """0-based count of non-gap chars in aln_row[:col] (the hap's own coord
-    offset at that column), or None if the hap is gapped at col."""
-    if aln_row[col] == "-":
-        return None
-    return sum(1 for ch in aln_row[:col] if ch != "-")
+def _unlifted_header() -> str:
+    return "\t".join(_UNLIFTED_COLS) + "\n"
 
 
 def _lookup_coords(table: Path, peak_id: str) -> dict | None:
@@ -312,8 +383,7 @@ def _load_asm(tsv: Path) -> dict[str, dict]:
     lines = Path(tsv).read_text().splitlines()
     if not lines:
         return out
-    hdr = lines[0].split("\t")
-    idx = {h: i for i, h in enumerate(hdr)}
+    idx = {h: i for i, h in enumerate(lines[0].split("\t"))}
     for ln in lines[1:]:
         f = ln.split("\t")
         if len(f) <= max(idx.get("asm_end", 0), idx.get("sample", 0)):
@@ -324,26 +394,60 @@ def _load_asm(tsv: Path) -> dict[str, dict]:
     return out
 
 
-def _load_drivers(phylo_mm: Path) -> dict[frozenset, str]:
-    """frozenset(carrier leaves) -> beta, for is_split rows in the phylo_mm TSV."""
-    out = {}
-    if not phylo_mm or not Path(phylo_mm).exists():
-        return out
-    lines = [l for l in Path(phylo_mm).read_text().splitlines() if not l.startswith("#")]
-    if not lines:
-        return out
-    hdr = lines[0].split("\t")
-    idx = {h: i for i, h in enumerate(hdr)}
-    if "is_split" not in idx or "descendants" not in idx:
-        return out
-    for ln in lines[1:]:
-        f = ln.split("\t")
-        if len(f) <= idx["descendants"] or f[idx["is_split"]].upper() not in ("TRUE", "1"):
-            continue
-        desc = [d for d in f[idx["descendants"]].split(",") if d]
-        beta = f[idx["beta"]] if "beta" in idx and len(f) > idx["beta"] else "NA"
-        out[frozenset(desc)] = beta
-    return out
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--aligned", required=True, type=Path, help="aligned/{peak}.fa (flanked MSA)")
+    ap.add_argument("--fa", required=True, type=Path, help="fastas/{peak}.fa (RE-only, for asm offset)")
+    ap.add_argument("--tsv", required=True, type=Path, help="fastas/{peak}.tsv (asm coords)")
+    ap.add_argument("--phylo-mm", type=Path, default=None, help="phylo_mm/{peak}.tsv")
+    ap.add_argument("--peak-id", required=True)
+    ap.add_argument("--coords-table", type=Path, default=None)
+    ap.add_argument("--cons-chr")
+    ap.add_argument("--cons-start", type=int, help="0-based (BED)")
+    ap.add_argument("--cons-end", type=int)
+    ap.add_argument("--hg38-chr", default="NA")
+    ap.add_argument("--hg38-start", default="NA")
+    ap.add_argument("--hg38-end", default="NA")
+    ap.add_argument("--agc", required=True)
+    ap.add_argument("--flank", type=int, default=0)
+    ap.add_argument("--threads", type=int, default=2)
+    ap.add_argument("--min-carriers", type=int, default=2)
+    ap.add_argument("--pad", type=int, default=25)
+    ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--out-unlifted", type=Path, default=None)
+    args = ap.parse_args()
+
+    if args.coords_table:
+        row = _lookup_coords(args.coords_table, args.peak_id)
+        if row is None:
+            sys.exit(f"project_variants: {args.peak_id} not in {args.coords_table}")
+        args.cons_chr, args.cons_start, args.cons_end = row["cons_chr"], int(row["cons_start"]), int(row["cons_end"])
+        if str(row.get("exists_in_hg38", "")).upper() in ("TRUE", "1"):
+            args.hg38_chr, args.hg38_start, args.hg38_end = row["hg38_chr"], row["hg38_start"], row["hg38_end"]
+    if args.cons_chr is None or args.cons_start is None or args.cons_end is None:
+        sys.exit("project_variants: need --coords-table or --cons-chr/--cons-start/--cons-end")
+
+    aln_haps = read_fasta(args.aligned)
+    re_seqs = read_fasta(args.fa)
+    asm = _load_asm(args.tsv)
+    rows, unlifted = project_peak(
+        args.peak_id, aln_haps, re_seqs, asm, args.phylo_mm,
+        args.cons_chr, args.cons_start, args.cons_end,
+        args.hg38_chr, args.hg38_start, args.hg38_end,
+        args.agc, args.flank, args.threads, args.pad, args.min_carriers,
+    )
+    with args.out.open("w") as fh:
+        fh.write(_header())
+        for r in rows:
+            fh.write("\t".join(str(r[c]) for c in _COLS) + "\n")
+    if args.out_unlifted:
+        with args.out_unlifted.open("w") as fh:
+            fh.write(_unlifted_header())
+            for r in unlifted:
+                fh.write("\t".join(str(r[c]) for c in _UNLIFTED_COLS) + "\n")
+    print(f"[project_variants] {args.peak_id}: {len(rows)} sites "
+          f"({sum(r['is_driver']=='TRUE' for r in rows)} driver rows, "
+          f"{len(unlifted)} indel-only drivers unlifted)", file=sys.stderr)
 
 
 if __name__ == "__main__":

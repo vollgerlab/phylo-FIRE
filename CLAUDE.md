@@ -63,6 +63,25 @@ the local AGC (`resources/HPRC_r2_assemblies_0.6.1.agc`) — no genome fasta, no
 had made every reported hg38/CHM13 position 1 too low — fixed, verified
 52764/52764 REF bases match GRCh38).
 
+**Driver projection uses the Stage-1 alignment, flagged by `linked_sites`
+column.** `project_variants.py` projects onto the pipeline's own
+`aligned/{peak}.fa` (adding the CHM13/hg38 ref pulls with `mafft --add`, which
+only inserts all-hap-gap columns so hap columns — and thus phylo_mm's — are
+preserved; a `_col_bridge` maps them to the ref-added alignment for coords). A
+driver is flagged at exactly its phylo_mm `linked_sites` column(s), the SAME
+anchor the tree/MSA plot uses, so the bed can't disagree with the plot. This
+replaced an earlier design that RE-only **re-aligned** and matched drivers by
+**carrier-set**, which silently dropped (a) flank drivers (not in the RE-only
+input) and (b) **homoplastic** drivers whose clade (`descendants`) isn't any
+single column's carriers — the MHC/HLA Group-A peaks Annelise flagged (e.g.
+`chr6_32416483` went from 0 projected rows to 17 driver SNVs). Carrier-set match
+is now only a fallback (RE-band-scoped) when a driver's linked columns aren't
+substitutions. Drivers defined only by an **indel** (a contiguous gap run, no
+single-base column — e.g. `chr6_31400514`) can't be a bed/VCF SNV, so they are
+written to `tables/drivers.unlifted.tsv` with a reason instead of a fabricated
+position. `re_first_col`/`re_last_col`/`attribution_mode` come from the phylo_mm
+header; `linked_sites` are 1-based alignment columns.
+
 ## Pipeline architecture
 
 Three Snakemake steps driven by a checkpoint:

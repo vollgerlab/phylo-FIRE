@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Self-checks for project_variants' column bridge + driver flagging.
+
+    python workflow/scripts/test_project_variants.py
+"""
+from project_variants import _col_bridge, _col_carriers, _driver_cols
+
+
+def test_col_bridge():
+    # aln_full = aln_haps with one inserted all-hap-gap column (a ref insertion)
+    # between haps-col 1 and 2. Each haps col must map to the full col holding the
+    # same base, computed purely from ungapped offsets.
+    aln_haps = {"h1": "ACGT", "h2": "A-GT"}
+    aln_full = {"h1": "AC-GT", "h2": "A--GT", "__ref__": "ACXGT"}
+    b = _col_bridge(aln_haps, aln_full)
+    assert b == {0: 0, 1: 1, 2: 3, 3: 4}, b
+
+
+def test_driver_flag_by_linked_site():
+    # col 1 is the only substitution (h2/h3 carry T). A driver whose linked_sites
+    # names column 2 (1-based -> col 1) must flag col 1, not the invariant cols.
+    aln = {"a": "AAAA", "b": "ATAA", "c": "ATAA"}
+    colcar = _col_carriers(aln, min_carriers=1)
+    assert set(colcar) == {1}, colcar
+    drivers = {frozenset({"b", "c"}): ("0.5", [2])}   # linked_sites 1-based
+    col_beta, unmatched = _driver_cols(colcar, drivers, re_band=None)
+    assert col_beta == {1: "0.5"}, col_beta
+    assert unmatched == [], unmatched
+
+
+def test_indel_only_driver_is_unmatched():
+    # A driver whose only linked site is an all-gap (indel) column and whose clade
+    # matches no substitution column must be returned unmatched (-> unlifted).
+    aln = {"a": "AC-A", "b": "AT-A", "c": "AT-A", "d": "AC-A", "e": "AC-A"}
+    colcar = _col_carriers(aln, min_carriers=1)   # col1 carriers = {b,c}; col2 all-gap
+    drivers = {frozenset({"a"}): ("0.3", [3])}    # linked col3(1-based)=col2 gap; clade {a} != {b,c}
+    col_beta, unmatched = _driver_cols(colcar, drivers, re_band=None)
+    assert col_beta == {}, col_beta
+    assert len(unmatched) == 1, unmatched
+
+
+if __name__ == "__main__":
+    test_col_bridge()
+    test_driver_flag_by_linked_site()
+    test_indel_only_driver_is_unmatched()
+    print("project_variants self-checks passed")

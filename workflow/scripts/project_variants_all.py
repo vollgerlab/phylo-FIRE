@@ -27,7 +27,9 @@ from pathlib import Path
 import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from project_variants import project_peak, _COLS, _header  # noqa: E402
+from project_variants import (  # noqa: E402
+    project_peak, _COLS, _header, read_fasta, _unlifted_header, _UNLIFTED_COLS,
+)
 
 
 def _load_coords(path: Path) -> dict[str, dict]:
@@ -44,10 +46,13 @@ def _load_coords(path: Path) -> dict[str, dict]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--haplotypes", required=True, type=Path)
+    ap.add_argument("--aligned-dir", required=True, type=Path,
+                    help="results/<run>/aligned; the Stage-1 flanked MSA per peak")
     ap.add_argument("--phylo-mm-dir", required=True, type=Path)
     ap.add_argument("--coords", required=True, type=Path, help="peak_coords.tsv")
     ap.add_argument("--peaks", required=True, type=Path, help="run manifest")
     ap.add_argument("--agc", required=True)
+    ap.add_argument("--flank", type=int, default=0)
     ap.add_argument("--outdir", required=True, type=Path)
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--pad", type=int, default=25)
@@ -62,17 +67,23 @@ def main() -> None:
     hg38_dir = tmp / "hg38"
     hg38_dir.mkdir()
     missing_coords: list[str] = []
+    missing_aligned: list[str] = []
+    unlifted_all: list[dict] = []
 
     def do_peak(peak: str) -> None:
         sub = parts.get((peak,))
         crow = coords.get(peak)
+        aln_fa = args.aligned_dir / f"{peak}.fa"
         out = hg38_dir / f"{peak}.tsv"
-        if sub is None or crow is None:
+        if sub is None or crow is None or not aln_fa.exists():
             if crow is None:
                 missing_coords.append(peak)
+            if not aln_fa.exists():
+                missing_aligned.append(peak)
             out.write_text(_header())
             return
-        haps = dict(zip(sub["sample"].to_list(), sub["seq"].to_list()))
+        re_seqs = dict(zip(sub["sample"].to_list(), sub["seq"].to_list()))
+        aln_haps = read_fasta(aln_fa)
         asm = {
             s: {"chr": c, "start": st, "end": en}
             for s, c, st, en in zip(
@@ -84,22 +95,26 @@ def main() -> None:
         if str(crow.get("exists_in_hg38", "")).upper() in ("TRUE", "1"):
             hg38 = (crow["hg38_chr"], crow["hg38_start"], crow["hg38_end"])
         pmm = args.phylo_mm_dir / f"{peak}.tsv"
-        rows = project_peak(
-            peak, haps, asm, pmm if pmm.exists() else None,
+        rows, unlifted = project_peak(
+            peak, aln_haps, re_seqs, asm, pmm if pmm.exists() else None,
             crow["cons_chr"], int(crow["cons_start"]), int(crow["cons_end"]),
             hg38[0], hg38[1], hg38[2], args.agc,
-            threads=1, pad=args.pad, min_carriers=args.min_carriers,
+            flank=args.flank, threads=1, pad=args.pad, min_carriers=args.min_carriers,
         )
         with out.open("w") as fh:
             fh.write(_header())
             for r in rows:
                 fh.write("\t".join(str(r[c]) for c in _COLS) + "\n")
+        unlifted_all.extend(unlifted)
 
     with ThreadPoolExecutor(max_workers=args.threads) as ex:
         list(ex.map(do_peak, peaks))
     if missing_coords:
         print(f"[project_all] {len(missing_coords)} peaks not in coords table "
               f"(skipped): {', '.join(missing_coords[:10])}", file=sys.stderr)
+    if missing_aligned:
+        print(f"[project_all] {len(missing_aligned)} peaks missing aligned/*.fa "
+              f"(skipped): {', '.join(missing_aligned[:10])}", file=sys.stderr)
 
     # Reuse aggregate_hg38 (writes the variant table + plain VCF + BEDs), then
     # bgzip + tabix the VCF (matching the old aggregate_hg38 rule shell).
@@ -117,7 +132,16 @@ def main() -> None:
     )
     subprocess.run(["bgzip", "-f", "-@", str(args.threads), str(vcf_plain)], check=True)
     subprocess.run(["tabix", "-f", "-p", "vcf", str(vcf_plain) + ".gz"], check=True)
-    print(f"[project_all] done -> {args.outdir}/variants.hg38.*", file=sys.stderr)
+
+    # Drivers that are only an indel (a gap run, no single-base substitution
+    # column) can't be a bed/VCF SNV; list them so they aren't silently dropped.
+    unl_out = args.outdir / "drivers.unlifted.tsv"
+    with unl_out.open("w") as fh:
+        fh.write(_unlifted_header())
+        for r in unlifted_all:
+            fh.write("\t".join(str(r[c]) for c in _UNLIFTED_COLS) + "\n")
+    print(f"[project_all] done -> {args.outdir}/variants.hg38.* "
+          f"({len(unlifted_all)} indel-only drivers -> {unl_out.name})", file=sys.stderr)
 
 
 if __name__ == "__main__":

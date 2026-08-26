@@ -7,8 +7,8 @@ peak, and writes ONE plasmid_constructs.tsv + .fa. Reads only persisted files
 post-hoc step on a finished run, exactly like aggregate_hg38.
 
     pixi run python workflow/scripts/build_plasmid_table.py \
-        --aligned-dir  temp/<run>/aligned \
-        --fastas-dir   results/<run>/fastas \
+        --aligned-dir  results/<run>/aligned \
+        --haplotypes   results/<run>/tables/haplotypes.parquet \
         --phylo-mm-dir results/<run>/phylo_mm \
         --peaks        results/<run>/tables/plot_drivers.txt \
         --out-constructs results/<run>/plasmid_fiberseq/plasmid_constructs.tsv \
@@ -22,12 +22,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_plasmid_constructs import build_peak, COLS
+from hap_io import load_parts, peak_actuation
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--aligned-dir", required=True, type=Path)
-    ap.add_argument("--fastas-dir", required=True, type=Path)
+    ap.add_argument("--haplotypes", required=True, type=Path,
+                    help="haplotypes.parquet (actuation source)")
     ap.add_argument("--phylo-mm-dir", required=True, type=Path)
     ap.add_argument("--peaks", required=True, type=Path, help="driver peak list (one id/line)")
     ap.add_argument("--out-constructs", required=True, type=Path)
@@ -35,6 +37,7 @@ def main() -> None:
     args = ap.parse_args()
 
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
+    parts = load_parts(args.haplotypes)
     all_rows, missing = [], []
     for peak in peaks:
         aln = args.aligned_dir / f"{peak}.fa"
@@ -42,7 +45,7 @@ def main() -> None:
             missing.append(peak)
             continue
         rows, _ = build_peak(
-            aln, args.fastas_dir / f"{peak}.tsv", args.phylo_mm_dir / f"{peak}.tsv", peak
+            aln, peak_actuation(parts, peak), args.phylo_mm_dir / f"{peak}.tsv", peak
         )
         all_rows.extend(rows)
 

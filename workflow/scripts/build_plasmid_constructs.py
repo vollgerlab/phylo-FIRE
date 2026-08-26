@@ -125,7 +125,9 @@ def build_peak(aligned, actuation, phylo_mm, peak_id):
     (snakemake `main`) and by the single-pass whole-run builder.
     """
     aln = read_fasta(aligned)
-    act = load_actuation(actuation)
+    # actuation: a pre-loaded {sample: (act, cov)} dict (Stage-2 single-pass,
+    # from haplotypes.parquet) or a per-peak TSV path (CLI).
+    act = actuation if isinstance(actuation, dict) else load_actuation(actuation)
     header, drivers = parse_phylo_mm(phylo_mm)
     aln_len = len(next(iter(aln.values()))) if aln else 0
     re_lo = int(header.get("re_first_col", 1)) - 1

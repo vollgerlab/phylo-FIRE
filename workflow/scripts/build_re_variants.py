@@ -146,16 +146,20 @@ def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
     if hi < lo or hi == 0:
         lo, hi = 1, aln_len
 
-    # actuation TSV: sample → (act, cov)
-    act: dict[str, tuple[float, float]] = {}
-    with open(actuation) as fh:
-        cols = fh.readline().rstrip("\n").split("\t")
-        si, ai, ci = cols.index("sample"), cols.index("actuation"), cols.index("coverage")
-        for line in fh:
-            p = line.rstrip("\n").split("\t")
-            a, c = _num(p[ai]), _num(p[ci])
-            if a is not None and c is not None and c > 0:
-                act[p[si]] = (a, c)
+    # actuation: sample → (act, cov). Accept either a pre-loaded dict (Stage-2
+    # single-pass, from haplotypes.parquet) or a per-peak TSV path (CLI).
+    if isinstance(actuation, dict):
+        act = {s: v for s, v in actuation.items() if v[1] and v[1] > 0}
+    else:
+        act = {}
+        with open(actuation) as fh:
+            cols = fh.readline().rstrip("\n").split("\t")
+            si, ai, ci = cols.index("sample"), cols.index("actuation"), cols.index("coverage")
+            for line in fh:
+                p = line.rstrip("\n").split("\t")
+                a, c = _num(p[ai]), _num(p[ci])
+                if a is not None and c is not None and c > 0:
+                    act[p[si]] = (a, c)
 
     # Group tips (with actuation) by their attributed-band aligned substring.
     groups: dict[str, list[str]] = {}

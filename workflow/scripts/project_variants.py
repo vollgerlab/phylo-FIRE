@@ -189,26 +189,24 @@ def _driver_cols(colcar, drivers, re_band):
     return col_beta, unmatched
 
 
-def _re_band(phylo_mm, L):
-    """(lo, hi) 0-based inclusive RE columns from the phylo_mm header, or None
-    (whole alignment) for region-mode attribution / missing fields. `linked_sites`
-    are 1-based columns, so re_first/last_col are too -> subtract 1."""
-    if not phylo_mm or not Path(phylo_mm).exists():
-        return None
-    lo = hi = None
-    mode = ""
-    for line in Path(phylo_mm).read_text().splitlines():
-        if not line.startswith("#"):
-            break
-        if line.startswith("# attribution_mode="):
-            mode = line.split("=", 1)[1].strip()
-        elif line.startswith("# re_first_col="):
-            lo = int(line.split("=", 1)[1])
-        elif line.startswith("# re_last_col="):
-            hi = int(line.split("=", 1)[1])
-    if mode == "region" or lo is None or hi is None:
-        return None
-    return (lo - 1, hi - 1)
+def _re_header(phylo_mm):
+    """((lo, hi) 0-based inclusive RE columns or None, attribution_mode string).
+    `linked_sites` and re_first/last_col are 1-based columns -> subtract 1."""
+    band, mode = None, ""
+    if phylo_mm and Path(phylo_mm).exists():
+        lo = hi = None
+        for line in Path(phylo_mm).read_text().splitlines():
+            if not line.startswith("#"):
+                break
+            if line.startswith("# attribution_mode="):
+                mode = line.split("=", 1)[1].strip()
+            elif line.startswith("# re_first_col="):
+                lo = int(line.split("=", 1)[1])
+            elif line.startswith("# re_last_col="):
+                hi = int(line.split("=", 1)[1])
+        if lo is not None and hi is not None:
+            band = (lo - 1, hi - 1)
+    return band, mode
 
 
 def _load_drivers(phylo_mm) -> dict[frozenset, tuple]:
@@ -264,7 +262,10 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
     L = len(next(iter(aln_haps.values())))
 
     colcar = _col_carriers(aln_haps, min_carriers)
-    col_beta, unmatched = _driver_cols(colcar, drivers, _re_band(phylo_mm, L))
+    re_band, attr_mode = _re_header(phylo_mm)
+    # Driver carrier-set fallback: whole alignment in region mode, else RE band.
+    col_beta, unmatched = _driver_cols(
+        colcar, drivers, None if attr_mode == "region" else re_band)
 
     # Reference pulls span the FLANKED extent (peak +/- flank +/- pad) so flank
     # columns also map to coordinates.
@@ -302,6 +303,11 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
             continue
         minor, major, carriers = colcar[col]
         is_driver = col in col_beta
+        # Emit non-driver variants only within the regulatory element; the flank is
+        # assembly context added to resolve the tree, not RE variation. Drivers are
+        # always emitted (incl. region-mode drivers that sit in the flank).
+        if not is_driver and re_band is not None and not (re_band[0] <= col <= re_band[1]):
+            continue
         n_car = len(carriers)
         n_ref = len(hap_names) - n_car
         if not is_driver and min(n_car, n_ref) < min_carriers:

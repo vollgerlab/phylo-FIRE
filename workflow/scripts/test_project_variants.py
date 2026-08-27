@@ -3,7 +3,18 @@
 
     python workflow/scripts/test_project_variants.py
 """
-from project_variants import _col_bridge, _col_carriers, _driver_cols
+from project_variants import _col_bridge, _col_carriers, _driver_cols, cons_agc_contig
+
+
+def test_cons_agc_contig():
+    # CHM13 chromosomes get the CHM13#0# prefix; a consensus on an assembly is
+    # queried on that assembly directly (PanSN passthrough / HG002 T2T mapping).
+    assert cons_agc_contig("chr6") == "CHM13#0#chr6"
+    assert cons_agc_contig("chrX") == "CHM13#0#chrX"
+    assert cons_agc_contig("HG02257#1#JAGYVH020000072.1") == "HG02257#1#JAGYVH020000072.1"
+    assert cons_agc_contig("chr6_PATERNAL") == "HG002#1#chr6"
+    assert cons_agc_contig("chr12_MATERNAL") == "HG002#2#chr12"
+    assert cons_agc_contig("weird_name") is None
 
 
 def test_col_bridge():
@@ -40,6 +51,7 @@ def test_indel_only_driver_is_unmatched():
 
 
 if __name__ == "__main__":
+    test_cons_agc_contig()
     test_col_bridge()
     test_driver_flag_by_linked_site()
     test_indel_only_driver_is_unmatched()

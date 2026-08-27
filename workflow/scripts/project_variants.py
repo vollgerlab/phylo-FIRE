@@ -22,12 +22,32 @@ Emits one row per variable site (schema `_COLS`) plus a list of unlifted-driver
 rows (schema `_UNLIFTED_COLS`).
 """
 import argparse
+import re
 import subprocess
 import sys
 import tempfile
 import time
 from collections import Counter
 from pathlib import Path
+
+_CHM13_CHR = re.compile(r"^chr([0-9]+|X|Y|M)$")
+
+
+def cons_agc_contig(cons_chr: str) -> str | None:
+    """AGC contig key for a peak's consensus reference. A standard CHM13
+    chromosome gets the `CHM13#0#` sample prefix; a peak whose consensus sits on
+    an assembly instead of CHM13 is queried on that assembly directly -- a PanSN
+    contig (`HG02257#1#JAGYVH...`) passes through, and HG002's T2T
+    `chrN_PATERNAL`/`_MATERNAL` maps to `HG002#1#chrN` / `HG002#2#chrN` (hap1=pat,
+    hap2=mat, matching add_flanks). None for an unresolvable name (-> cons NA)."""
+    if _CHM13_CHR.match(cons_chr):
+        return f"CHM13#0#{cons_chr}"
+    if "#" in cons_chr:
+        return cons_chr
+    for suffix, hap in (("_MATERNAL", "2"), ("_PATERNAL", "1")):
+        if cons_chr.endswith(suffix):
+            return f"HG002#{hap}#{cons_chr[: -len(suffix)]}"
+    return None
 
 _COMP = str.maketrans("ACGTNacgtn-", "TGCANtgcan-")
 
@@ -293,7 +313,8 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
     span = int(flank) + pad
     refs: dict[str, str] = {}
     cons_s0 = max(0, cons_start - span)
-    cons_fwd = pull_agc(agc, f"CHM13#0#{cons_chr}", cons_s0, cons_end + span)
+    cons_contig = cons_agc_contig(cons_chr)      # CHM13#0#chrN, or the assembly contig
+    cons_fwd = pull_agc(agc, cons_contig, cons_s0, cons_end + span) if cons_contig else None
     if cons_fwd:
         refs["__CHM13__"] = cons_fwd
     hg38_ok = hg38_chr != "NA" and str(hg38_start).isdigit()

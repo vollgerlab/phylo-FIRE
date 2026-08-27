@@ -80,12 +80,17 @@ def pull_agc(agc: str, contig: str, start0: int, end0: int, retries: int = 4) ->
         except FileNotFoundError:
             print("[project_variants] agc not found on PATH", file=sys.stderr)
             return None
-        except subprocess.CalledProcessError:
-            pass
+        except subprocess.CalledProcessError as ex:
+            # returncode < 0 => killed by a signal (SIGABRT under archive contention):
+            # transient, worth retrying. returncode > 0 => a clean agc error, e.g. the
+            # contig isn't in the archive (asm-only peak whose consensus is on a
+            # sample contig, not CHM13/GRCh38): deterministic, so fail fast.
+            if ex.returncode is None or ex.returncode >= 0:
+                return None
         if attempt < retries - 1:
             time.sleep(0.5 * (attempt + 1))       # 0.5s, 1s, 1.5s backoff
-    print(f"[project_variants] agc getctg failed for {region} after {retries} tries",
-          file=sys.stderr)
+    print(f"[project_variants] agc getctg SIGABRT-failed for {region} after {retries} "
+          f"tries (concurrency too high -> this peak lost coords)", file=sys.stderr)
     return None
 
 

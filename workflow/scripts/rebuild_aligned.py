@@ -37,13 +37,48 @@ def _strip_r(text: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _count_records(path: Path) -> int:
+    """Number of `>` headers in a FASTA (0 if unreadable)."""
+    try:
+        return sum(l.startswith(">") for l in path.read_text().splitlines())
+    except OSError:
+        return -1
+
+
+def _valid_aligned(out: Path, fa: Path) -> bool:
+    """A skippable aligned/{peak}.fa must be a real alignment, not just present:
+    >=2 records, all sequences the same non-zero length, and one record per
+    haplotype in the RE-only input (so a truncated/partial file is rebuilt)."""
+    try:
+        lines = out.read_text().splitlines()
+    except OSError:
+        return False
+    seqs, cur = [], None
+    for l in lines:
+        if l.startswith(">"):
+            seqs.append([])
+            cur = seqs[-1]
+        elif cur is not None:
+            cur.append(l.strip())
+    joined = ["".join(s) for s in seqs]
+    if len(joined) < 2:
+        return False
+    lens = {len(s) for s in joined}
+    if lens == {0} or len(lens) != 1:
+        return False
+    return len(joined) == _count_records(fa)
+
+
 def do_peak(peak, fastas_dir, out_dir, agc, flank, tool_threads):
     out = out_dir / f"{peak}.fa"
-    if out.exists():
-        return peak, "skip"
     fa, tsv = fastas_dir / f"{peak}.fa", fastas_dir / f"{peak}.tsv"
     if not (fa.exists() and tsv.exists()):
         return peak, "missing"
+    if out.exists():
+        if _valid_aligned(out, fa):
+            return peak, "skip"
+        print(f"[rebuild_aligned] {peak}: existing aligned invalid, rebuilding",
+              file=sys.stderr)
     with tempfile.NamedTemporaryFile("w", suffix=".flk.fa", delete=False) as fh:
         flk = fh.name
     try:

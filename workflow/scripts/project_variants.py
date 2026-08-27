@@ -327,15 +327,19 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
 
     aln_full = add_refs(aln_haps, refs, threads)
     bridge = _col_bridge(aln_haps, aln_full)
-    cons_map = None
+    cons_map, cons_orient = None, "fwd"
     if "__CHM13__" in aln_full and cons_fwd:
-        _, cons_map = orient_and_map(aln_full["__CHM13__"], cons_fwd, cons_s0)
-    hg38_map = None
+        cons_orient, cons_map = orient_and_map(aln_full["__CHM13__"], cons_fwd, cons_s0)
+    hg38_map, hg38_orient = None, "fwd"
     if "__hg38__" in aln_full and hg38_fwd and hg38_s0 is not None:
-        _, hg38_map = orient_and_map(aln_full["__hg38__"], hg38_fwd, hg38_s0)
-    aln_is_rev = (cons_fwd is not None and "__CHM13__" in aln_full
-                  and aln_full["__CHM13__"].replace("-", "").upper() != cons_fwd.upper()
-                  and aln_full["__CHM13__"].replace("-", "").upper() == revcomp(cons_fwd).upper())
+        hg38_orient, hg38_map = orient_and_map(aln_full["__hg38__"], hg38_fwd, hg38_s0)
+    # The reported REF is the FORWARD base of whichever genome the bed/VCF keys on
+    # (hg38 when the peak lifts, else CHM13); the cohort major/minor come from the
+    # haps in the MSA's orientation, so flip them onto THAT genome's forward strand.
+    # Use hg38's own orientation, NOT CHM13's -- CHM13 and GRCh38 sit on opposite
+    # strands at some loci (a reference inversion, e.g. chr1_145862159), and keying
+    # the flip on CHM13 there put the forward-hg38 REF next to reverse-strand ALTs.
+    out_is_rev = (hg38_orient == "rev") if (hg38_fwd and hg38_map) else (cons_orient == "rev")
 
     left_flank = {n: _left_flank(aln_haps[n], re_seqs.get(n, "")) for n in hap_names}
 
@@ -361,7 +365,7 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
         cons_ref = cons_fwd[cons_pos0 - cons_s0].upper() if cons_pos0 is not None else "NA"
         hg38_ref = (hg38_fwd[hg38_pos0 - hg38_s0].upper()
                     if (hg38_fwd and hg38_pos0 is not None) else "NA")
-        maj_f, min_f = (revcomp(major), revcomp(minor)) if aln_is_rev else (major, minor)
+        maj_f, min_f = (revcomp(major), revcomp(minor)) if out_is_rev else (major, minor)
 
         asm_hits = []
         for nm in sorted(carriers):

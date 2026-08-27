@@ -56,6 +56,12 @@ def revcomp(s: str) -> str:
     return s.translate(_COMP)[::-1]
 
 
+def _base(ch: str):
+    """Upper-cased A/C/G/T, or None for a gap/N/other."""
+    ch = ch.upper()
+    return ch if ch in ("A", "C", "G", "T") else None
+
+
 def read_fasta(path: Path) -> dict[str, str]:
     return read_fasta_str(Path(path).read_text())
 
@@ -192,8 +198,11 @@ def _col_carriers(aln_haps: dict[str, str], min_carriers: int):
         cnt = Counter(b for b in bases.values() if b not in ("-", "N"))
         if len(cnt) < 2:
             continue
-        minor = min(cnt, key=cnt.get)
-        major = max(cnt, key=cnt.get)
+        # most_common breaks count ties by insertion order and keeps the two
+        # alleles DISTINCT; min/max both return the first key on an exact tie
+        # (e.g. 39 G / 39 C -> major==minor==G, dropping C -> a bogus X>. call).
+        mc = cnt.most_common()
+        major, minor = mc[0][0], mc[-1][0]
         carr = frozenset(n for n, b in bases.items() if b == minor)
         out[c] = (minor, major, carr)
     return out
@@ -210,13 +219,17 @@ def _driver_cols(colcar, drivers, re_band):
 
     `drivers`: {frozenset(desc): (beta, [linked_1based])}; `re_band`: (lo,hi)
     0-based inclusive RE columns, or None to allow all. Unmatched drivers
-    (indel-only / unresolvable) are returned for the unlifted list."""
+    (indel-only / unresolvable) are returned for the unlifted list. `col_desc`
+    carries each driver column's clade (descendants) so the emit loop can pin the
+    reported driver allele + carriers to the phylo_mm clade, not to allele count
+    (which ties on balanced sites and can even disagree with the clade)."""
     lo, hi = re_band if re_band else (0, 10**9)
     by_carrier = {}
     for c, (_, _, carr) in colcar.items():
         if lo <= c <= hi:
             by_carrier.setdefault(carr, []).append(c)
     col_beta: dict[int, str] = {}
+    col_desc: dict[int, frozenset] = {}
     unmatched = []
     for desc, (beta, linked) in drivers.items():
         cols = {ls - 1 for ls in linked if (ls - 1) in colcar}   # 1-based -> 0-based
@@ -225,9 +238,10 @@ def _driver_cols(colcar, drivers, re_band):
         if cols:
             for c in cols:
                 col_beta[c] = beta
+                col_desc[c] = desc
         else:
             unmatched.append((desc, beta, linked))
-    return col_beta, unmatched
+    return col_beta, col_desc, unmatched
 
 
 def _re_header(phylo_mm):
@@ -305,7 +319,7 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
     colcar = _col_carriers(aln_haps, min_carriers)
     re_band, attr_mode = _re_header(phylo_mm)
     # Driver carrier-set fallback: whole alignment in region mode, else RE band.
-    col_beta, unmatched = _driver_cols(
+    col_beta, col_desc, unmatched = _driver_cols(
         colcar, drivers, None if attr_mode == "region" else re_band)
 
     # Reference pulls span the FLANKED extent (peak +/- flank +/- pad) so flank
@@ -347,7 +361,7 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
     for col in range(L):
         if col not in colcar:
             continue
-        minor, major, carriers = colcar[col]
+        minor, major, carriers = colcar[col]      # major/minor are FREQUENCY labels
         is_driver = col in col_beta
         # Emit non-driver variants only within the regulatory element; the flank is
         # assembly context added to resolve the tree, not RE variation. Drivers are
@@ -366,6 +380,22 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
         hg38_ref = (hg38_fwd[hg38_pos0 - hg38_s0].upper()
                     if (hg38_fwd and hg38_pos0 is not None) else "NA")
         maj_f, min_f = (revcomp(major), revcomp(minor)) if out_is_rev else (major, minor)
+
+        # The driver/effect allele is the phylo_mm clade's allele -- reported
+        # explicitly because it is INDEPENDENT of frequency (it can be the major
+        # allele) and of the reference (it can be the REF base). For a driver we
+        # also set carriers/n_carriers to that clade, so beta and carriers describe
+        # the SAME haplotypes; hap_major/hap_minor stay pure frequency labels.
+        driver_allele = "NA"
+        if is_driver and col in col_desc:
+            clade = col_desc[col] & set(hap_names)
+            cb = Counter(b for b in (_base(aln_haps[n][col]) for n in clade) if b)
+            if cb:
+                drv = cb.most_common(1)[0][0]                      # clade allele (aln)
+                driver_allele = revcomp(drv) if out_is_rev else drv
+                carriers = frozenset(
+                    n for n in hap_names if _base(aln_haps[n][col]) == drv)
+                n_car = len(carriers)
 
         asm_hits = []
         for nm in sorted(carriers):
@@ -387,6 +417,7 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
             "hg38_ref": hg38_ref,
             "hap_major": maj_f,
             "hap_minor": min_f,
+            "driver_allele": driver_allele,
             "n_carriers": n_car,
             "is_driver": "TRUE" if is_driver else "FALSE",
             "beta": col_beta.get(col, "NA"),
@@ -406,7 +437,8 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
 
 _COLS = ["peak_id", "re_pos", "cons_chr", "cons_pos", "cons_ref",
          "hg38_chr", "hg38_pos", "hg38_ref", "hap_major", "hap_minor",
-         "n_carriers", "is_driver", "beta", "carriers", "asm_coords"]
+         "driver_allele", "n_carriers", "is_driver", "beta", "carriers",
+         "asm_coords"]
 _UNLIFTED_COLS = ["peak_id", "n_carriers", "beta", "reason", "carriers"]
 
 

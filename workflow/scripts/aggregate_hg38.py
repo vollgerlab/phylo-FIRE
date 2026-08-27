@@ -18,14 +18,16 @@ from pathlib import Path
 
 VCOLS = ["peak_id", "re_pos", "cons_chr", "cons_pos", "cons_ref",
          "hg38_chr", "hg38_pos", "hg38_ref", "hap_major", "hap_minor",
-         "n_carriers", "is_driver", "beta", "carriers", "asm_coords"]
+         "driver_allele", "n_carriers", "is_driver", "beta", "carriers",
+         "asm_coords"]
 
 VCF_HEADER = """##fileformat=VCFv4.2
 ##source=phylo-FIRE/project_variants
 ##INFO=<ID=PEAK,Number=1,Type=String,Description="consensus peak id">
 ##INFO=<ID=RE,Number=1,Type=Integer,Description="1-based position within the RE/peak">
 ##INFO=<ID=DRIVER,Number=0,Type=Flag,Description="attribution driver variant">
-##INFO=<ID=BETA,Number=1,Type=Float,Description="joint driver effect (actuation shift)">
+##INFO=<ID=DALLELE,Number=1,Type=Character,Description="driver/effect allele (the phylo_mm clade allele BETA is for; may be REF or ALT, major or minor)">
+##INFO=<ID=BETA,Number=1,Type=Float,Description="joint driver effect (actuation shift) of DALLELE">
 ##INFO=<ID=NCAR,Number=1,Type=Integer,Description="haplotype carriers of the cohort minor allele">
 ##INFO=<ID=CONS,Number=1,Type=String,Description="CHM13 coordinate chr:pos">
 ##INFO=<ID=CONSREF,Number=1,Type=Character,Description="CHM13 reference base">
@@ -103,6 +105,8 @@ def main() -> None:
                     f"HAPMAJ={r['hap_major']}", f"HAPMIN={r['hap_minor']}"]
             if r["is_driver"] == "TRUE":
                 info.append("DRIVER")
+                if r.get("driver_allele", "NA") not in ("NA", ""):
+                    info.append(f"DALLELE={r['driver_allele']}")
                 if r["beta"] not in ("NA", ""):
                     info.append(f"BETA={r['beta']}")
             vid = f"{r['peak_id']}:RE{r['re_pos']}"
@@ -117,7 +121,8 @@ def main() -> None:
             alt = _alt(r["hg38_ref"], r["hap_major"], r["hap_minor"])
             name = f"{r['peak_id']}:RE{r['re_pos']}:{r['hg38_ref']}>{alt}"
             fh.write("\t".join([r["hg38_chr"], str(pos - 1), str(pos), name,
-                                r["is_driver"], r["beta"], r["n_carriers"], r["peak_id"]]) + "\n")
+                                r["is_driver"], r["beta"], r["n_carriers"], r["peak_id"],
+                                r.get("driver_allele", "NA")]) + "\n")
 
     # per-peak counts (over ALL rows, not just hg38-mapped)
     n_var, n_drv = {}, {}

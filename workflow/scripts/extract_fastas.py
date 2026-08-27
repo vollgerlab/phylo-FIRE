@@ -314,6 +314,7 @@ def main() -> None:
     if hap_cols is not None:
         import polars as pl
 
+        args.haplotypes_parquet.parent.mkdir(parents=True, exist_ok=True)
         (
             pl.DataFrame(hap_cols, schema={c: pl.Utf8 for c in HAP_COLS})
             .with_columns(

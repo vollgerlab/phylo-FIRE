@@ -42,7 +42,8 @@ replot = { cmd = [
 # then Stage 2 (analysis.smk: re_variants + hg38 + plasmid + plots). plasmid=true
 # emits the construct panel. Same run_name/config across both stages.
 hap-selective-30 = { cmd = [
-    "bash", "-c",
+    "bash",
+    "-c",
     "snakemake --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 -j 10 && snakemake -s workflow/analysis.smk --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 plasmid=true --rerun-triggers mtime -j 10",
 ] }
 # 12 Genetically-haplotype-specific peaks chosen to exercise the dual-H² gate +
@@ -210,13 +211,41 @@ hsca-hapsel = { cmd = [
 # DAG for a 23K-peak run. trees/phylo_mm are never touched. Run before the hg38
 # task if aligned/ is missing. (The `aligned_only` Snakefile rule is kept as the
 # DAG-native equivalent.)
-hsca-hapsel-aligned = { cmd = ["python", "workflow/scripts/rebuild_aligned.py", "--fastas-dir", "results/hsca_hapsel/fastas", "--out-dir", "results/hsca_hapsel/aligned", "--agc", "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_0.6.1.agc", "--flank", "250", "--threads", "32"] }
+hsca-hapsel-aligned = { cmd = [
+    "python",
+    "workflow/scripts/rebuild_aligned.py",
+    "--fastas-dir",
+    "results/hsca_hapsel/fastas",
+    "--out-dir",
+    "results/hsca_hapsel/aligned",
+    "--agc",
+    "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_0.6.1.agc",
+    "--flank",
+    "250",
+    "--threads",
+    "32",
+] }
 # Regenerate ONLY the hg38 tables with the driver-projection fix (Group A). Targets
 # variants.hg38.bed + the NEW drivers.unlifted.tsv; the missing unlifted output
 # forces project_all to rerun (regenerating the bed too) without touching the
 # already-current re_variants / manifests / plots. Needs aligned/ present first
 # (hsca-hapsel-aligned).
-hsca-hapsel-hg38 = { cmd = ["snakemake", "-s", "workflow/analysis.smk", "--configfile", "config/cluster.yaml", "--config", "run_name=hsca_hapsel", "peak_ids=config/hsca_hapsel_peak_ids.txt", "--rerun-triggers", "mtime", "-j", "64", "results/hsca_hapsel/tables/variants.hg38.bed", "results/hsca_hapsel/tables/drivers.unlifted.tsv"] }
+hsca-hapsel-hg38 = { cmd = [
+    "snakemake",
+    "-s",
+    "workflow/analysis.smk",
+    "--configfile",
+    "config/cluster.yaml",
+    "--config",
+    "run_name=hsca_hapsel",
+    "peak_ids=config/hsca_hapsel_peak_ids.txt",
+    "--rerun-triggers",
+    "mtime",
+    "-j",
+    "64",
+    "results/hsca_hapsel/tables/variants.hg38.bed",
+    "results/hsca_hapsel/tables/drivers.unlifted.tsv",
+] }
 # ── Stage 2: analysis on the persisted Stage-1 outputs (workflow/analysis.smk) ──
 # The tasks above run STAGE 1 (per-peak trees + phylo_mm). Stage 2 is a separate,
 # ~6-node single-pass DAG (re_variants → aggregate → hg38 projection + rs-IDs →

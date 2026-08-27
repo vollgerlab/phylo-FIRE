@@ -37,13 +37,14 @@ VCF_HEADER = """##fileformat=VCFv4.2
 """
 
 
-def _alt(ref: str, maj: str, minr: str) -> str:
-    """ALT alleles = the cohort alleles that differ from the reference base."""
-    alts = [a for a in (maj, minr) if a and a != ref and a not in ("-", "N")]
-    # de-dup preserving order
+def _alt(ref: str, *alleles: str) -> str:
+    """ALT alleles = the cohort alleles that differ from the reference base.
+    Pass the driver allele too: at a >2-allele column the driver's clade can carry
+    a THIRD base that isn't the column major/minor, and it must appear in ALT so
+    the reported variant actually contains the driver."""
     seen, out = set(), []
-    for a in alts:
-        if a not in seen:
+    for a in alleles:
+        if a and a != ref and a not in ("-", "N", "NA") and a not in seen:
             seen.add(a); out.append(a)
     return ",".join(out) if out else "."
 
@@ -99,7 +100,7 @@ def main() -> None:
     with args.out_vcf.open("w") as fh:
         fh.write(VCF_HEADER)
         for r in sites:
-            alt = _alt(r["hg38_ref"], r["hap_major"], r["hap_minor"])
+            alt = _alt(r["hg38_ref"], r["hap_major"], r["hap_minor"], r.get("driver_allele", "NA"))
             info = [f"PEAK={r['peak_id']}", f"RE={r['re_pos']}", f"NCAR={r['n_carriers']}",
                     f"CONS={r['cons_chr']}:{r['cons_pos']}", f"CONSREF={r['cons_ref']}",
                     f"HAPMAJ={r['hap_major']}", f"HAPMIN={r['hap_minor']}"]
@@ -118,7 +119,7 @@ def main() -> None:
     with args.out_variants_bed.open("w") as fh:
         for r in sites:
             pos = int(r["hg38_pos"])
-            alt = _alt(r["hg38_ref"], r["hap_major"], r["hap_minor"])
+            alt = _alt(r["hg38_ref"], r["hap_major"], r["hap_minor"], r.get("driver_allele", "NA"))
             name = f"{r['peak_id']}:RE{r['re_pos']}:{r['hg38_ref']}>{alt}"
             fh.write("\t".join([r["hg38_chr"], str(pos - 1), str(pos), name,
                                 r["is_driver"], r["beta"], r["n_carriers"], r["peak_id"],

@@ -25,6 +25,7 @@ import argparse
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -57,20 +58,35 @@ def parse_agc_fasta(text: str) -> str:
     return "".join(l.strip() for l in text.splitlines() if l and not l.startswith(">"))
 
 
-def pull_agc(agc: str, contig: str, start0: int, end0: int) -> str | None:
+def pull_agc(agc: str, contig: str, start0: int, end0: int, retries: int = 4) -> str | None:
     """agc getctg <agc> <contig>:<start>-<end>. agc coords are 0-BASED (the base
     returned for N is the standard 1-based base N+1), so callers pass a 0-based
-    start DIRECTLY -- not BED-start+1."""
+    start DIRECTLY -- not BED-start+1.
+
+    Retries transient failures with backoff: under high concurrency agc can abort
+    (SIGABRT) from memory/contention on the shared archive. A silent None here
+    drops a peak's coords (it looks un-liftable), so we retry before giving up --
+    but also keep the worker count modest to avoid the aborts in the first place."""
     region = f"{contig}:{start0}-{end0}"
-    try:
-        res = subprocess.run(
-            ["agc", "getctg", agc, region, "-p"],
-            capture_output=True, text=True, check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as ex:
-        print(f"[project_variants] agc getctg failed for {region}: {ex}", file=sys.stderr)
-        return None
-    return parse_agc_fasta(res.stdout).upper() or None
+    for attempt in range(retries):
+        try:
+            res = subprocess.run(
+                ["agc", "getctg", agc, region, "-p"],
+                capture_output=True, text=True, check=True,
+            )
+            seq = parse_agc_fasta(res.stdout).upper()
+            if seq:
+                return seq
+        except FileNotFoundError:
+            print("[project_variants] agc not found on PATH", file=sys.stderr)
+            return None
+        except subprocess.CalledProcessError:
+            pass
+        if attempt < retries - 1:
+            time.sleep(0.5 * (attempt + 1))       # 0.5s, 1s, 1.5s backoff
+    print(f"[project_variants] agc getctg failed for {region} after {retries} tries",
+          file=sys.stderr)
+    return None
 
 
 def add_refs(aln_haps: dict[str, str], refs: dict[str, str], threads: int) -> dict[str, str]:

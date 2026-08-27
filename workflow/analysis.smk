@@ -141,7 +141,11 @@ rule project_all:
         variants_bed=RESULTS + "/tables/variants.hg38.bed",
         elements_bed=RESULTS + "/tables/elements.hg38.bed",
         unlifted=RESULTS + "/tables/drivers.unlifted.tsv",
-    threads: config.get("stage2_threads", 16)
+    # OWN knob (not stage2_threads): this rule's parallelism = concurrent `agc`
+    # getctg processes, which abort (SIGABRT) under heavy contention on the shared
+    # 3.3 GB archive. Keep it modest (agc-safe); raise with --set-threads
+    # project_all=N only if agc tolerates it. Plots/re_variants keep stage2_threads.
+    threads: config.get("project_threads", 32)
     resources:
         mem_mb=32768,
         runtime=480,

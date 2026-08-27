@@ -21,7 +21,7 @@ import argparse
 import subprocess
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import polars as pl
@@ -107,8 +107,15 @@ def main() -> None:
                 fh.write("\t".join(str(r[c]) for c in _COLS) + "\n")
         unlifted_all.extend(unlifted)
 
+    print(f"[project_all] projecting {len(peaks)} peaks with {args.threads} "
+          f"workers ...", file=sys.stderr)
+    done = 0
     with ThreadPoolExecutor(max_workers=args.threads) as ex:
-        list(ex.map(do_peak, peaks))
+        for _ in as_completed([ex.submit(do_peak, p) for p in peaks]):
+            done += 1
+            if done % 1000 == 0 or done == len(peaks):
+                print(f"[project_all]   {done}/{len(peaks)} peaks projected",
+                      file=sys.stderr)
     if missing_coords:
         print(f"[project_all] {len(missing_coords)} peaks not in coords table "
               f"(skipped): {', '.join(missing_coords[:10])}", file=sys.stderr)

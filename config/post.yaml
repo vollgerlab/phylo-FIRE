@@ -1,0 +1,15 @@
+# Post-phylo-FIRE (workflow/post.smk): runs LOCALLY on a finished cluster run.
+# Pulls the Stage-2 tables from Redwood, annotates rs IDs against a dbSNP
+# subset streamed from Redwood (only our sites; nothing is written remotely),
+# and maps significant plasmid loci to their driver variants' rs IDs.
+run_name: "hsca_hapsel"
+
+# ssh Host alias (needs a live ControlMaster: log in to Redwood first).
+remote_host: "redwood"
+remote_repo: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/phylo-FIRE"
+remote_dbsnp: "/scratch/ucgd/lustre/common/data/dbSNP/156/GCF_000001405.40.gz"
+remote_bcftools: "~/.pixi/bin/bcftools"
+
+# Plasmid fiber-seq significance table (locus, driver_id, beta, ...).
+# Set on the CLI: --config significant_loci=<path>
+significant_loci: null

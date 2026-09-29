@@ -246,6 +246,12 @@ hsca-hapsel-hg38 = { cmd = [
     "results/hsca_hapsel/tables/variants.hg38.bed",
     "results/hsca_hapsel/tables/drivers.unlifted.tsv",
 ] }
+# ── Post-phylo-FIRE (workflow/post.smk): LOCAL, after a finished cluster run ──
+# Pulls tables from Redwood, rs-annotates drivers (dbSNP subset streamed from
+# Redwood), maps significant plasmid loci -> driver rsIDs for PheWAS. Log in to
+# Redwood first (ControlMaster). Usage:
+#   pixi run post --config significant_loci=<plasmid_significant_loci.tsv>
+post = { cmd = ["snakemake", "-s", "workflow/post.smk", "-j", "4"] }
 # ── Stage 2: analysis on the persisted Stage-1 outputs (workflow/analysis.smk) ──
 # The tasks above run STAGE 1 (per-peak trees + phylo_mm). Stage 2 is a separate,
 # ~6-node single-pass DAG (re_variants → aggregate → hg38 projection + rs-IDs →

@@ -22,11 +22,10 @@ natives -> only 2 unique sequences (flagged `collapsed`). Each rep's modal count
 (`source_n_haps`) and mean actuation (`source_act_mean`) are recorded so the
 plasmid readout can be checked against the native effect.
 
-Outputs a per-peak construct TSV and (optional) an aligned panel FASTA that the
-plot renders as grey pseudo-leaf rows under the MSA.
+``build_peak`` returns the construct rows (build_plasmid_table.py writes them for
+the whole run) and the aligned panel that plot_all draws as grey pseudo-leaf rows
+under the MSA.
 """
-import argparse
-import sys
 from pathlib import Path
 
 
@@ -41,20 +40,6 @@ def read_fasta(path):
             buf.append(line.strip())
     if name is not None:
         out[name] = "".join(buf)
-    return out
-
-
-def load_actuation(path):
-    """sample -> (actuation float, coverage float)."""
-    out = {}
-    lines = Path(path).read_text().splitlines()
-    idx = {h: i for i, h in enumerate(lines[0].split("\t"))}
-    for ln in lines[1:]:
-        f = ln.split("\t")
-        try:
-            out[f[idx["sample"]]] = (float(f[idx["actuation"]]), float(f[idx["coverage"]]))
-        except (ValueError, IndexError):
-            continue
     return out
 
 
@@ -117,17 +102,14 @@ COLS = ["peak_id", "driver_id", "driver_beta", "driver_re_cols", "role", "backgr
         "source_n_haps", "source_act_mean", "edit", "re_seq", "re_len"]
 
 
-def build_peak(aligned, actuation, phylo_mm, peak_id):
-    """Build the plasmid constructs for one peak from persisted files.
+def build_peak(aligned, act, phylo_mm, peak_id):
+    """Build the plasmid constructs for one peak.
 
-    Returns (rows, panel). rows == [] when the peak is excluded (no driver, >1
-    distinct driver effect, or a rep group is empty). Reusable both per-peak
-    (snakemake `main`) and by the single-pass whole-run builder.
+    ``aligned`` and ``phylo_mm`` are file paths; ``act`` is {sample: (actuation,
+    coverage)}. Returns (rows, panel). rows == [] when the peak is excluded (no
+    driver, >1 distinct driver effect, or a rep group is empty).
     """
     aln = read_fasta(aligned)
-    # actuation: a pre-loaded {sample: (act, cov)} dict (Stage-2 single-pass,
-    # from haplotypes.parquet) or a per-peak TSV path (CLI).
-    act = actuation if isinstance(actuation, dict) else load_actuation(actuation)
     header, drivers = parse_phylo_mm(phylo_mm)
     aln_len = len(next(iter(aln.values()))) if aln else 0
     re_lo = int(header.get("re_first_col", 1)) - 1
@@ -212,35 +194,3 @@ def build_peak(aligned, actuation, phylo_mm, peak_id):
     if len({r["re_seq"] for r in rows if r["re_seq"] != "NA"}) < 2:
         return [], []
     return rows, panel
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--aligned", required=True, type=Path, help="aligned/{peak}.fa (flanked MSA)")
-    ap.add_argument("--actuation", required=True, type=Path, help="fastas/{peak}.tsv")
-    ap.add_argument("--phylo-mm", required=True, type=Path)
-    ap.add_argument("--peak-id", required=True)
-    ap.add_argument("--out", required=True, type=Path, help="construct TSV")
-    ap.add_argument("--aligned-out", type=Path, default=None, help="panel FASTA for the plot")
-    args = ap.parse_args()
-    rows, panel = build_peak(args.aligned, args.actuation, args.phylo_mm, args.peak_id)
-    _write(args, rows, panel)
-    n_uniq = len({r["re_seq"] for r in rows if r["re_seq"] != "NA"})
-    print(f"[plasmid] {args.peak_id}: {n_uniq} unique constructs "
-          f"({len(rows) // 4} driver)", file=sys.stderr)
-
-
-def _write(args, rows, panel):
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("w") as fh:
-        fh.write("\t".join(COLS) + "\n")
-        for r in rows:
-            fh.write("\t".join(str(r[c]) for c in COLS) + "\n")
-    if args.aligned_out is not None:
-        with args.aligned_out.open("w") as fh:
-            for name, anchor, label, seq in panel:
-                fh.write(f">{name} anchor_leaf={anchor} type=plasmid label={label}\n{seq}\n")
-
-
-if __name__ == "__main__":
-    main()

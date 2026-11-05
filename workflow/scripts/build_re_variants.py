@@ -20,15 +20,10 @@ carries). Plasmid helpers (``nearest_noncarrier_seq_id`` / ``n_other_diffs`` /
 ``clean_pair`` / ``minimal_edit``) name the cheapest single-variable validation
 contrast for each driver-carrying sequence.
 
-Usage:
-    build_re_variants.py --aligned aligned.fa --actuation peak.tsv \
-        --phylo-mm peak_phylo.tsv --out re_variants.tsv
+Library only: re_variants_all.py calls ``build`` for every peak.
 """
-import argparse
 import statistics
 from pathlib import Path
-
-import polars as pl
 
 # A driver set whose linked sites cover more than this fraction of the attributed
 # band is flagged `divergent`: one clade differing at that many positions is a
@@ -292,66 +287,3 @@ def _nearest_noncarrier(r, rows, lo, driver_cols, re_first_col):
         if frm != to:
             edits.append(f"RE{c - re_first_col + 1} {frm}->{to}")
     return o["seq_id"], other, other == 0, ";".join(edits)
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--aligned", required=True)
-    ap.add_argument("--actuation", required=True)
-    ap.add_argument("--phylo-mm", required=True)
-    ap.add_argument("--out", required=True)
-    args = ap.parse_args()
-
-    rows = build(args.aligned, args.actuation, args.phylo_mm)
-    df = pl.DataFrame(rows, schema={c: pl.Utf8 for c in COLUMNS}) if not rows \
-        else pl.DataFrame(rows).select(COLUMNS)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    df.write_csv(args.out, separator="\t")
-
-
-def _self_test() -> None:
-    """Synthetic check: driver_delta = sum of carried betas; clean_pair detects
-    a non-carrier differing only at the driver column."""
-    import tempfile, os
-    d = tempfile.mkdtemp()
-    # 3 seqs over a 5bp RE (cols 1..5). col 3 is the driver: carriers have 'T'.
-    aln = os.path.join(d, "a.fa")
-    with open(aln, "w") as f:
-        f.write(">s_carrier\nACTGA\n>s_clean\nACAGA\n>s_dirty\nACAGG\n")
-    actf = os.path.join(d, "a.tsv")
-    with open(actf, "w") as f:
-        f.write("sample\tactuation\tcoverage\n")
-        f.write("s_carrier\t0.1\t10\ns_clean\t0.9\t10\ns_dirty\t0.8\t10\n")
-    pm = os.path.join(d, "pm.tsv")
-    with open(pm, "w") as f:
-        f.write("# peak_id=chr1_100_105\n# attribution_mode=RE\n")
-        f.write("# re_first_col=1\n# re_last_col=5\n# flank=0\n")
-        f.write("# h2_re_mean=0.9\n# h2_re_lower=0.5\n# h2_re_upper=1\n")
-        f.write("# h2_region_mean=0.9\n# h2_region_lower=0.5\n# h2_region_upper=1\n")
-        f.write("# n_unique_seqs=3\n# n_variants_selected=1\n")
-        cols = ["branch_id", "n_below", "descendants", "mean_in", "mean_out",
-                "t_stat", "p_raw", "p_fdr", "is_split", "linked_sites",
-                "selected_by_lasso", "lasso_coef", "beta", "se", "ci_lower",
-                "ci_upper", "p"]
-        f.write("\t".join(cols) + "\n")
-        f.write("\t".join(["1", "1", "s_carrier", "0.1", "0.85", "-5", "0.01",
-                           "0.01", "TRUE", "3", "TRUE", "NA", "-0.5", "0.1",
-                           "-0.7", "-0.3", "0.01"]) + "\n")
-    rows = {r["seq_id"]: r for r in build(aln, actf, pm)}
-    carrier = next(r for r in rows.values() if r["has_driver"])
-    assert abs(carrier["driver_delta"] - (-0.5)) < 1e-9, carrier["driver_delta"]
-    assert carrier["clean_pair"] is True, carrier
-    assert carrier["minimal_edit"] == "RE3 A->T", carrier["minimal_edit"]
-    assert carrier["n_other_diffs"] == 0
-    assert carrier["driver_positions"] == "RE3"
-    assert carrier["driver_divergent"] == "TRUE"   # 1 linked site / 5 bp band > 5%
-    assert not is_divergent(5, 200) and is_divergent(11, 200)
-    print("self-test OK")
-
-
-if __name__ == "__main__":
-    import sys
-    if "--self-test" in sys.argv:
-        _self_test()
-    else:
-        main()

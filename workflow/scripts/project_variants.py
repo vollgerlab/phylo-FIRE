@@ -16,7 +16,6 @@ into a position.
 Emits one row per variable site (schema `_COLS`) plus a list of unlifted-driver
 rows (schema `_UNLIFTED_COLS`).
 """
-import argparse
 import re
 import subprocess
 import sys
@@ -78,7 +77,7 @@ def read_fasta_str(text: str) -> dict[str, str]:
 
 
 def parse_agc_fasta(text: str) -> str:
-    return "".join(l.strip() for l in text.splitlines() if l and not l.startswith(">"))
+    return "".join(ln.strip() for ln in text.splitlines() if ln and not ln.startswith(">"))
 
 
 def pull_agc(agc: str, contig: str, start0: int, end0: int, retries: int = 4) -> str | None:
@@ -445,91 +444,3 @@ def _header() -> str:
 
 def _unlifted_header() -> str:
     return "\t".join(_UNLIFTED_COLS) + "\n"
-
-
-def _lookup_coords(table: Path, peak_id: str) -> dict | None:
-    lines = Path(table).read_text().splitlines()
-    if not lines:
-        return None
-    hdr = lines[0].split("\t")
-    for ln in lines[1:]:
-        f = ln.split("\t")
-        if f and f[0] == peak_id:
-            return dict(zip(hdr, f))
-    return None
-
-
-def _load_asm(tsv: Path) -> dict[str, dict]:
-    out = {}
-    lines = Path(tsv).read_text().splitlines()
-    if not lines:
-        return out
-    idx = {h: i for i, h in enumerate(lines[0].split("\t"))}
-    for ln in lines[1:]:
-        f = ln.split("\t")
-        if len(f) <= max(idx.get("asm_end", 0), idx.get("sample", 0)):
-            continue
-        out[f[idx["sample"]]] = {
-            "chr": f[idx["asm_chr"]], "start": f[idx["asm_start"]], "end": f[idx["asm_end"]],
-        }
-    return out
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--aligned", required=True, type=Path, help="aligned/{peak}.fa (flanked MSA)")
-    ap.add_argument("--fa", required=True, type=Path, help="fastas/{peak}.fa (RE-only, for asm offset)")
-    ap.add_argument("--tsv", required=True, type=Path, help="fastas/{peak}.tsv (asm coords)")
-    ap.add_argument("--phylo-mm", type=Path, default=None, help="phylo_mm/{peak}.tsv")
-    ap.add_argument("--peak-id", required=True)
-    ap.add_argument("--coords-table", type=Path, default=None)
-    ap.add_argument("--cons-chr")
-    ap.add_argument("--cons-start", type=int, help="0-based (BED)")
-    ap.add_argument("--cons-end", type=int)
-    ap.add_argument("--hg38-chr", default="NA")
-    ap.add_argument("--hg38-start", default="NA")
-    ap.add_argument("--hg38-end", default="NA")
-    ap.add_argument("--agc", required=True)
-    ap.add_argument("--flank", type=int, default=0)
-    ap.add_argument("--threads", type=int, default=2)
-    ap.add_argument("--min-carriers", type=int, default=2)
-    ap.add_argument("--pad", type=int, default=25)
-    ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--out-unlifted", type=Path, default=None)
-    args = ap.parse_args()
-
-    if args.coords_table:
-        row = _lookup_coords(args.coords_table, args.peak_id)
-        if row is None:
-            sys.exit(f"project_variants: {args.peak_id} not in {args.coords_table}")
-        args.cons_chr, args.cons_start, args.cons_end = row["cons_chr"], int(row["cons_start"]), int(row["cons_end"])
-        if str(row.get("exists_in_hg38", "")).upper() in ("TRUE", "1"):
-            args.hg38_chr, args.hg38_start, args.hg38_end = row["hg38_chr"], row["hg38_start"], row["hg38_end"]
-    if args.cons_chr is None or args.cons_start is None or args.cons_end is None:
-        sys.exit("project_variants: need --coords-table or --cons-chr/--cons-start/--cons-end")
-
-    aln_haps = read_fasta(args.aligned)
-    re_seqs = read_fasta(args.fa)
-    asm = _load_asm(args.tsv)
-    rows, unlifted = project_peak(
-        args.peak_id, aln_haps, re_seqs, asm, args.phylo_mm,
-        args.cons_chr, args.cons_start, args.cons_end,
-        args.hg38_chr, args.hg38_start, args.hg38_end,
-        args.agc, args.flank, args.threads, args.pad, args.min_carriers,
-    )
-    with args.out.open("w") as fh:
-        fh.write(_header())
-        for r in rows:
-            fh.write("\t".join(str(r[c]) for c in _COLS) + "\n")
-    if args.out_unlifted:
-        with args.out_unlifted.open("w") as fh:
-            fh.write(_unlifted_header())
-            for r in unlifted:
-                fh.write("\t".join(str(r[c]) for c in _UNLIFTED_COLS) + "\n")
-    print(f"[project_variants] {args.peak_id}: {len(rows)} sites "
-          f"({sum(r['is_driver']=='TRUE' for r in rows)} driver rows, "
-          f"{len(unlifted)} indel-only drivers unlifted)", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()

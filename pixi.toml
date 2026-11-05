@@ -163,6 +163,8 @@ test-paralog-all-haps = { cmd = [
     "10",
 ] }
 fmt = "snakefmt workflow/"
+# Unit tests for the Python scripts (fast; AGC-backed tests skip without the archive).
+unit = "pytest workflow/scripts/tests -q"
 # One-time bulk fetch of HPRC R2 PCLAI BEDs (CHM13 + asm coord spaces)
 # merged into resources/pclai/hprc_r2.bed.gz, bgzipped + tabixed.
 setup-pclai = "bash workflow/scripts/build_pclai_bed.sh"
@@ -271,6 +273,7 @@ r-base = ">=4.5,<4.6"
 r-ape = ">=5.8,<5.9"
 r-mcmcglmm = ">=2.36,<2.37"
 agc = ">=3.2.3,<3.3"
+pytest = ">=9.0,<9.1"
 
 # Headless-Chromium runtime shared libraries for Kaleido v1 (the `plot` rule's
 # PDF export via `fig.write_image`). Kaleido downloads its own Chromium but NOT

@@ -30,6 +30,7 @@ directory and discarded; only the `.treefile` is kept.
 pixi install              # set up the environment
 pixi run dry-run          # preview the DAG (no execution)
 pixi run test             # clean build + run on 10 test peaks
+pixi run unit             # pytest unit tests for workflow/scripts
 ```
 
 ## Running on the full dataset

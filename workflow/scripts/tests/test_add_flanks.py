@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Self-checks for add_flanks contig mapping. Run: python test_add_flanks.py"""
+"""Tests for add_flanks contig mapping."""
 from add_flanks import agc_contig
 
 
@@ -24,12 +23,3 @@ def test_highlight_tagged_name():
 
 def test_unknown_nonpansn_is_none():
     assert agc_contig("X_1", "weird_contig_name") is None
-
-
-if __name__ == "__main__":
-    test_pansn_passthrough()
-    test_hg002_maternal_is_hap2()
-    test_hg002_paternal_is_hap1()
-    test_highlight_tagged_name()
-    test_unknown_nonpansn_is_none()
-    print("ok")

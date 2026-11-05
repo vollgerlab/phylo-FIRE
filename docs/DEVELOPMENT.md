@@ -17,6 +17,7 @@ pixi run hap-selective-5           # 5 hap-selective peaks pulled from hyak via 
 pixi run dry-run                   # DAG preview
 pixi run replot                    # force re-run of Stage-2 plot_all on the test run
 pixi run fmt                       # snakefmt workflow/
+pixi run unit                      # pytest workflow/scripts/tests (AGC tests skip without the archive)
 
 # Cluster (CHPC) production run — TWO stages (see "Two-stage split" below):
 pixi run hsca-hapsel          # Stage 1: per-peak trees + phylo_mm (expensive)
@@ -431,6 +432,7 @@ workflow/
         extract_fastas.py         one-pass FASTA + TSV extraction
         phylo_mm.R                MCMCglmm H²ₚ + LASSO branch selection + selectiveInference
         plot_tree_actuation_html.py  interactive HTML + PDF tree/MSA/actuation plot
+        tests/                    pytest unit tests (`pixi run unit`); conftest puts scripts/ on sys.path
 resources/
     pclai/                        gitignored: built by `pixi run setup-pclai`
         hprc_r2_chm13.bed.gz      merged HPRC R2 PCLAI chm13-coord BED (~126 MB, 11.7M rows)

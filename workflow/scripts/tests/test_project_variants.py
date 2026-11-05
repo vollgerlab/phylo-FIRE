@@ -1,9 +1,11 @@
-#!/usr/bin/env python3
-"""Self-checks for project_variants' column bridge + driver flagging.
-
-    python workflow/scripts/test_project_variants.py
-"""
-from project_variants import _col_bridge, _col_carriers, _driver_cols, cons_agc_contig
+"""Tests for project_variants' column bridge + driver flagging."""
+from project_variants import (
+    _col_bridge,
+    _col_carriers,
+    _driver_cols,
+    cons_agc_contig,
+    project_peak,
+)
 
 
 def test_cons_agc_contig():
@@ -60,24 +62,18 @@ def test_indel_only_driver_is_unmatched():
     assert len(unmatched) == 1, unmatched
 
 
-def test_driver_allele_is_clade_not_minor():
+def test_driver_allele_is_clade_not_minor(tmp_path):
     # A biallelic driver whose clade carries the MAJORITY allele (G, 3 haps) while
     # the count-minor allele is C (2 haps). major/minor must stay FREQUENCY labels
     # (major=G, minor=C); driver_allele must be the clade's allele (G), and
     # carriers must be the clade -- so beta and carriers describe the same haps.
-    from project_variants import project_peak
-    import tempfile, os
     aln = {"h1": "G", "h2": "G", "h3": "G", "h4": "C", "h5": "C"}
-    fd, pm = tempfile.mkstemp(suffix=".tsv")
-    with os.fdopen(fd, "w") as fh:
-        fh.write("# attribution_mode=RE\n# re_first_col=1\n# re_last_col=1\n")
-        fh.write("is_split\tdescendants\tbeta\tlinked_sites\n")
-        fh.write("TRUE\th1,h2,h3\t0.4\t1\n")
-    try:
-        rows, _ = project_peak("pk", aln, {}, {}, pm, "chrX", 100, 101,
-                               agc="", flank=0, min_carriers=1)
-    finally:
-        os.unlink(pm)
+    pm = tmp_path / "pm.tsv"
+    pm.write_text("# attribution_mode=RE\n# re_first_col=1\n# re_last_col=1\n"
+                  "is_split\tdescendants\tbeta\tlinked_sites\n"
+                  "TRUE\th1,h2,h3\t0.4\t1\n")
+    rows, _ = project_peak("pk", aln, {}, {}, str(pm), "chrX", 100, 101,
+                           agc="", flank=0, min_carriers=1)
     drv = [r for r in rows if r["is_driver"] == "TRUE"]
     assert len(drv) == 1, rows
     r = drv[0]
@@ -105,14 +101,3 @@ def test_asm_coords_reversed_hap():
     assert _asm_hits({"f", "r"}, asm, lf, off, 11, rev) == "f=c:1010;r=c:1000"
     # Without the orientation, the reversed RE is not found -> no coordinate.
     assert _left_flank(aln["r"], re_seq) is None
-
-
-if __name__ == "__main__":
-    test_cons_agc_contig()
-    test_col_bridge()
-    test_col_carriers_exact_tie()
-    test_driver_flag_by_linked_site()
-    test_indel_only_driver_is_unmatched()
-    test_driver_allele_is_clade_not_minor()
-    test_asm_coords_reversed_hap()
-    print("project_variants self-checks passed")

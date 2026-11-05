@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Self-checks for encode_indels simple-coding logic. Run: python test_encode_indels.py"""
+"""Tests for encode_indels simple-coding logic."""
 from encode_indels import simple_indel_code
 
 
@@ -35,11 +34,3 @@ def test_outside_span_is_missing():
     _, codes = simple_indel_code(seqs)
     assert codes["t3"] == "?", codes
     assert codes["t4"] == "0", codes
-
-
-if __name__ == "__main__":
-    test_internal_gap_coded()
-    test_terminal_gap_not_coded()
-    test_invariant_column_dropped()
-    test_outside_span_is_missing()
-    print("ok")

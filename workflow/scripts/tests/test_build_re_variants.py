@@ -1,8 +1,4 @@
-#!/usr/bin/env python3
-"""Self-checks for build_re_variants (driver_delta, clean_pair, divergence).
-
-    python workflow/scripts/test_build_re_variants.py
-"""
+"""Tests for build_re_variants (driver_delta, clean_pair, divergence)."""
 import tempfile
 from pathlib import Path
 
@@ -50,9 +46,3 @@ def test_driver_delta_and_clean_pair():
 def test_is_divergent():
     assert not is_divergent(5, 200)
     assert is_divergent(11, 200)
-
-
-if __name__ == "__main__":
-    test_driver_delta_and_clean_pair()
-    test_is_divergent()
-    print("build_re_variants self-checks passed")

@@ -14,6 +14,8 @@ test = { cmd = [
     "run_name=test",
     "peak_ids=config/test_peak_ids.txt",
     "input_table=resources/test/test-union-peaks.bed.gz",
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "10",
 ] }
@@ -47,7 +49,7 @@ replot = { cmd = [
 hap-selective-30 = { cmd = [
     "bash",
     "-c",
-    "snakemake --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 -j 10 && snakemake -s workflow/analysis.smk --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 plasmid=true --rerun-triggers mtime -j 10",
+    "snakemake --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 --rerun-triggers mtime -j 10 && snakemake -s workflow/analysis.smk --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 plasmid=true --rerun-triggers mtime -j 10",
 ] }
 # 12 Genetically-haplotype-specific peaks chosen to exercise the dual-H² gate +
 # multi-variant attribution: 6 with LOW within-cluster spread + high unique-seq
@@ -65,6 +67,8 @@ genetic-candidates = { cmd = [
     "peak_ids=config/genetic_candidates_peak_ids.txt",
     "input_table=resources/genetic-candidates/genetic-candidates.bed.gz",
     "min_seqs=1",
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "10",
 ] }
@@ -79,6 +83,8 @@ hap-selective-5 = { cmd = [
     "run_name=hap-selective-5",
     "peak_ids=config/hap_selective_5_peak_ids.txt",
     "input_table=resources/hap-selective-5/hap-selective-5.bed.gz",
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "10",
 ] }
@@ -95,6 +101,8 @@ hap-selective-5-samples = { cmd = [
     "input_table=resources/hap-selective-5/hap-selective-5-samples.bed.gz",
     "highlight_file=config/hap_selective_5_highlights.tsv",
     "min_seqs=2",
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "10",
 ] }
@@ -122,6 +130,8 @@ test-nested = { cmd = [
     "preextracted_dir=resources/test/preextracted_nested",
     "flank=0",
     "min_seqs=2",
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "10",
 ] }
@@ -132,6 +142,8 @@ test-paralog = { cmd = [
     "run_name=test-paralog",
     "preextracted_dir=resources/test/preextracted_pg_31",
     "flank=0",
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "10",
 ] }
@@ -145,6 +157,8 @@ test-paralog-all-haps = { cmd = [
     "run_name=test-paralog-all-haps",
     "preextracted_dir=resources/test/preextracted_pg_31_all_haps",
     "flank=0",
+    "--rerun-triggers",
+    "mtime",
     "-j",
     "10",
 ] }

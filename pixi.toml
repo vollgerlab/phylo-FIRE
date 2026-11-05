@@ -148,7 +148,7 @@ test-paralog-all-haps = { cmd = [
     "-j",
     "10",
 ] }
-fmt = "snakefmt workflow/Snakefile"
+fmt = "snakefmt workflow/"
 # One-time bulk fetch of HPRC R2 PCLAI BEDs (CHM13 + asm coord spaces)
 # merged into resources/pclai/hprc_r2.bed.gz, bgzipped + tabixed.
 setup-pclai = "bash workflow/scripts/build_pclai_bed.sh"

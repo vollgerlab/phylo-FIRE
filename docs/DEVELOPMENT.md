@@ -16,7 +16,7 @@ pixi run test-paralog              # NOTCH2NL paralog group via PARE-style preex
 pixi run hap-selective-5           # 5 hap-selective peaks pulled from hyak via tabix-over-ssh
 pixi run dry-run                   # DAG preview
 pixi run replot                    # force re-run of Stage-2 plot_all on the test run
-pixi run fmt                       # snakefmt workflow/Snakefile
+pixi run fmt                       # snakefmt workflow/
 
 # Cluster (CHPC) production run — TWO stages (see "Two-stage split" below):
 pixi run hsca-hapsel          # Stage 1: per-peak trees + phylo_mm (expensive)
@@ -418,12 +418,19 @@ config/
     config.yaml               pipeline settings
     test_peak_ids.txt         10 peak IDs for test runs
 workflow/
-    Snakefile                 main pipeline
+    Snakefile                 Stage 1 entry point: includes + rule all
+    analysis.smk              Stage 2 entry point (run with -s)
+    rules/
+        common.smk                config shared by both stages (RUN/RESULTS, flags, table paths)
+        stage1_common.smk         PEAK_IDS, input functions, wildcard constraints
+        extract.smk               extract_fastas
+        align.smk                 add_flanks, mafft
+        trees.smk                 encode_indels, iqtree, root_tree, re_* chain
+        phylo_mm.smk              phylo_mm, stage1_tables
     scripts/
         extract_fastas.py         one-pass FASTA + TSV extraction
         phylo_mm.R                MCMCglmm H²ₚ + LASSO branch selection + selectiveInference
         plot_tree_actuation_html.py  interactive HTML + PDF tree/MSA/actuation plot
-    rules/                    (reserved for future rule modules)
 resources/
     pclai/                        gitignored: built by `pixi run setup-pclai`
         hprc_r2_chm13.bed.gz      merged HPRC R2 PCLAI chm13-coord BED (~126 MB, 11.7M rows)

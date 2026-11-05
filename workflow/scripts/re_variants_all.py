@@ -47,39 +47,40 @@ def main() -> None:
 
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
     parts = load_parts(args.haplotypes)
-    tmp = Path(tempfile.mkdtemp(prefix="re_variants_all_"))
-    store = Stage1Store(args.tables_dir)
-    skipped: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="re_variants_all_") as tmpdir:
+        tmp = Path(tmpdir)
+        store = Stage1Store(args.tables_dir)
+        skipped: list[str] = []
 
-    def do_peak(peak: str) -> None:
-        aligned = store.aligned(peak)
-        pmm = store.phylo_mm(peak)
-        if aligned is None or pmm is None:
-            skipped.append(peak)
-            return
-        rows = build(str(aligned), peak_actuation(parts, peak), str(pmm))
-        df = (
-            pl.DataFrame(rows).select(COLUMNS)
-            if rows
-            else pl.DataFrame(schema={c: pl.Utf8 for c in COLUMNS})
+        def do_peak(peak: str) -> None:
+            aligned = store.aligned(peak)
+            pmm = store.phylo_mm(peak)
+            if aligned is None or pmm is None:
+                skipped.append(peak)
+                return
+            rows = build(str(aligned), peak_actuation(parts, peak), str(pmm))
+            df = (
+                pl.DataFrame(rows).select(COLUMNS)
+                if rows
+                else pl.DataFrame(schema={c: pl.Utf8 for c in COLUMNS})
+            )
+            df.write_csv(tmp / f"{peak}.tsv", separator="\t")
+
+        with ThreadPoolExecutor(max_workers=args.threads) as ex:
+            list(ex.map(do_peak, peaks))
+        if skipped:
+            print(f"[re_variants_all] {len(skipped)} peaks missing aligned/phylo_mm "
+                  f"(skipped): {', '.join(skipped[:10])}", file=sys.stderr)
+
+        args.out_parquet.parent.mkdir(parents=True, exist_ok=True)
+        agg = Path(__file__).resolve().parent / "aggregate_re_variants.py"
+        subprocess.run(
+            ["python", str(agg), "--indir", str(tmp), "--peaks", str(args.peaks),
+             "--out-parquet", str(args.out_parquet), "--out-tsv", str(args.out_tsv),
+             "--manifest-dir", str(args.manifest_dir),
+             "--random-n", str(args.random_n), "--seed", str(args.seed)],
+            check=True,
         )
-        df.write_csv(tmp / f"{peak}.tsv", separator="\t")
-
-    with ThreadPoolExecutor(max_workers=args.threads) as ex:
-        list(ex.map(do_peak, peaks))
-    if skipped:
-        print(f"[re_variants_all] {len(skipped)} peaks missing aligned/phylo_mm "
-              f"(skipped): {', '.join(skipped[:10])}", file=sys.stderr)
-
-    args.out_parquet.parent.mkdir(parents=True, exist_ok=True)
-    agg = Path(__file__).resolve().parent / "aggregate_re_variants.py"
-    subprocess.run(
-        ["python", str(agg), "--indir", str(tmp), "--peaks", str(args.peaks),
-         "--out-parquet", str(args.out_parquet), "--out-tsv", str(args.out_tsv),
-         "--manifest-dir", str(args.manifest_dir),
-         "--random-n", str(args.random_n), "--seed", str(args.seed)],
-        check=True,
-    )
     print(f"[re_variants_all] done -> {args.out_parquet}", file=sys.stderr)
 
 

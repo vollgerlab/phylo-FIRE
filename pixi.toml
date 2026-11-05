@@ -34,31 +34,16 @@ replot = { cmd = [
     "-j",
     "10",
 ] }
-# The primary hap-selective test case: 30 peaks (subsumes the old
-# hap-selective-20 — the 30 ⊇ those 20). 20 span the haplotype_distinct
-# categories (10 epigenetically-selective, 6 Haplotype-selective, 2 mixed,
-# 2 Genetically-haplotype-specific) + 10 Genetically-haplotype-specific chosen
-# for HIGH sequence diversity (47, 22, 20, 19, 17, 11, 9, 8, 5, 3 unique RE
-# seqs) → likely MULTI-variant drivers, to exercise forward-selection
-# attribution. min_seqs=1: pure-epigenetic peaks are monomorphic at the RE
-# (1 unique seq; the +500 bp flanks still resolve the tree, 0 RE branches).
-# From the HSCA table (`pixi run setup-hsca`); see config/hap_selective_30_peak_ids.txt.
-# Two-stage local smoke: Stage 1 (Snakefile: trees + phylo_mm + haplotypes.parquet)
-# then Stage 2 (analysis.smk: re_variants + hg38 + plasmid + plots). plasmid=true
-# emits the construct panel. Same run_name/config across both stages.
+# Main local smoke test and the only one that runs both stages. 20 peaks span the
+# haplotype_distinct classes, 10 have many unique RE seqs (multi-driver attribution).
+# min_seqs=1 keeps monomorphic (epigenetic) peaks.
 hap-selective-30 = { cmd = [
     "bash",
     "-c",
     "snakemake --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 --rerun-triggers mtime -j 10 && snakemake -s workflow/analysis.smk --notemp --config run_name=hap-selective-30 peak_ids=config/hap_selective_30_peak_ids.txt input_table=resources/hap-selective-30/hap-selective-30.bed.gz min_seqs=1 plasmid=true --rerun-triggers mtime -j 10",
 ] }
-# 12 Genetically-haplotype-specific peaks chosen to exercise the dual-H² gate +
-# multi-variant attribution: 6 with LOW within-cluster spread + high unique-seq
-# count (identified RE-H² → driver-attributed; 3 come out 2-driver, e.g.
-# chr14_100272296 — two SAME-SIGN repressive blocks d8/d4 that co-occur in 4
-# haps, NOT functional nesting; d4's carriers ⊂ d8's only by co-occurrence) and
-# 6 with HIGH within-cluster RE spread (RE-H² fails → mode none — actuation not
-# sequence-driven). Screened from the HSCA table by within-cluster spread.
-# (No genuine nested case — opposite-sign inner-reverses-outer — in this set.)
+# 12 Genetically-haplotype-specific peaks: 6 low-spread (drivers attributed) and
+# 6 high-spread (RE-H2 gate fails, mode none). Stage 1 only, like the tasks below.
 genetic-candidates = { cmd = [
     "snakemake",
     "--notemp",
@@ -72,10 +57,7 @@ genetic-candidates = { cmd = [
     "-j",
     "10",
 ] }
-# 5 haplotype-selective peaks pulled from hyak's union-peaks-chm13.bed.gz via
-# tabix region query (see resources/hap-selective-5/README.md). 5 peaks x ~90
-# sample-haps = 450 rows. Source TSV:
-#   /mmfs1/gscratch/stergachislab/HPRC/mrv-figures/Tables/example-hap-selective-peaks-sample.tsv
+# 5 haplotype-selective peaks, tabix-pulled from the chm13-coord union BED.
 hap-selective-5 = { cmd = [
     "snakemake",
     "--notemp",
@@ -88,10 +70,7 @@ hap-selective-5 = { cmd = [
     "-j",
     "10",
 ] }
-# Same 5 peaks, restricted per-peak to rows whose haplotype_distinct
-# classification is exactly "Haplotype-selective". Each peak's set of
-# qualifying individuals contributes both haps → 10 leaves per peak
-# (chr21 has 12 because 6 individuals are hap-selective at that locus).
+# Same 5 peaks, only individuals classed exactly Haplotype-selective (~10 leaves).
 hap-selective-5-samples = { cmd = [
     "snakemake",
     "--notemp",
@@ -106,22 +85,8 @@ hap-selective-5-samples = { cmd = [
     "-j",
     "10",
 ] }
-# Per-paralog-group MSA test using a fixture pre-extracted by PARE's
-# `extract_paralog_msas` rule. Exercises the `preextracted_dir` ingestion path.
-# pg_31 = canonical chr1 NOTCH2NL promoter family: NOTCH2 (1p11) +
-# NOTCH2NLA / NOTCH2NLB / NOTCH2NLC promoters (1q21) + NBPF26. 5 consensus
-# peaks (the 4 NOTCH2/NL promoters plus NBPF26, which the current PARE run
-# detects as a paralog edge); small fixture has 6 haps from 3 individuals
-# (HG01123, HG01891, HG02486) -> 24 sequences (NBPF26 coverage is sparse).
-# Build artifacts: results/{trees,plots}/pg_31.{treefile,html,pdf}.
-# Renamed from pg_64 in 2026-05; group ID shifted because the chr1 SD belt
-# rerun added NBPF26 as a 5th member, and union-find IDs aren't stable
-# across PARE runs.
-# Fabricated GENUINE nested-driver case (no real peak has one): a real
-# repressive driver (X=RE55, β≈-0.50) with a synthetic reversing variant
-# (Z=RE1, β≈+0.31, OPPOSITE sign) injected into a 15-hap SUBSET of X's 35
-# carriers. Exercises opposite-sign nested attribution + the violin/shape plot.
-# Built by workflow/scripts/tools/make_nested_fixture.py from chr1_157664372.
+# Synthetic nested driver (no real peak has one): an opposite-sign variant in a
+# subset of a real driver's carriers. Built by scripts/tools/make_nested_fixture.py.
 test-nested = { cmd = [
     "snakemake",
     "--notemp",
@@ -135,6 +100,8 @@ test-nested = { cmd = [
     "-j",
     "10",
 ] }
+# PARE preextracted_dir fixture pg_31: the NOTCH2/NOTCH2NLA-C promoters plus NBPF26,
+# 6 haps -> 24 seqs. PARE group ids change between runs (pg_9 -> pg_64 -> pg_31).
 test-paralog = { cmd = [
     "snakemake",
     "--notemp",
@@ -147,9 +114,7 @@ test-paralog = { cmd = [
     "-j",
     "10",
 ] }
-# All-haps version of the pg_31 fixture: same 5 paralog peaks but pulled
-# from the full HPRCv2 union BED (45 individuals -> 78 primary haps after
-# filtering to is_primary_sample). 319 sequences vs 24 in the small fixture.
+# Same 5 paralog peaks with all 78 primary haps (319 seqs).
 test-paralog-all-haps = { cmd = [
     "snakemake",
     "--notemp",
@@ -163,27 +128,17 @@ test-paralog-all-haps = { cmd = [
     "10",
 ] }
 fmt = "snakefmt workflow/"
-# Unit tests for the Python scripts (fast; AGC-backed tests skip without the archive).
+# Unit tests for the Python scripts (AGC-backed tests skip without the archive).
 unit = "pytest workflow/scripts/tests -q"
-# One-time bulk fetch of HPRC R2 PCLAI BEDs (CHM13 + asm coord spaces)
-# merged into resources/pclai/hprc_r2.bed.gz, bgzipped + tabixed.
+# One-time: HPRC R2 PCLAI BEDs -> resources/pclai/hprc_r2.bed.gz (+ .tbi).
 setup-pclai = "bash workflow/scripts/build_pclai_bed.sh"
-# One-time: carve all HSCA peaks (any haplotype-selective class) out of the full
-# union BED into resources/hsca/ (hsca-peaks.bed.gz + hsca-index.tsv), a
-# reference table for minting new test cases quickly. Not run wholesale.
+# One-time: carve every HSCA peak out of the union BED into resources/hsca/.
 setup-hsca = "bash workflow/scripts/build_hsca_table.sh"
-# Derive the production peak-id list (config/hsca_peak_ids.txt, ~180.7K ids)
-# from the HSCA index. Pinned by config/cluster.yaml. Run after setup-hsca.
+# config/hsca_peak_ids.txt (~180.7K ids, used by config/cluster.yaml). Needs setup-hsca.
 hsca-peak-ids = "bash -c 'tail -n +2 resources/hsca/hsca-index.tsv | cut -f6 > config/hsca_peak_ids.txt && echo wrote $(wc -l < config/hsca_peak_ids.txt) peak ids'"
-# Scope a run to ONE HSCA class. Haplotype-selective = the het-SNV class
-# (~23K peaks). Build the id list first (needs resources/hsca/ from setup-hsca),
-# then run. Dry-run with `pixi run hsca-hapsel -n`, drop -n for real. Outputs
-# under results/hsca_hapsel/. Runs LOCALLY on the fat node (no --profile / SLURM)
-# at -j 400 — the per-rule thread caps (OMP/OPENBLAS/POLARS_MAX_THREADS) keep
-# each job to its declared threads so 700 cores aren't oversubscribed. (For
-# memory safety at high -j add `--resources mem_mb=<node_RAM>`; for SLURM submit
-# instead, append `--profile profiles/slurm`.) hsca_class_ids.sh works for any
-# class — copy this pair and swap the class + run_name to add others.
+# One HSCA class (Haplotype-selective, ~23K peaks), run locally on the fat node.
+# Rules cap OMP/OPENBLAS/POLARS threads to their declared threads, so a high -j
+# does not oversubscribe cores. Append `--profile profiles/slurm` to submit instead.
 hsca-hapsel-ids = "bash workflow/scripts/hsca_class_ids.sh 'Haplotype-selective' config/hsca_hapsel_peak_ids.txt"
 hsca-hapsel = { cmd = [
     "snakemake",
@@ -192,16 +147,13 @@ hsca-hapsel = { cmd = [
     "--config",
     "run_name=hsca_hapsel",
     "peak_ids=config/hsca_hapsel_peak_ids.txt",
-    # mtime-only reruns: a resume (or an unrelated code edit) must NOT recompute
-    # the trees already on disk — only build what is missing or has newer inputs.
+    # mtime only: a resume or code edit must not recompute trees already on disk.
     "--rerun-triggers",
     "mtime",
     "-j",
     "250",
 ] }
-# Combine hsca_hapsel's per-peak aligned/ trees/ phylo_mm/ into tables/
-# {alignments,trees,phylo_mm}.parquet in one pass (no DAG; ~3 min), so Stage 2 can
-# run from tables/ alone, e.g. locally after downloading ~40 MB.
+# Rebuild tables/{alignments,trees,phylo_mm}.parquet outside the DAG (~3 min).
 hsca-hapsel-tables = { cmd = [
     "python",
     "workflow/scripts/stage1_tables.py",
@@ -212,14 +164,8 @@ hsca-hapsel-tables = { cmd = [
     "--threads",
     "32",
 ] }
-# ── Stage 2: analysis on the persisted Stage-1 outputs (workflow/analysis.smk) ──
-# The tasks above run STAGE 1 (per-peak trees + phylo_mm). Stage 2 is a separate,
-# ~6-node single-pass DAG (re_variants → aggregate → hg38 projection + rs-IDs →
-# plasmid → plots) that reads only results/<run>/{aligned,trees,phylo_mm} +
-# tables/haplotypes.parquet + the AGC, so it reruns in minutes with NO tree
-# recompute and can even run locally after downloading those. Add
-# `--config dbsnp=<dbsnp.vcf.gz>` to also annotate rs IDs. Same run_name as the
-# matching Stage-1 task; outputs land in the same results/<run>/... paths.
+# Stage 2 (workflow/analysis.smk) reads only results/<run>/tables/, so it never
+# recomputes a tree. Use the Stage-1 run_name; add dbsnp=<vcf.gz> for rs IDs.
 hsca-hapsel-stage2 = { cmd = [
     "snakemake",
     "-s",
@@ -250,8 +196,7 @@ hsca-stage2 = { cmd = [
     "400",
 ] }
 
-# Versions pinned to major.minor (patch floats) for reproducibility; bump
-# deliberately. Mirrors the exact versions in pixi.lock at time of writing.
+# Pinned to major.minor; pixi.lock holds the exact builds.
 [dependencies]
 python = ">=3.13,<3.14"
 snakemake = ">=9.27,<9.28"
@@ -264,26 +209,18 @@ biopython = ">=1.87,<1.88"
 polars = ">=1.42,<1.43"
 matplotlib = ">=3.10,<3.11"
 plotly = ">=6.6,<6.7"
-# python-kaleido is pinned PER PLATFORM (see [target.*.dependencies] below):
-# 0.2.x on the linux cluster (v1's choreographer/Chromium can't render there —
-# plotly/Kaleido#421, choreographer#287), v1 on macOS (0.2.x has no arm build).
+# python-kaleido is per platform: 0.2.x on linux, because v1's Chromium cannot
+# render on the cluster (plotly/Kaleido#421), and v1 on macOS (no 0.2.x arm build).
 pysam = ">=0.24,<0.25"
-# R: phylogenetic mixed model (MCMCglmm) + ape.
 r-base = ">=4.5,<4.6"
 r-ape = ">=5.8,<5.9"
 r-mcmcglmm = ">=2.36,<2.37"
 agc = ">=3.2.3,<3.3"
 pytest = ">=9.0,<9.1"
 
-# Headless-Chromium runtime shared libraries for Kaleido v1 (the `plot` rule's
-# PDF export via `fig.write_image`). Kaleido downloads its own Chromium but NOT
-# these libs, so on a slim cluster OS it dies with BrowserDepsError (libnss3,
-# libgbm1, libcups2, …). conda-forge provides them — no apt/sudo. linux-64 only:
-# these are the cluster's missing libs; macOS renders through system frameworks.
-# Versions float (transitive OS shims); pixi.lock pins the resolved builds.
+# Shared libs headless Chromium needs for PDF export (libnss3, libgbm, ...). The
+# cluster OS lacks them and conda-forge supplies them without sudo.
 [target.linux-64.dependencies]
-# Kaleido 0.2.x (self-contained Chromium, no choreographer) for reliable PDF
-# export on the cluster; v1 fails there (see note in [dependencies]).
 python-kaleido = ">=0.2,<0.3"
 nss = "*"
 nspr = "*"
@@ -311,6 +248,4 @@ xorg-libxi = "*"
 xorg-libxscrnsaver = "*"
 
 [target.osx-arm64.dependencies]
-# Kaleido v1 on macOS (0.2.x has no osx-arm64 build); local dev renders fine
-# through macOS system frameworks.
 python-kaleido = ">=1.2,<1.3"

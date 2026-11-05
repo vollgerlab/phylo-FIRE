@@ -1,29 +1,14 @@
-# Cluster (CHPC Redwood) production paths. Overrides config/config.yaml.
-# Usage:
-#   pixi run hsca-peak-ids        # one-time: build config/hsca_peak_ids.txt
-#   pixi run -- snakemake --configfile config/cluster.yaml \
-#       --profile profiles/slurm -j <N>
-#
-# The union BED here is asm-coord-sorted; the extract_fastas rule sorts it
-# by consensus_peak_id, and columns are resolved by header name, so it ingests
-# directly. The AGC supplies flank sequence (flank/min_coverage etc. inherited
-# from config/config.yaml).
+# CHPC Redwood paths for the 180K HSCA run, layered over config/config.yaml.
+# Stage 1: pixi run -- snakemake --configfile config/cluster.yaml \
+#            --rerun-triggers mtime --profile profiles/slurm -j <N>
+# Stage 2: pixi run hsca-stage2. pixi tasks (e.g. hsca-hapsel) override run_name/peak_ids.
 input_table: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/fiber-seq-pilot/union-peaks-asm.bed.gz"
 agc: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_0.6.1.agc"
 
-# Pin the production peak set to the 180,684 HSCA peaks — without this,
-# peak_ids=null would target EVERY peak in the full union BED. Regenerate the
-# list with `pixi run hsca-peak-ids` (needs resources/hsca/, from `pixi run
-# setup-hsca`). Outputs land under results/hsca/ + temp/hsca/; override run_name
-# on the CLI for a different namespace (e.g. a staging slice).
+# The 180,684 HSCA peaks; without this, peak_ids=null targets every peak in the
+# union BED. Regenerate: pixi run hsca-peak-ids (needs pixi run setup-hsca).
 peak_ids: "config/hsca_peak_ids.txt"
 run_name: "hsca"
 
-# Build the plasmid fiber-seq construct panel (results/<run>/plasmid_fiberseq/)
-# by default for every cluster run. Cheap: it reads each driver peak's already-
-# produced alignment + phylo_mm. NOTE: only turns on cleanly for a FRESH run,
-# where the alignment is still on disk when plasmid_constructs consumes it. To
-# add the panel to an ALREADY-FINISHED run (temp alignments cleaned), don't flip
-# this and resume — that rebuilds MSAs; run workflow/scripts/build_plasmid_table.py
-# directly instead (single pass, no DAG, no re-alignment).
+# Stage 2 (plasmid_all) builds the plasmid construct panel from the Stage-1 tables.
 plasmid: true

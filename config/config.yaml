@@ -1,79 +1,50 @@
-# Input table: bgzipped union-peaks BED. Columns are resolved by header name,
-# and the extract_fastas rule sorts by consensus_peak_id, so the
-# asm-coord-sorted production BED works directly. This default points at the
-# local copy; `config/cluster.yaml` overrides it (+ agc) for CHPC runs.
+# Bgzipped union-peaks BED (columns resolved by header name; extract_fastas sorts
+# by peak). config/cluster.yaml overrides this and agc for CHPC runs.
 input_table: "resources/union-peaks-asm.bed.gz"
 
-# Optional: bypass the bgzip|extract_fastas step entirely and pull
-# {peak_id}.fa / {peak_id}.tsv pairs from a pre-extracted directory
-# (e.g. PARE's `paralog_msas/` output). When set, `input_table` is ignored.
+# Optional: link {peak_id}.fa/.tsv pairs from a pre-extracted dir (e.g. PARE's
+# paralog_msas/) instead of reading input_table.
 preextracted_dir: null
 
-# Filter criteria for which peaks to process
-# Set peak_ids to a file of consensus_peak_ids (one per line) to process specific peaks
-# Or set haplotype_distinct to filter by class (e.g., "Haplotype-selective")
+# Peak selection: a file of consensus_peak_ids (one per line), and/or a
+# haplotype_distinct class filter (requires peak_ids on a fresh run).
 peak_ids: null
 haplotype_distinct: null
 
 # Only use primary samples
 primary_only: true
 
-# Minimum number of unique sequences for a peak to be kept. Default 1: the
-# deliverable is EVERY unique RE sequence, including monomorphic
-# (epigenetically-haplotype-selective) peaks — one clonable sequence with an
-# actuation spread and no driver. Those peaks still resolve a tree via the
-# +flank sequence. Keeping min_seqs=1 also means extract drops a peak only if it
-# has zero non-NA primary sequences, so the per-peak FASTA outputs the pipeline
-# declares are never silently missing. Raise to 2 only to intentionally exclude
-# monomorphic peaks.
+# Drop peaks with fewer unique RE sequences. 1 keeps monomorphic (epigenetic)
+# peaks, which are part of the deliverable, and means extract drops a peak only
+# if it has zero non-NA sequences, so declared per-peak outputs never go missing.
 min_seqs: 1
 
-# Minimum per-leaf coverage (fibers) for a leaf to enter the per-branch
-# clade-vs-rest actuation test in phylo_mm.R. Leaves are also coverage-weighted
-# (WLS) within the test. Does NOT affect the H2_p model (it downweights low
-# coverage via mev instead). Set to 0 to disable the floor.
+# Leaves with fewer fibers are dropped from phylo_mm's attribution WLS (H2_p
+# handles low coverage via mev instead). 0 disables the floor.
 min_coverage: 4
 
-# Flanking sequence (bp) added each side of the peak, pulled from the AGC
-# archive below. 0 = use the BED `seq` column directly (no AGC, RE only).
-# Default 250 (~500 bp of context around the RE) gives the per-peak tree enough
-# variable sites to resolve and cuts H2_p prior-dependence, while keeping the RE
-# the bulk of the alignment; the RE sub-span is bracketed in the plot. Only
-# applies to the union-BED extraction path (preextracted_dir / PARE controls
-# its own flanks).
+# bp of AGC context added each side of the RE (0 = RE only, no AGC). Resolves
+# the tree and cuts H2_p prior-dependence; ignored for preextracted_dir.
 flank: 250
 agc: "resources/HPRC_r2_assemblies_0.6.1.agc"
 
-# Project every variable site back to CHM13 + hg38 (+ each carrier's assembly)
-# and emit the reference VCF/BEDs for GWAS-enrichment. ON by default; needs the
-# AGC above (with GRCh38 + CHM13) and a union BED carrying hg38 coords. Auto-
-# skipped for preextracted (PARE) runs and when the AGC file is absent. Set false
-# to turn off. See results/{run}/tables/variants.hg38.vcf.gz.
+# Stage 2: project variable sites to CHM13 + hg38 and write the VCF/BEDs. Needs
+# the AGC (with GRCh38 + CHM13); skipped for preextracted runs or a missing AGC.
 project_hg38: true
 
-# Heritability gate for variant attribution. phylo_mm fits H2_p on the RE-only
-# tree first; variants are attributed only when actuation is a stable + heritable
-# function of sequence. "Stable" = the 95% HPD is no wider than h2_hpd_width_max
-# (matches the plot's ⚠ unidentified flag). "Significant" = the HPD lower bound
-# is at least h2_hpd_lower_min (confidently heritable, not ~0). If the RE-only H2
-# fails, attribution expands to the whole (flanked) region and uses that H2
-# instead; if both fail, no drivers are reported.
+# H2 gate: attribute drivers only if the alpha.V=1 95% HPD width <= max and its
+# lower bound >= min (RE-only tree first, then the whole flanked region).
 h2_hpd_width_max: 0.5
 h2_hpd_lower_min: 0.1
 
-# Run name: all outputs are namespaced under results/{run_name}/ and
-# temp/{run_name}/ so separate runs never clobber or orphan each other (and can
-# run concurrently). Each pixi task sets this to its own name; override per run
-# with --config run_name=<name>.
+# Outputs go to results/{run_name}/ and temp/{run_name}/; pixi tasks set their own.
 run_name: "default"
 
-# Plot selection (data-driven, post-aggregate). Every peak with >=1 driver and
-# every heritable-but-no-driver peak is plotted (unlimited); plus this many
-# seeded-random peaks as controls.
-# Write interactive HTML plots (~4 MB each) alongside the PDF. Off by default;
-# enable with --config plot_html=true.
+# Write interactive HTML plots (~4 MB each) alongside the PDF.
 plot_html: false
 
+# Plot selection: every driver and heritable-but-no-driver peak, plus this many
+# seeded-random control peaks.
 random_n: 100
 random_seed: 42
 
@@ -83,7 +54,14 @@ mafft_maxiterate: 1000
 # bgzip threads for decompression
 bgzip_threads: 16
 
-# Optional: per-leaf PCLAI ancestry stripe in the plot. Path to the merged
-# bgzipped + tabix-indexed HPRC R2 PCLAI BED (chm13 + asm coord spaces in
-# one file) produced by `pixi run setup-pclai`. Set to null to disable.
+# Optional per-leaf PCLAI ancestry stripe in the plot (merged CHM13 + asm-coord
+# BED from `pixi run setup-pclai`). null disables it.
 pclai_bed: "resources/pclai/hprc_r2.bed.gz"
+
+# Other keys the code reads (code defaults shown; uncomment to set):
+# plasmid: false            # Stage 2 plasmid construct panel
+# dbsnp: null               # tabix-indexed dbSNP VCF for rs IDs
+# significant_loci: null    # plasmid significance table (needs dbsnp)
+# stage2_threads: 16
+# project_threads: 32
+# highlight_file: null      # TSV of sample haps to tag and highlight in plots

@@ -5,7 +5,7 @@ jobs: 200
 latency-wait: 60
 max-jobs-per-second: 20
 
-# Batch the per-peak chain (add_flanks → … → re_variants, all tagged
+# Batch the per-peak chain (add_flanks → … → phylo_mm, all tagged
 # `group: "peak_chain"`) so one SLURM job runs ~100 peaks' full chains instead
 # of submitting ~2M individual jobs at 180K scale. Tune the component count
 # against the per-job allocation (a staging run is the place to calibrate).

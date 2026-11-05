@@ -26,7 +26,8 @@ manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkp
         min_seqs=config.get("min_seqs", 2),
         opt_args=_extract_opt_args,
     # The union BED is asm-coord-sorted; group rows by consensus_peak_id (col 5)
-    # for the streaming extractor. `sed -u 1q` keeps the header first.
+    # for the streaming extractor. `read` keeps the header first (BSD `sed -u 1q`
+    # reads past line 1 on macOS and silently drops rows).
     shell:
         """
         if [ -n "{params.preextracted}" ]; then
@@ -35,7 +36,7 @@ manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkp
                 --threads {threads}
         else
             bgzip -cd -@ {threads} {input.src:q} \
-                | (sed -u 1q; sort -t$'\\t' -k5,5 -S 50%) \
+                | (IFS= read -r hdr; printf '%s\\n' "$hdr"; sort -t$'\\t' -k5,5 -S 50%) \
                 | python {params.script:q} --outdir {params.outdir:q} \
                     --min-seqs {params.min_seqs} \
                     --haplotypes-parquet {output.haplotypes:q} {params.opt_args}

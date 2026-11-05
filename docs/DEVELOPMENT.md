@@ -15,7 +15,7 @@ pixi run test                      # 8 test peaks via test-union-peaks.bed.gz
 pixi run test-paralog              # NOTCH2NL paralog group via PARE-style preextracted dir
 pixi run hap-selective-5           # 5 hap-selective peaks pulled from hyak via tabix-over-ssh
 pixi run dry-run                   # DAG preview
-pixi run replot                    # force re-run of the plot rule on existing trees
+pixi run replot                    # force re-run of Stage-2 plot_all on the test run
 pixi run fmt                       # snakefmt workflow/Snakefile
 
 # Cluster (CHPC) production run — TWO stages (see "Two-stage split" below):
@@ -56,6 +56,16 @@ pure Python/bcftools, so it also runs **locally** after downloading
 the local AGC (`resources/HPRC_r2_assemblies_0.6.1.agc`) — no genome fasta, no
 `fastas/` dir. Sequences come from the parquet + AGC; the AGC lacks actuation
 (the phenotype lives only in the union BED), which is why Stage 1 emits it once.
+
+Generic local Stage-2 run: point `run_name` + `input_table` at a run whose
+`results/<run>/tables/` + `fastas/peak_ids.txt` you have downloaded, with the
+local AGC:
+
+```bash
+pixi run -- snakemake -s workflow/analysis.smk --config run_name=<run> \
+    input_table=<union.bed.gz> peak_ids=<peaks.txt> plasmid=true \
+    --rerun-triggers mtime -j 8
+```
 
 **AGC is 0-based.** `agc getctg contig:S-E` returns the standard 1-based base
 `S+1`; `project_variants.py` passes 0-based starts directly (a historical `+1`

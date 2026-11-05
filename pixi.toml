@@ -19,13 +19,16 @@ test = { cmd = [
 ] }
 replot = { cmd = [
     "snakemake",
-    "--notemp",
+    "-s",
+    "workflow/analysis.smk",
     "--config",
     "run_name=test",
     "peak_ids=config/test_peak_ids.txt",
     "input_table=resources/test/test-union-peaks.bed.gz",
+    "--rerun-triggers",
+    "mtime",
     "--forcerun",
-    "plot",
+    "plot_all",
     "-j",
     "10",
 ] }
@@ -238,27 +241,6 @@ hsca-hapsel-aligned = { cmd = [
     "--threads",
     "32",
 ] }
-# Regenerate ONLY the hg38 tables with the driver-projection fix (Group A). Targets
-# variants.hg38.bed + the NEW drivers.unlifted.tsv; the missing unlifted output
-# forces project_all to rerun (regenerating the bed too) without touching the
-# already-current re_variants / manifests / plots. Needs aligned/ present first
-# (hsca-hapsel-aligned).
-hsca-hapsel-hg38 = { cmd = [
-    "snakemake",
-    "-s",
-    "workflow/analysis.smk",
-    "--configfile",
-    "config/cluster.yaml",
-    "--config",
-    "run_name=hsca_hapsel",
-    "peak_ids=config/hsca_hapsel_peak_ids.txt",
-    "--rerun-triggers",
-    "mtime",
-    "-j",
-    "64",
-    "results/hsca_hapsel/tables/variants.hg38.bed.gz",
-    "results/hsca_hapsel/tables/drivers.unlifted.tsv",
-] }
 # ── Stage 2: analysis on the persisted Stage-1 outputs (workflow/analysis.smk) ──
 # The tasks above run STAGE 1 (per-peak trees + phylo_mm). Stage 2 is a separate,
 # ~6-node single-pass DAG (re_variants → aggregate → hg38 projection + rs-IDs →
@@ -296,11 +278,6 @@ hsca-stage2 = { cmd = [
     "-j",
     "400",
 ] }
-# Generic LOCAL Stage-2 run: point run_name + input_table at a run whose Stage-1
-# dirs (+ haplotypes.parquet) you've downloaded, with the local AGC. e.g.
-#   pixi run -- snakemake -s workflow/analysis.smk --config run_name=<run> \
-#       input_table=<union.bed.gz> peak_ids=<peaks.txt> plasmid=true \
-#       --rerun-triggers mtime -j 8
 
 # Versions pinned to major.minor (patch floats) for reproducibility; bump
 # deliberately. Mirrors the exact versions in pixi.lock at time of writing.

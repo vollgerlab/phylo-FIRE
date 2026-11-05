@@ -217,30 +217,6 @@ hsca-hapsel-tables = { cmd = [
     "--threads",
     "32",
 ] }
-# Rebuild ONLY aligned/ for a pre-split hsca_hapsel run whose mafft output was
-# temp() and got deleted. Standalone single-pass (rebuild_aligned.py): reads the
-# surviving fastas/*.fa directly (no extract_fastas checkpoint) and reruns the
-# SAME add_flanks + mafft with the SAME flags, so the rebuilt MSA is byte-identical
-# to the original (mafft is deterministic). Loops peaks with a thread pool +
-# progress and skips ones already present, so it starts instantly and resumes --
-# unlike `snakemake aligned_only`, which spends >10 min just building the ~46K-node
-# DAG for a 23K-peak run. trees/phylo_mm are never touched. Run before the hg38
-# task if aligned/ is missing. (The `aligned_only` Snakefile rule is kept as the
-# DAG-native equivalent.)
-hsca-hapsel-aligned = { cmd = [
-    "python",
-    "workflow/scripts/rebuild_aligned.py",
-    "--fastas-dir",
-    "results/hsca_hapsel/fastas",
-    "--out-dir",
-    "results/hsca_hapsel/aligned",
-    "--agc",
-    "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_0.6.1.agc",
-    "--flank",
-    "250",
-    "--threads",
-    "32",
-] }
 # ── Stage 2: analysis on the persisted Stage-1 outputs (workflow/analysis.smk) ──
 # The tasks above run STAGE 1 (per-peak trees + phylo_mm). Stage 2 is a separate,
 # ~6-node single-pass DAG (re_variants → aggregate → hg38 projection + rs-IDs →

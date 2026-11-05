@@ -127,25 +127,6 @@ rule all:
         _stage1_targets(),
 
 
-rule aligned_only:
-    """Rebuild ONLY the persisted mafft alignments from the surviving fastas/ +
-    AGC -- for a pre-split run whose `aligned/` was temp() and got deleted.
-
-    Requesting just the aligned files means Snakemake builds them (and the temp
-    flanked/ prereq via add_flanks) and NEVER touches trees/phylo_mm: those are
-    downstream consumers of aligned/, not inputs, so they're outside this
-    target's dependency closure. Uses the SAME add_flanks + mafft rules (same
-    config: flank, agc, mafft flags) that produced the originals, so in the same
-    pixi env the rebuilt MSA is byte-identical to what the trees were built on.
-
-        snakemake -s workflow/Snakefile --config run_name=<run> \\
-            peak_ids=<...> input_table=<...> agc=<...> flank=<F> \\
-            aligned_only --rerun-triggers mtime -j <N>
-    """
-    input:
-        expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=_run_peak_ids()),
-
-
 def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
     """Symlink {peak_id}.fa / {peak_id}.tsv from src_dir into dst_dir.
 

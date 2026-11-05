@@ -163,10 +163,11 @@ def load_phylo_mm(path: Path) -> dict:
         if len(f) != len(cols):
             continue
         rec = dict(zip(cols, f))
-        try: rec["branch_id"] = int(rec["branch_id"])
-        except (KeyError, ValueError): pass
-        try: rec["n_below"]   = int(rec["n_below"])
-        except (KeyError, ValueError): pass
+        for k in ("branch_id", "n_below"):
+            try:
+                rec[k] = int(rec[k])
+            except (KeyError, ValueError):
+                pass
         for k in ("mean_in", "mean_out", "t_stat", "p_raw", "p_fdr",
                   "lasso_coef", "beta", "se",
                   "ci_lower", "ci_upper", "p"):
@@ -174,8 +175,10 @@ def load_phylo_mm(path: Path) -> dict:
             if raw_val in ("", "NA"):
                 rec[k] = None
             else:
-                try: rec[k] = float(raw_val)
-                except ValueError: rec[k] = None
+                try:
+                    rec[k] = float(raw_val)
+                except ValueError:
+                    rec[k] = None
         rec["selected_by_lasso"] = (
             str(rec.get("selected_by_lasso", "")).upper() == "TRUE"
         )

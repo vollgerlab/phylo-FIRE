@@ -244,10 +244,14 @@ def main() -> None:
     bot, top = 0.34, H - 0.32               # leaf-row band
     tree_w, lab_w, act_w, mk_w = 0.42 * W, (0.0 if args.no_labels else 0.2), 0.10, 0.07 * nd
     x = 0.05
-    ax_tree = ax_in(x, bot, tree_w, top - bot); x += tree_w
-    ax_lab = ax_in(x, bot, lab_w or 1e-3, top - bot); x += lab_w
-    ax_act = ax_in(x + 0.02, bot, act_w, top - bot); x += act_w + 0.02
-    ax_mk = ax_in(x + 0.01, bot, mk_w, top - bot); x += mk_w + 0.01
+    ax_tree = ax_in(x, bot, tree_w, top - bot)
+    x += tree_w
+    ax_lab = ax_in(x, bot, lab_w or 1e-3, top - bot)
+    x += lab_w
+    ax_act = ax_in(x + 0.02, bot, act_w, top - bot)
+    x += act_w + 0.02
+    ax_mk = ax_in(x + 0.01, bot, mk_w, top - bot)
+    x += mk_w + 0.01
     den_x = x + 0.10
     den_w = W - den_x - 0.10  # densities get whatever the tree leaves
     den_h = min(top - bot - 0.45, 0.75 * nd)

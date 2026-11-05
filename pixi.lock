@@ -2,13 +2,13 @@ version: 7
 platforms:
 - name: linux-64
   virtual-packages:
-  - __unix=0=0
+  - __unix=0
   - __linux=4.18
   - __glibc=2.28
   - __archspec=0=x86_64
 - name: osx-arm64
   virtual-packages:
-  - __unix=0=0
+  - __unix=0
   - __osx=13.0
   - __archspec=0=m1
 environments:
@@ -23,7 +23,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/linux-64/iqtree-3.1.1-hde5307d_1.conda
       - conda: https://conda.anaconda.org/bioconda/linux-64/pysam-0.24.0-py313h4b224ce_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakefmt-1.0.0-pyh7a41576_1.conda
-      - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-9.19.0-hdfd78af_0.conda
+      - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-9.27.1-hdfd78af_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-executor-plugin-slurm-2.6.0-pyhdfd78af_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-executor-plugin-slurm-jobstep-0.4.0-pyhdfd78af_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-common-1.23.0-pyh84498cf_0.conda
@@ -32,7 +32,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-report-plugins-1.3.0-pyhd4c3c12_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-scheduler-plugins-2.0.2-pyhd4c3c12_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-storage-plugins-4.4.1-pyh84498cf_0.conda
-      - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-minimal-9.19.0-pyhdfd78af_0.conda
+      - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-minimal-9.27.1-pyhdfd78af_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/alsa-lib-1.2.15.3-hb03c661_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/at-spi2-atk-2.38.0-h0630a04_3.tar.bz2
@@ -228,7 +228,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/amply-0.1.6-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/annotated-doc-0.0.4-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/annotated-types-0.7.0-pyhd8ed1ab_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/appdirs-1.4.4-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/argparse-dataclass-2.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/attrs-26.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/black-26.3.1-pyh866005b_0.conda
@@ -323,7 +322,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/yte-1.9.4-pyhd8ed1ab_0.conda
       osx-arm64:
       - conda: https://conda.anaconda.org/bioconda/noarch/snakefmt-1.0.0-pyh7a41576_1.conda
-      - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-9.19.0-hdfd78af_0.conda
+      - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-9.27.1-hdfd78af_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-executor-plugin-slurm-2.6.0-pyhdfd78af_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-executor-plugin-slurm-jobstep-0.4.0-pyhdfd78af_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-common-1.23.0-pyh84498cf_0.conda
@@ -332,7 +331,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-report-plugins-1.3.0-pyhd4c3c12_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-scheduler-plugins-2.0.2-pyhd4c3c12_0.conda
       - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-interface-storage-plugins-4.4.1-pyh84498cf_0.conda
-      - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-minimal-9.19.0-pyhdfd78af_0.conda
+      - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-minimal-9.27.1-pyhdfd78af_0.conda
       - conda: https://conda.anaconda.org/bioconda/osx-arm64/agc-3.2.3-h4f1019d_0.conda
       - conda: https://conda.anaconda.org/bioconda/osx-arm64/htslib-1.23.1-h44a9eb5_0.conda
       - conda: https://conda.anaconda.org/bioconda/osx-arm64/iqtree-3.1.1-h56a6eee_1.conda
@@ -342,7 +341,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/amply-0.1.6-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/annotated-doc-0.0.4-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/annotated-types-0.7.0-pyhd8ed1ab_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/appdirs-1.4.4-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/argparse-dataclass-2.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/attrs-26.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/black-26.3.1-pyh866005b_0.conda
@@ -659,20 +657,20 @@ packages:
   license_family: MIT
   size: 36221
   timestamp: 1774612272430
-- conda: https://conda.anaconda.org/bioconda/noarch/snakemake-9.19.0-hdfd78af_0.conda
-  sha256: f4221f4ff76a1893bd062e200b9224ecb108552877d29964324c1f1a13bd4f90
-  md5: fe4d2581a664b3800ff4c187e689e973
+- conda: https://conda.anaconda.org/bioconda/noarch/snakemake-9.27.1-hdfd78af_0.conda
+  sha256: 86750ea69be7b6fd47b791996911deb4541b88bfbb5162a6dbfa85991e9c1fa0
+  md5: b03e785852a302c6a0ea7107aedf7da8
   depends:
   - eido
   - pandas <3
   - peppy
   - pygments
   - slack_sdk
-  - snakemake-minimal 9.19.0.*
+  - snakemake-minimal 9.27.1.*
   license: MIT
   license_family: MIT
-  size: 11236
-  timestamp: 1774700575191
+  size: 11373
+  timestamp: 1792575136089
 - conda: https://conda.anaconda.org/bioconda/noarch/snakemake-executor-plugin-slurm-2.6.0-pyhdfd78af_0.conda
   sha256: f955adb46fb2638bdb74ca79cfc639a5e1d7bd4a3d44388edb96ca545c5f077a
   md5: 5d55b8f56f935a6358aaaf13c8f7bb46
@@ -764,15 +762,14 @@ packages:
   license_family: MIT
   size: 22783
   timestamp: 1773699846635
-- conda: https://conda.anaconda.org/bioconda/noarch/snakemake-minimal-9.19.0-pyhdfd78af_0.conda
-  sha256: 043b09633a430437d10d32949eebb104c12fc28ec6057de4253b5f45736c9a84
-  md5: ff434de1e63f54864df031454a35b1ae
+- conda: https://conda.anaconda.org/bioconda/noarch/snakemake-minimal-9.27.1-pyhdfd78af_0.conda
+  sha256: 04593158837013f35cc731bb03d9611dd61db722cd2efe06dd165bbde9b33b98
+  md5: f8a5e6198c343169c33cc24f554872ba
   depends:
-  - appdirs
   - conda-inject >=1.3.1,<2.0
   - configargparse
   - connection_pool >=0.0.3
-  - docutils
+  - docutils >=0.20,<0.23
   - dpath >=2.1.6,<3.0.0
   - gitpython
   - humanfriendly
@@ -780,11 +777,13 @@ packages:
   - jinja2 >=3.0,<4.0
   - jsonschema
   - nbformat
-  - packaging >=24.0
+  - packaging >=24.0,<26
+  - platformdirs
   - psutil
   - pulp >=2.3.1,<3.4
-  - python >=3.11,<3.14
+  - python >=3.11
   - pyyaml
+  - referencing
   - requests >=2.8.1,<3.0
   - smart_open >=4.0,<8.0
   - snakemake-interface-common >=1.20.1,<2.0
@@ -792,7 +791,7 @@ packages:
   - snakemake-interface-logger-plugins >=1.1.0,<3.0.0
   - snakemake-interface-report-plugins >=1.2.0,<2.0.0
   - snakemake-interface-scheduler-plugins >=2.0.0,<3.0.0
-  - snakemake-interface-storage-plugins >=4.3.2,<5.0
+  - snakemake-interface-storage-plugins >=4.4.1,<5.0
   - sqlmodel >=0.0.37,<0.0.38
   - tabulate
   - tenacity >=9.1.4,<10.0
@@ -801,8 +800,8 @@ packages:
   - yte >=1.5.5,<2.0
   license: MIT
   license_family: MIT
-  size: 883944
-  timestamp: 1774700572519
+  size: 890511
+  timestamp: 1792575133103
 - conda: https://conda.anaconda.org/bioconda/osx-arm64/agc-3.2.3-h4f1019d_0.conda
   sha256: 2107f729d502fc8f2b39887d86685ef6bb89a3197009eabcb195422fedb8a654
   md5: bd23c94c317ef1fc1258e9d4fab2892a
@@ -3498,15 +3497,6 @@ packages:
   license_family: MIT
   size: 18074
   timestamp: 1733247158254
-- conda: https://conda.anaconda.org/conda-forge/noarch/appdirs-1.4.4-pyhd8ed1ab_1.conda
-  sha256: 5b9ef6d338525b332e17c3ed089ca2f53a5d74b7a7b432747d29c6466e39346d
-  md5: f4e90937bbfc3a4a92539545a37bb448
-  depends:
-  - python >=3.9
-  license: MIT
-  license_family: MIT
-  size: 14835
-  timestamp: 1733754069532
 - conda: https://conda.anaconda.org/conda-forge/noarch/argparse-dataclass-2.0.0-pyhd8ed1ab_1.conda
   sha256: fd512bde81be7f942e1efb54c6a7305c16375347ccacf9375ada70cdc0f4f0d3
   md5: 3c0e753fd317fa10d34020a2bc8add8e

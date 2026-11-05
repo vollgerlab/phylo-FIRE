@@ -302,7 +302,7 @@ setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInfere
 # deliberately. Mirrors the exact versions in pixi.lock at time of writing.
 [dependencies]
 python = ">=3.13,<3.14"
-snakemake = ">=9.19,<9.20"
+snakemake = ">=9.27,<9.28"
 snakemake-executor-plugin-slurm = ">=2.6,<2.7"
 htslib = ">=1.23,<1.24"
 mafft = ">=7.526,<7.527"

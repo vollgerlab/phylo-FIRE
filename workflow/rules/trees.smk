@@ -1,3 +1,7 @@
+# OpenBLAS/MKL ignore the rule's threads and grab every core; cap them.
+BLAS_CAP = "OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} MKL_NUM_THREADS={threads} "
+
+
 rule encode_indels:
     """Simmons-Ochoterena indel coding so IQ-TREE models gaps (GTR2+ASC) instead of
 treating them as missing; coding rules are in scripts/encode_indels.py."""
@@ -79,10 +83,8 @@ that set is not monophyletic). phylo_mm and the plots never re-root, so clades m
     params:
         script=script_path("root_tree.R"),
     shell:
-        # OpenBLAS/MKL ignore the rule's threads and grab every core — cap them.
-        "OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} "
-        "MKL_NUM_THREADS={threads} "
-        "Rscript {params.script} {input.treefile} {input.alignment} {output.rooted}"
+        BLAS_CAP
+        + "Rscript {params.script} {input.treefile} {input.alignment} {output.rooted}"
 
 
 # ── RE-only tree ─────────────────────────────────────────────────────────────
@@ -109,7 +111,7 @@ rule re_trim:
         "python {params.script} --aln {input.fa} --flank {params.flank} --out {output.fa}"
 
 
-rule re_encode_indels:
+use rule encode_indels as re_encode_indels with:
     """encode_indels on the RE-only alignment (mirrors rule encode_indels)."""
     input:
         fa=TEMP + "/re/aligned/{peak_id}.fa",
@@ -117,23 +119,8 @@ rule re_encode_indels:
         nex=temp(TEMP + "/re/coded/{peak_id}/{peak_id}.nex"),
         nuc=temp(TEMP + "/re/coded/{peak_id}/{peak_id}_nucleic.phy"),
         indel=temp(TEMP + "/re/coded/{peak_id}/{peak_id}_indel.phy"),
-    group:
-        "peak_chain"
-    threads: 1
-    resources:
-        mem_mb=2048,
-        runtime=10,
     params:
-        script=script_path("encode_indels.py"),
-        peak_id=lambda wc: wc.peak_id,
         out_dir=lambda wc: f"{TEMP}/re/coded/{wc.peak_id}",
-    shell:
-        """
-        python {params.script} \
-            --aligned {input.fa} \
-            --peak-id {params.peak_id} \
-            --out-dir {params.out_dir}
-        """
 
 
 rule re_iqtree:
@@ -171,7 +158,7 @@ tree is copied instead, which only needs the right tips since H²ₚ(RE) is then
         """
 
 
-rule re_root_tree:
+use rule root_tree as re_root_tree with:
     """Ancestral-proxy root the RE-only tree (mirrors rule root_tree)."""
     input:
         treefile=TEMP + "/re/trees/{peak_id}.treefile",
@@ -179,16 +166,3 @@ rule re_root_tree:
     output:
         # internal: only phylo_mm (H²_re scope) reads this, then it's done.
         rooted=temp(TEMP + "/re/trees/{peak_id}.rooted.nwk"),
-    group:
-        "peak_chain"
-    threads: 1
-    resources:
-        mem_mb=1024,
-        runtime=10,
-    params:
-        script=script_path("root_tree.R"),
-    shell:
-        # OpenBLAS/MKL ignore the rule's threads and grab every core — cap them.
-        "OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} "
-        "MKL_NUM_THREADS={threads} "
-        "Rscript {params.script} {input.treefile} {input.alignment} {output.rooted}"

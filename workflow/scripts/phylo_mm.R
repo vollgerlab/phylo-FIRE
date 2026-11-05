@@ -16,28 +16,19 @@
 #    peak (typical of nearly-clonal short-haplotype trees — see
 #    Hadfield 2015 MEE for the underlying identifiability issue).
 #
-# 2. **Per-split sister-clade contrast — headline inference + annotation.**
-#    Each internal node defines a split into two daughter subtrees. For the
-#    SMALLER daughter (the split's representative, `is_split`) we run a
-#    coverage-weighted WLS contrast of actuation against its SISTER subtree
-#    (the other daughter), NOT against the rest of the tree. This is the local
-#    phylogenetic contrast — "does this lineage differ from the one it just
-#    split from?" — so a clade that looks significant only because the global
-#    mean lumps in a distant high/low clade is correctly NOT significant. BH
-#    FDR is over the split representatives (one test per node). p_fdr is the
-#    headline p; Δ = mean_in − mean_out (clade − sister) is the headline
-#    effect. The plot draws splits with p_fdr < 0.05.
+# 2. **Variant attribution — forward-selection joint WLS (headline).**
+#    Only for heritable peaks (H² gate). Candidates are the variable sites
+#    (0/1 minor-allele indicators; identical partitions merged into one
+#    block). Forward selection adds the block that explains the most
+#    additional coverage-weighted R² of actuation, stopping when the gain is
+#    < R2_MIN (5%) or its p >= 0.05. A final joint fit over the selected
+#    blocks gives the reported `beta`/`se`/`ci_*`/`p` (`is_split` flags them).
 #
-# 3. **LASSO joint branch selection — secondary effect size.**
-#    For each clean bipartition (a split no identical-sequence cluster
-#    straddles), cv.glmnet (alpha=1, family=gaussian, lambda.min) +
-#    selectiveInference::fixedLassoInf give a joint post-selection β + CI,
-#    retained in the TSV (`beta`/`ci_*`/`selected_by_lasso`) and the plot
-#    hover as a secondary effect-size view. This NO LONGER drives the
-#    comparison or which branches are annotated (the sister contrast in 2
-#    does), because the joint β over correlated nested clades is unstable
-#    (can sign-flip vs the marginal Δ). The linked-variants column lists MSA
-#    positions whose allele pattern matches a bipartition exactly.
+# 3. **Marginal carriers-vs-rest contrast — descriptive only.**
+#    Per-site WLS of carriers vs all other haplotypes gives `mean_in`/
+#    `mean_out`/`t_stat`/`p_raw`, with `p_fdr` = BH over the peak's candidate
+#    sites. These do NOT drive selection; they are used only for ordering and
+#    plot hover text.
 #
 # Usage:
 #   Rscript phylo_mm.R \

@@ -121,7 +121,9 @@ def _run_peak_ids():
 def _stage1_targets():
     """Stage 1 (this Snakefile) = the persisted per-peak artifacts that Stage 2
     consumes: the flanked MSA, the ancestral-proxy-rooted ML tree, the phylo_mm
-    stats, and the consolidated haplotypes.parquet (actuation + coords + RE seq).
+    stats, and the consolidated haplotypes.parquet (actuation + coords + RE seq),
+    plus the same MSAs / trees / phylo_mm combined into tables/*.parquet
+    (``stage1_tables``) so Stage 2 can run from tables/ alone.
     Trees + MCMCglmm are the expensive, rarely-rerun work; ALL downstream analysis
     (re_variants, aggregate, hg38/rs, plasmid, plots) lives in
     ``workflow/analysis.smk`` as single-pass jobs and never re-enters this DAG."""
@@ -131,11 +133,31 @@ def _stage1_targets():
         + expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=peaks)
         + expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=peaks)
         + [RESULTS + "/tables/haplotypes.parquet"]
+        + rules.stage1_tables.output
     )
 
 
 # ── rules ──────────────────────────────────────────────────────────────────────
 
+
+
+rule stage1_tables:
+    """Combine every peak's MSA, rooted tree and phylo_mm TSV into three parquet
+    tables (single pass), so Stage 2 can run from ``tables/`` alone, e.g. locally
+    after downloading it. See workflow/scripts/stage1_tables.py."""
+    input:
+        aligned=lambda wc: expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=_run_peak_ids()),
+        trees=lambda wc: expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=_run_peak_ids()),
+        phylo_mm=lambda wc: expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=_run_peak_ids()),
+        peaks=RESULTS + "/fastas/peak_ids.txt",
+    output:
+        RESULTS + "/tables/alignments.parquet",
+        RESULTS + "/tables/trees.parquet",
+        RESULTS + "/tables/phylo_mm.parquet",
+    params:
+        script=os.path.join(workflow.basedir, "scripts/stage1_tables.py"),
+    shell:
+        "python {params.script} --results {RESULTS} --peaks {input.peaks}"
 
 rule all:
     input:
@@ -294,7 +316,6 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
         src=_extract_fastas_input,
         peak_ids=_peak_ids_input,
         highlight=_highlight_input,
-        script=workflow.source_path("scripts/extract_fastas.py"),
     output:
         # Declare every requested peak's FASTA/TSV (peak set read at parse from
         # the peak-ids file — cheap even at 100K+ lines) so this rule is their
@@ -318,6 +339,7 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
         mem_mb=32768,
         runtime=480,
     params:
+        script=workflow.source_path("scripts/extract_fastas.py"),
         # Expose the scalar config the run block depends on as params so
         # snakemake reruns the checkpoint when any of them change (a `run:`
         # block doesn't track raw config reads — same gap as external scripts).
@@ -338,7 +360,7 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
             parts = [
                 f"bgzip -cd -@ {threads} {shlex.quote(str(input.src))}",
                 "| (sed -u 1q; sort -t$'\\t' -k5,5 -S 50%)",
-                f"| python {shlex.quote(str(input.script))}",
+                f"| python {shlex.quote(str(params.script))}",
                 f"--outdir {RESULTS}/fastas",
                 f"--min-seqs {params.min_seqs}",
                 f"--haplotypes-parquet {output.haplotypes}",
@@ -369,7 +391,6 @@ so the checkpoint's peak manifest stays independent of flank.
     input:
         fa=RESULTS + "/fastas/{peak_id}.fa",
         tsv=RESULTS + "/fastas/{peak_id}.tsv",
-        script=workflow.source_path("scripts/add_flanks.py"),
     output:
         fa=temp(TEMP + "/flanked/{peak_id}.fa"),
     group:
@@ -379,11 +400,12 @@ so the checkpoint's peak manifest stays independent of flank.
         mem_mb=4096,
         runtime=30,
     params:
+        script=workflow.source_path("scripts/add_flanks.py"),
         flank=config.get("flank", 0),
         agc=config.get("agc", ""),
     shell:
         """
-        python {input.script} \
+        python {params.script} \
             --fa      {input.fa} \
             --tsv     {input.tsv} \
             --agc     {params.agc} \
@@ -437,7 +459,6 @@ branches.
 """
     input:
         fa=RESULTS + "/aligned/{peak_id}.fa",
-        script=workflow.source_path("scripts/encode_indels.py"),
     output:
         nex=temp(TEMP + "/coded/{peak_id}/{peak_id}.nex"),
         nuc=temp(TEMP + "/coded/{peak_id}/{peak_id}_nucleic.phy"),
@@ -449,11 +470,12 @@ branches.
         mem_mb=2048,
         runtime=10,
     params:
+        script=workflow.source_path("scripts/encode_indels.py"),
         peak_id=lambda wc: wc.peak_id,
         out_dir=lambda wc: f"{TEMP}/coded/{wc.peak_id}",
     shell:
         """
-        python {input.script} \
+        python {params.script} \
             --aligned {input.fa} \
             --peak-id {params.peak_id} \
             --out-dir {params.out_dir}
@@ -529,7 +551,6 @@ every peak. Needs the alignment to compute the consensus.
     input:
         treefile=TEMP + "/trees/{peak_id}.treefile",
         alignment=RESULTS + "/aligned/{peak_id}.fa",
-        script=workflow.source_path("scripts/root_tree.R"),
     output:
         rooted=RESULTS + "/trees/{peak_id}.rooted.nwk",
     group:
@@ -538,11 +559,13 @@ every peak. Needs the alignment to compute the consensus.
     resources:
         mem_mb=1024,
         runtime=10,
+    params:
+        script=workflow.source_path("scripts/root_tree.R"),
     shell:
         # OpenBLAS/MKL ignore the rule's threads and grab every core — cap them.
         "OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} "
         "MKL_NUM_THREADS={threads} "
-        "Rscript {input.script} {input.treefile} {input.alignment} {output.rooted}"
+        "Rscript {params.script} {input.treefile} {input.alignment} {output.rooted}"
 
 
 # ── RE-only tree (for the RE-only heritability test) ─────────────────────────
@@ -556,7 +579,6 @@ rule re_trim:
     """Slice the flanked MSA down to the RE columns."""
     input:
         fa=RESULTS + "/aligned/{peak_id}.fa",
-        script=workflow.source_path("scripts/trim_to_re.py"),
     output:
         fa=temp(TEMP + "/re/aligned/{peak_id}.fa"),
     group:
@@ -566,16 +588,16 @@ rule re_trim:
         mem_mb=1024,
         runtime=10,
     params:
+        script=workflow.source_path("scripts/trim_to_re.py"),
         flank=config.get("flank", 0),
     shell:
-        "python {input.script} --aln {input.fa} --flank {params.flank} --out {output.fa}"
+        "python {params.script} --aln {input.fa} --flank {params.flank} --out {output.fa}"
 
 
 rule re_encode_indels:
     """encode_indels on the RE-only alignment (mirrors rule encode_indels)."""
     input:
         fa=TEMP + "/re/aligned/{peak_id}.fa",
-        script=workflow.source_path("scripts/encode_indels.py"),
     output:
         nex=temp(TEMP + "/re/coded/{peak_id}/{peak_id}.nex"),
         nuc=temp(TEMP + "/re/coded/{peak_id}/{peak_id}_nucleic.phy"),
@@ -587,11 +609,12 @@ rule re_encode_indels:
         mem_mb=2048,
         runtime=10,
     params:
+        script=workflow.source_path("scripts/encode_indels.py"),
         peak_id=lambda wc: wc.peak_id,
         out_dir=lambda wc: f"{TEMP}/re/coded/{wc.peak_id}",
     shell:
         """
-        python {input.script} \
+        python {params.script} \
             --aligned {input.fa} \
             --peak-id {params.peak_id} \
             --out-dir {params.out_dir}
@@ -646,7 +669,6 @@ rule re_root_tree:
     input:
         treefile=TEMP + "/re/trees/{peak_id}.treefile",
         alignment=TEMP + "/re/aligned/{peak_id}.fa",
-        script=workflow.source_path("scripts/root_tree.R"),
     output:
         # internal: only phylo_mm (H²_re scope) reads this, then it's done.
         rooted=temp(TEMP + "/re/trees/{peak_id}.rooted.nwk"),
@@ -656,11 +678,13 @@ rule re_root_tree:
     resources:
         mem_mb=1024,
         runtime=10,
+    params:
+        script=workflow.source_path("scripts/root_tree.R"),
     shell:
         # OpenBLAS/MKL ignore the rule's threads and grab every core — cap them.
         "OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} "
         "MKL_NUM_THREADS={threads} "
-        "Rscript {input.script} {input.treefile} {input.alignment} {output.rooted}"
+        "Rscript {params.script} {input.treefile} {input.alignment} {output.rooted}"
 
 
 def _re_tree(wildcards):
@@ -683,9 +707,10 @@ rule phylo_mm:
 
 TSV header carries the 3-prior phylogenetic heritability sensitivity
 (h2_alpha{1000,1,025}), the alpha.V=1 posterior ESS + a convergence flag,
-and the LASSO branch-selection summary. Data rows are per-internal-branch:
-a Welch t-test scan of clade-vs-rest actuation (p_fdr is the headline),
-plus LASSO-selected branches with selectiveInference beta/CI. No per-peak
+and the variant-attribution summary. Data rows are per candidate variant:
+forward-selection joint WLS beta/CI/p for the selected drivers (`is_split`;
+joint p is the headline), plus marginal carriers-vs-rest p_raw/p_fdr
+(descriptive only). No per-peak
 diagnostic PDF is emitted (it was redundant with the TSV header + the main
 category plot, and would be 180K files at scale); pass --pdf to phylo_mm.R
 by hand for ad-hoc debugging.
@@ -696,7 +721,6 @@ by hand for ad-hoc debugging.
         alignment=RESULTS + "/aligned/{peak_id}.fa",
         re_tree=_re_tree,
         re_alignment=_re_alignment,
-        script=workflow.source_path("scripts/phylo_mm.R"),
     output:
         tsv=RESULTS + "/phylo_mm/{peak_id}.tsv",
     group:
@@ -706,6 +730,7 @@ by hand for ad-hoc debugging.
         mem_mb=4096,
         runtime=90,
     params:
+        script=workflow.source_path("scripts/phylo_mm.R"),
         min_cov=config.get("min_coverage", 4),
         flank=config.get("flank", 0),
         h2_width_max=config.get("h2_hpd_width_max", 0.5),
@@ -713,7 +738,7 @@ by hand for ad-hoc debugging.
     shell:
         """
         OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} MKL_NUM_THREADS={threads} \
-        Rscript {input.script} \
+        Rscript {params.script} \
             --tree      {input.tree} \
             --actuation {input.actuation} \
             --alignment {input.alignment} \

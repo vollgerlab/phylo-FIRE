@@ -30,6 +30,18 @@ from pathlib import Path
 
 import polars as pl
 
+# A driver set whose linked sites cover more than this fraction of the attributed
+# band is flagged `divergent`: one clade differing at that many positions is a
+# divergent haplotype (paralog / mismapped copy / misalignment), not a clonable
+# variant. Flagged, never filtered: the drivers stay in every output.
+DIVERGENT_FRAC = 0.05
+
+
+def is_divergent(n_sites: int, band_len: int) -> bool:
+    """True when a driver set's linked sites exceed DIVERGENT_FRAC of the band."""
+    return band_len > 0 and n_sites / band_len > DIVERGENT_FRAC
+
+
 # Output column order (denormalized: one table, peak context repeated per row).
 COLUMNS = [
     "peak_id", "chrom", "start", "end",
@@ -37,7 +49,7 @@ COLUMNS = [
     "n_haps", "act_mean", "act_sd", "act_min", "act_max", "total_cov",
     "act_values", "samples",
     "has_driver", "driver_ids", "driver_positions", "driver_betas",
-    "driver_p", "driver_delta",
+    "driver_p", "driver_divergent", "driver_delta",
     "nearest_noncarrier_seq_id", "n_other_diffs", "clean_pair", "minimal_edit",
     "attribution_mode",
     "h2_re_mean", "h2_re_lower", "h2_re_upper", "h2_re_ok",
@@ -145,6 +157,8 @@ def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
         lo, hi = re_first_col, re_last_col
     if hi < lo or hi == 0:
         lo, hi = 1, aln_len
+    for d in drivers:
+        d["divergent"] = is_divergent(len(d["cols"]), hi - lo + 1)
 
     # actuation: sample → (act, cov). Accept either a pre-loaded dict (Stage-2
     # single-pass, from haplotypes.parquet) or a per-peak TSV path (CLI).
@@ -216,6 +230,8 @@ def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
                 f"{d['beta']:.4g}" if d["beta"] is not None else "NA" for d in carried),
             "driver_p": ",".join(
                 f"{d['p']:.3g}" if d["p"] is not None else "NA" for d in carried),
+            "driver_divergent": ",".join(
+                "TRUE" if d["divergent"] else "FALSE" for d in carried),
             "driver_delta": round(sum(d["beta"] or 0.0 for d in carried), 4) if carried else 0.0,
             "nearest_noncarrier_seq_id": nn_id,
             "n_other_diffs": n_other,
@@ -328,6 +344,8 @@ def _self_test() -> None:
     assert carrier["minimal_edit"] == "RE3 A->T", carrier["minimal_edit"]
     assert carrier["n_other_diffs"] == 0
     assert carrier["driver_positions"] == "RE3"
+    assert carrier["driver_divergent"] == "TRUE"   # 1 linked site / 5 bp band > 5%
+    assert not is_divergent(5, 200) and is_divergent(11, 200)
     print("self-test OK")
 
 

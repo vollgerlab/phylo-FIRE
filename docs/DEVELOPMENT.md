@@ -82,6 +82,16 @@ written to `tables/drivers.unlifted.tsv` with a reason instead of a fabricated
 position. `re_first_col`/`re_last_col`/`attribution_mode` come from the phylo_mm
 header; `linked_sites` are 1-based alignment columns.
 
+**Divergent driver sets are flagged, never filtered.** A driver set whose
+`linked_sites` cover more than `DIVERGENT_FRAC` (5%, `build_re_variants.py`) of the
+attributed band (RE band, or whole alignment in `region` mode) is a divergent
+haplotype (paralog / mismapped copy / misalignment) rather than a clonable variant:
+e.g. `chr12_131726083` has 111 linked SNVs in a 226 bp RE. The flag is
+`driver_divergent` in `re_variants` (comma-sep, aligned to `driver_ids`),
+`divergent` in `variants.hg38.tsv.gz` / `drivers.unlifted.tsv` / the variant BED,
+and `DIVERGENT` in the VCF INFO. In `hsca_hapsel` these few sets carry ~1/4 of all
+driver SNVs, so count drivers per set (not per SNV) in enrichment tests.
+
 ## Pipeline architecture
 
 Three Snakemake steps driven by a checkpoint:

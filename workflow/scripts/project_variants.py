@@ -30,6 +30,8 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from build_re_variants import is_divergent
+
 _CHM13_CHR = re.compile(r"^chr([0-9]+|X|Y|M)$")
 
 
@@ -318,6 +320,10 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
 
     colcar = _col_carriers(aln_haps, min_carriers)
     re_band, attr_mode = _re_header(phylo_mm)
+    # Same band build_re_variants attributes over: whole alignment in region mode.
+    band_len = L if (attr_mode == "region" or re_band is None) else re_band[1] - re_band[0] + 1
+    divergent = {desc: is_divergent(len(linked), band_len)
+                 for desc, (_, linked) in drivers.items()}
     # Driver carrier-set fallback: whole alignment in region mode, else RE band.
     col_beta, col_desc, unmatched = _driver_cols(
         colcar, drivers, None if attr_mode == "region" else re_band)
@@ -423,6 +429,7 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
             "beta": col_beta.get(col, "NA"),
             "carriers": ",".join(sorted(carriers)),
             "asm_coords": ";".join(asm_hits) if asm_hits else "NA",
+            "divergent": "TRUE" if is_driver and divergent.get(col_desc.get(col)) else "FALSE",
         })
 
     unlifted = [{
@@ -431,6 +438,7 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
         "beta": beta,
         "reason": "indel_only_no_snv_column",
         "carriers": ",".join(sorted(desc)),
+        "divergent": "TRUE" if divergent.get(desc) else "FALSE",
     } for desc, beta, _ in unmatched]
     return rows, unlifted
 
@@ -438,8 +446,8 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
 _COLS = ["peak_id", "re_pos", "cons_chr", "cons_pos", "cons_ref",
          "hg38_chr", "hg38_pos", "hg38_ref", "hap_major", "hap_minor",
          "driver_allele", "n_carriers", "is_driver", "beta", "carriers",
-         "asm_coords"]
-_UNLIFTED_COLS = ["peak_id", "n_carriers", "beta", "reason", "carriers"]
+         "asm_coords", "divergent"]
+_UNLIFTED_COLS = ["peak_id", "n_carriers", "beta", "reason", "carriers", "divergent"]
 
 
 def _header() -> str:

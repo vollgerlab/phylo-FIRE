@@ -5,7 +5,9 @@
   * variants.hg38.vcf     — sites-only VCF in hg38 coords (REF = hg38 reference
                             base, ALT = cohort allele(s); DRIVER/BETA in INFO).
   * variants.hg38.bed     — BED of the same sites (name = peak:RE:REF>ALT), with
-                            is_driver + beta (the GWAS foreground/background list).
+                            is_driver + beta + divergent (the GWAS foreground/background list).
+  * variants.chm13.bed    — the same BED in CHM13 coordinates (cons_chr/cons_pos/
+                            cons_ref; sites on CHM13 chromosomes only).
   * elements.hg38.bed     — one interval per peak (hg38), with has_driver +
                             n_variants + n_drivers (the element-level list).
 
@@ -14,18 +16,20 @@ insertion relative to hg38) are kept in the TSV but omitted from the VCF/BED.
 """
 import argparse
 import gzip
+import re
 from pathlib import Path
 
 VCOLS = ["peak_id", "re_pos", "cons_chr", "cons_pos", "cons_ref",
          "hg38_chr", "hg38_pos", "hg38_ref", "hap_major", "hap_minor",
          "driver_allele", "n_carriers", "is_driver", "beta", "carriers",
-         "asm_coords"]
+         "asm_coords", "divergent"]
 
 VCF_HEADER = """##fileformat=VCFv4.2
 ##source=phylo-FIRE/project_variants
 ##INFO=<ID=PEAK,Number=1,Type=String,Description="consensus peak id">
 ##INFO=<ID=RE,Number=1,Type=Integer,Description="1-based position within the RE/peak">
 ##INFO=<ID=DRIVER,Number=0,Type=Flag,Description="attribution driver variant">
+##INFO=<ID=DIVERGENT,Number=0,Type=Flag,Description="driver set covers >5% of the attributed band (divergent haplotype, not a single clonable variant); flagged, not filtered">
 ##INFO=<ID=DALLELE,Number=1,Type=Character,Description="driver/effect allele (the phylo_mm clade allele BETA is for; may be REF or ALT, major or minor)">
 ##INFO=<ID=BETA,Number=1,Type=Float,Description="joint driver effect (actuation shift) of DALLELE">
 ##INFO=<ID=NCAR,Number=1,Type=Integer,Description="haplotype carriers of the cohort minor allele">
@@ -49,6 +53,29 @@ def _alt(ref: str, *alleles: str) -> str:
     return ",".join(out) if out else "."
 
 
+_CHM13_CHR = re.compile(r"^chr([0-9]+|X|Y|M)$")
+
+
+def _write_variant_bed(path: Path, rows: list[dict], chr_k: str, pos_k: str, ref_k: str) -> int:
+    """Write the variant BED for one coordinate system (hg38 or CHM13 columns).
+
+    Keeps SNV sites with a coordinate and a single-base reference, sorted by
+    chrom then position; returns the number of sites written."""
+    sites = [r for r in rows
+             if r[chr_k] != "NA" and r[pos_k].lstrip("-").isdigit()
+             and r[ref_k] in ("A", "C", "G", "T")]
+    sites.sort(key=lambda r: (_chrom_key(r[chr_k]), r[chr_k], int(r[pos_k])))
+    with path.open("w") as fh:
+        for r in sites:
+            pos = int(r[pos_k])
+            alt = _alt(r[ref_k], r["hap_major"], r["hap_minor"], r.get("driver_allele", "NA"))
+            name = f"{r['peak_id']}:RE{r['re_pos']}:{r[ref_k]}>{alt}"
+            fh.write("\t".join([r[chr_k], str(pos - 1), str(pos), name,
+                                r["is_driver"], r["beta"], r["n_carriers"], r["peak_id"],
+                                r.get("driver_allele", "NA"), r.get("divergent", "FALSE")]) + "\n")
+    return len(sites)
+
+
 def _chrom_key(c: str):
     """Natural-ish chrom sort: chr1..chr22, chrX, chrY, chrM, then the rest."""
     s = c[3:] if c.startswith("chr") else c
@@ -64,6 +91,7 @@ def main() -> None:
     ap.add_argument("--out-variants", required=True, type=Path)
     ap.add_argument("--out-vcf", required=True, type=Path)
     ap.add_argument("--out-variants-bed", required=True, type=Path)
+    ap.add_argument("--out-variants-chm13-bed", type=Path, default=None)
     ap.add_argument("--out-elements-bed", required=True, type=Path)
     args = ap.parse_args()
 
@@ -110,20 +138,20 @@ def main() -> None:
                     info.append(f"DALLELE={r['driver_allele']}")
                 if r["beta"] not in ("NA", ""):
                     info.append(f"BETA={r['beta']}")
+                if r.get("divergent") == "TRUE":
+                    info.append("DIVERGENT")
             vid = f"{r['peak_id']}:RE{r['re_pos']}"
             fh.write("\t".join([r["hg38_chr"], r["hg38_pos"], vid, r["hg38_ref"],
                                 alt, ".", "PASS", ";".join(info)]) + "\n")
             n_vcf += 1
 
-    # variant BED (same sites)
-    with args.out_variants_bed.open("w") as fh:
-        for r in sites:
-            pos = int(r["hg38_pos"])
-            alt = _alt(r["hg38_ref"], r["hap_major"], r["hap_minor"], r.get("driver_allele", "NA"))
-            name = f"{r['peak_id']}:RE{r['re_pos']}:{r['hg38_ref']}>{alt}"
-            fh.write("\t".join([r["hg38_chr"], str(pos - 1), str(pos), name,
-                                r["is_driver"], r["beta"], r["n_carriers"], r["peak_id"],
-                                r.get("driver_allele", "NA")]) + "\n")
+    # variant BEDs: hg38, and CHM13 (consensus coords on CHM13 chromosomes)
+    _write_variant_bed(args.out_variants_bed, rows, "hg38_chr", "hg38_pos", "hg38_ref")
+    if args.out_variants_chm13_bed:
+        chm13_rows = [r for r in rows if _CHM13_CHR.match(r["cons_chr"])]
+        n_chm13 = _write_variant_bed(args.out_variants_chm13_bed, chm13_rows,
+                                     "cons_chr", "cons_pos", "cons_ref")
+        print(f"[aggregate_hg38] {n_chm13} sites in CHM13 BED", flush=True)
 
     # per-peak counts (over ALL rows, not just hg38-mapped)
     n_var, n_drv = {}, {}

@@ -62,7 +62,8 @@ def main():
     for r in rows[1:]:
         p = r.split("\t")
         try:
-            act[p[si]] = float(p[ai]); cov[p[si]] = int(float(p[ci]))
+            act[p[si]] = float(p[ai])
+            cov[p[si]] = int(float(p[ci]))
         except (ValueError, IndexError):
             continue
 

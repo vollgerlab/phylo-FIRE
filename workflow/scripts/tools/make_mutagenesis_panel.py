@@ -336,7 +336,8 @@ def main():
 
 
 def _self_test():
-    import tempfile, os
+    import os
+    import tempfile
     d = tempfile.mkdtemp()
     aln = os.path.join(d, "a.fa")
     with open(aln, "w") as f:

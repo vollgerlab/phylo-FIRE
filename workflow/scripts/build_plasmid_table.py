@@ -28,10 +28,10 @@ from stage1_tables import Stage1Store
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--aligned-dir", required=True, type=Path)
+    ap.add_argument("--tables-dir", required=True, type=Path,
+                    help="results/<run>/tables (Stage-1 summary parquets)")
     ap.add_argument("--haplotypes", required=True, type=Path,
                     help="haplotypes.parquet (actuation source)")
-    ap.add_argument("--phylo-mm-dir", required=True, type=Path)
     ap.add_argument("--peaks", required=True, type=Path, help="driver peak list (one id/line)")
     ap.add_argument("--out-constructs", required=True, type=Path)
     ap.add_argument("--out-fa", required=True, type=Path)
@@ -40,7 +40,7 @@ def main() -> None:
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
     parts = load_parts(args.haplotypes)
     all_rows, missing = [], []
-    store = Stage1Store(args.aligned_dir.parent)  # per-peak dirs, else tables/*.parquet
+    store = Stage1Store(args.tables_dir)
     for peak in peaks:
         aln = store.aligned(peak)
         if aln is None:
@@ -48,7 +48,7 @@ def main() -> None:
             continue
         rows, _ = build_peak(
             aln, peak_actuation(parts, peak),
-            store.phylo_mm(peak) or args.phylo_mm_dir / f"{peak}.tsv", peak
+            store.phylo_mm(peak), peak
         )
         all_rows.extend(rows)
 

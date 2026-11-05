@@ -160,6 +160,7 @@ rule stage1_tables:
         "python {params.script} --results {RESULTS} --peaks {input.peaks}"
 
 rule all:
+    default_target: True
     input:
         _stage1_targets(),
 

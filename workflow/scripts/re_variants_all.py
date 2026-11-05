@@ -34,8 +34,8 @@ from stage1_tables import Stage1Store  # noqa: E402
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--haplotypes", required=True, type=Path)
-    ap.add_argument("--aligned-dir", required=True, type=Path)
-    ap.add_argument("--phylo-mm-dir", required=True, type=Path)
+    ap.add_argument("--tables-dir", required=True, type=Path,
+                    help="results/<run>/tables (Stage-1 summary parquets)")
     ap.add_argument("--peaks", required=True, type=Path)
     ap.add_argument("--out-parquet", required=True, type=Path)
     ap.add_argument("--out-tsv", required=True, type=Path)
@@ -48,7 +48,7 @@ def main() -> None:
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
     parts = load_parts(args.haplotypes)
     tmp = Path(tempfile.mkdtemp(prefix="re_variants_all_"))
-    store = Stage1Store(args.aligned_dir.parent)  # per-peak dirs, else tables/*.parquet
+    store = Stage1Store(args.tables_dir)
     skipped: list[str] = []
 
     def do_peak(peak: str) -> None:

@@ -13,9 +13,9 @@ Build (end of Stage 1)::
 
     python stage1_tables.py --results results/<run> --peaks <peak_ids.txt>
 
-Read (Stage 2): ``Stage1Store(results_dir)`` hands back a per-peak file path,
-from the per-peak directories when they exist, else materialized from the
-parquet tables into a temp dir. Callers keep passing paths, unchanged.
+Read (Stage 2): ``Stage1Store(tables_dir)`` hands back a per-peak file path
+materialized from the parquet tables into a temp dir. Stage 2 reads only the
+tables, never the per-peak directories.
 """
 
 from __future__ import annotations
@@ -98,14 +98,14 @@ def build(results: Path, peaks: list[str], threads: int = 16) -> None:
 
 
 class Stage1Store:
-    """Per-peak Stage-1 files from directories, or from the summary tables.
+    """Per-peak Stage-1 files served from the summary tables.
 
     ``aligned(peak)``, ``tree(peak)`` and ``phylo_mm(peak)`` return a Path to the
-    peak's file, or None if the peak is in neither source. Directories win when
-    the file exists there, so existing runs behave exactly as before."""
+    peak's file (written to a temp dir on first use), or None if the peak is
+    not in that table."""
 
-    def __init__(self, results: Path):
-        self.results = Path(results)
+    def __init__(self, tables_dir: Path):
+        self.tables_dir = Path(tables_dir)
         self._tables: dict[str, dict[str, object]] = {}
         self._tmp = Path(tempfile.mkdtemp(prefix="stage1_store_"))
         self._lock = threading.Lock()
@@ -114,10 +114,8 @@ class Stage1Store:
         """peak_id -> content for one summary table (loaded once, lazily)."""
         with self._lock:
             if key not in self._tables:
-                path = self.results / "tables" / TABLES[key]
-                if not path.exists():
-                    self._tables[key] = {}
-                elif key == "aligned":
+                path = self.tables_dir / TABLES[key]
+                if key == "aligned":
                     df = pl.read_parquet(path).sort(["peak_id", "idx"])
                     self._tables[key] = {
                         p[0]: list(zip(g["name"].to_list(), g["seq"].to_list()))
@@ -130,9 +128,6 @@ class Stage1Store:
             return self._tables[key]
 
     def _get(self, key: str, peak: str, name: str) -> Path | None:
-        on_disk = self.results / key / name
-        if on_disk.exists():
-            return on_disk
         content = self._table(key).get(peak)
         if content is None:
             return None

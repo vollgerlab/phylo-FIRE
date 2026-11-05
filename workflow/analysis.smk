@@ -1,11 +1,11 @@
 """Stage 2 -- single-pass analysis on the persisted Stage-1 outputs.
 
-Run AFTER workflow/Snakefile (Stage 1) has produced results/{run}/aligned,
-trees, phylo_mm and tables/haplotypes.parquet. Each rule is ONE single-pass job
+Run AFTER workflow/Snakefile (Stage 1) has produced results/{run}/tables/
+{haplotypes,alignments,trees,phylo_mm}.parquet. Each rule is ONE single-pass job
 over the whole run (the build_plasmid_table.py pattern), so the DAG is a handful
 of nodes and builds in seconds -- no per-peak fan-out, no tree recompute. Reads
-only Stage-1 files + the AGC, so it also runs locally after downloading
-results/{run}/{aligned,trees,phylo_mm} + tables/haplotypes.parquet.
+only those tables + the AGC, so it also runs locally after downloading
+results/{run}/tables/ (~40 MB) and fastas/peak_ids.txt.
 
     snakemake -s workflow/analysis.smk --config run_name=<run> --rerun-triggers mtime -j <N>
 """
@@ -30,9 +30,12 @@ PLASMID = str(config.get("plasmid", "false")).lower() in ("true", "1", "yes")
 
 HAP = RESULTS + "/tables/haplotypes.parquet"
 PEAKS = RESULTS + "/fastas/peak_ids.txt"
-ALIGNED = RESULTS + "/aligned"
-TREES = RESULTS + "/trees"
-PHYLO_MM = RESULTS + "/phylo_mm"
+# Stage-1 summary tables (stage1_tables rule / pixi run <run>-tables): Stage 2
+# reads only these, never the per-peak aligned/ trees/ phylo_mm/ directories.
+TABLES = RESULTS + "/tables"
+ALIGNMENTS = TABLES + "/alignments.parquet"
+TREES = TABLES + "/trees.parquet"
+PHYLO_MM = TABLES + "/phylo_mm.parquet"
 
 
 def _hg38_ok() -> bool:
@@ -82,10 +85,12 @@ rule all:
 
 
 rule re_variants_all:
-    """Every peak's re_variants (seqs from aligned/, actuation from the parquet,
-drivers from phylo_mm) -> unified parquet + tsv.gz + the plot manifests."""
+    """Every peak's re_variants (MSAs + phylo_mm from the Stage-1 summary tables,
+actuation from haplotypes.parquet) -> unified parquet + tsv.gz + the plot manifests."""
     input:
         haplotypes=HAP,
+        alignments=ALIGNMENTS,
+        phylo_mm=PHYLO_MM,
         peaks=PEAKS,
     output:
         parquet=RESULTS + "/tables/re_variants.parquet",
@@ -98,16 +103,15 @@ drivers from phylo_mm) -> unified parquet + tsv.gz + the plot manifests."""
         mem_mb=32768,
         runtime=240,
     params:
+        tables=TABLES,
         script=os.path.join(workflow.basedir, "scripts/re_variants_all.py"),
-        aligned=ALIGNED,
-        phylo_mm=PHYLO_MM,
         manifest_dir=RESULTS + "/tables",
         random_n=config.get("random_n", 100),
         seed=config.get("random_seed", 42),
     shell:
         "POLARS_MAX_THREADS={threads} python {params.script} "
-        "--haplotypes {input.haplotypes} --aligned-dir {params.aligned} "
-        "--phylo-mm-dir {params.phylo_mm} --peaks {input.peaks} "
+        "--haplotypes {input.haplotypes} --tables-dir {params.tables} "
+        "--peaks {input.peaks} "
         "--out-parquet {output.parquet} --out-tsv {output.tsv} "
         "--manifest-dir {params.manifest_dir} --random-n {params.random_n} "
         "--seed {params.seed} --threads {threads}"
@@ -138,6 +142,8 @@ rule project_all:
     """Project every variable site to CHM13 + hg38 + assembly (single pass)."""
     input:
         haplotypes=HAP,
+        alignments=ALIGNMENTS,
+        phylo_mm=PHYLO_MM,
         peaks=PEAKS,
         coords=RESULTS + "/tables/peak_coords.tsv",
     output:
@@ -160,16 +166,15 @@ rule project_all:
         mem_mb=32768,
         runtime=480,
     params:
+        tables=TABLES,
         script=os.path.join(workflow.basedir, "scripts/project_variants_all.py"),
-        aligned=ALIGNED,
-        phylo_mm=PHYLO_MM,
         outdir=RESULTS + "/tables",
         agc=config.get("agc", ""),
         flank=config.get("flank", 0),
     shell:
         "python {params.script} --haplotypes {input.haplotypes} "
-        "--aligned-dir {params.aligned} "
-        "--phylo-mm-dir {params.phylo_mm} --coords {input.coords} "
+        "--tables-dir {params.tables} "
+        "--coords {input.coords} "
         "--peaks {input.peaks} --agc {params.agc} --flank {params.flank} "
         "--outdir {params.outdir} --threads {threads}"
 
@@ -217,6 +222,8 @@ rule plasmid_all:
     """Plasmid construct panel for every single-driver peak (single pass)."""
     input:
         haplotypes=HAP,
+        alignments=ALIGNMENTS,
+        phylo_mm=PHYLO_MM,
         drivers=RESULTS + "/tables/plot_drivers.txt",
     output:
         constructs=RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
@@ -225,12 +232,11 @@ rule plasmid_all:
         mem_mb=16384,
         runtime=120,
     params:
+        tables=TABLES,
         script=os.path.join(workflow.basedir, "scripts/build_plasmid_table.py"),
-        aligned=ALIGNED,
-        phylo_mm=PHYLO_MM,
     shell:
-        "python {params.script} --aligned-dir {params.aligned} "
-        "--haplotypes {input.haplotypes} --phylo-mm-dir {params.phylo_mm} "
+        "python {params.script} --tables-dir {params.tables} "
+        "--haplotypes {input.haplotypes} "
         "--peaks {input.drivers} --out-constructs {output.constructs} "
         "--out-fa {output.fa}"
 
@@ -245,6 +251,9 @@ rule plot_all:
 manifests -- one job over the subset, not per-peak."""
     input:
         haplotypes=HAP,
+        alignments=ALIGNMENTS,
+        phylo_mm=PHYLO_MM,
+        trees=TREES,
         drivers=RESULTS + "/tables/plot_drivers.txt",
         heritable=RESULTS + "/tables/plot_heritable_no_driver.txt",
         random=RESULTS + "/tables/plot_random.txt",
@@ -255,10 +264,8 @@ manifests -- one job over the subset, not per-peak."""
         mem_mb=16384,
         runtime=480,
     params:
+        tables=TABLES,
         script=os.path.join(workflow.basedir, "scripts/plot_all.py"),
-        aligned=ALIGNED,
-        trees=TREES,
-        phylo_mm=PHYLO_MM,
         manifest_dir=RESULTS + "/tables",
         outdir=RESULTS + "/plots",
         flank=config.get("flank", 0),
@@ -268,7 +275,7 @@ manifests -- one job over the subset, not per-peak."""
     shell:
         'LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${{LD_LIBRARY_PATH:-}}" '
         "python {params.script} --haplotypes {input.haplotypes} "
-        "--aligned-dir {params.aligned} --trees-dir {params.trees} "
-        "--phylo-mm-dir {params.phylo_mm} --manifest-dir {params.manifest_dir} "
+        "--tables-dir {params.tables} "
+        "--manifest-dir {params.manifest_dir} "
         "--outdir {params.outdir} --flank {params.flank} --threads {threads} "
         "{params.pclai_arg} {params.plasmid_arg} {params.html_arg}"

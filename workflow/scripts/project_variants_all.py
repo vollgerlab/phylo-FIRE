@@ -47,9 +47,8 @@ def _load_coords(path: Path) -> dict[str, dict]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--haplotypes", required=True, type=Path)
-    ap.add_argument("--aligned-dir", required=True, type=Path,
-                    help="results/<run>/aligned; the Stage-1 flanked MSA per peak")
-    ap.add_argument("--phylo-mm-dir", required=True, type=Path)
+    ap.add_argument("--tables-dir", required=True, type=Path,
+                    help="results/<run>/tables (Stage-1 summary parquets)")
     ap.add_argument("--coords", required=True, type=Path, help="peak_coords.tsv")
     ap.add_argument("--peaks", required=True, type=Path, help="run manifest")
     ap.add_argument("--agc", required=True)
@@ -67,7 +66,7 @@ def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="proj_all_"))
     hg38_dir = tmp / "hg38"
     hg38_dir.mkdir()
-    store = Stage1Store(args.aligned_dir.parent)  # per-peak dirs, else tables/*.parquet
+    store = Stage1Store(args.tables_dir)
     missing_coords: list[str] = []
     missing_aligned: list[str] = []
     unlifted_all: list[dict] = []

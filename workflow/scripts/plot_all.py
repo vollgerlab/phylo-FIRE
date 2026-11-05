@@ -44,9 +44,8 @@ def _write_actuation(parts, peak, path):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--haplotypes", required=True, type=Path)
-    ap.add_argument("--aligned-dir", required=True, type=Path)
-    ap.add_argument("--trees-dir", required=True, type=Path)
-    ap.add_argument("--phylo-mm-dir", required=True, type=Path)
+    ap.add_argument("--tables-dir", required=True, type=Path,
+                    help="results/<run>/tables (Stage-1 summary parquets)")
     ap.add_argument("--manifest-dir", required=True, type=Path)
     ap.add_argument("--outdir", required=True, type=Path)
     ap.add_argument("--flank", type=int, default=0)
@@ -71,7 +70,7 @@ def main() -> None:
             jobs.append((cat, peak))
 
     failed: list[str] = []
-    store = Stage1Store(args.aligned_dir.parent)  # per-peak dirs, else tables/*.parquet
+    store = Stage1Store(args.tables_dir)
 
     def render(job) -> None:
         cat, peak = job

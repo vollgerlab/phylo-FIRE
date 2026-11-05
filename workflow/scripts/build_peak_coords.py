@@ -34,7 +34,7 @@ def main() -> None:
 
     allow = None
     if args.peak_ids:
-        allow = {l.strip() for l in args.peak_ids.read_text().splitlines() if l.strip()}
+        allow = {ln.strip() for ln in args.peak_ids.read_text().splitlines() if ln.strip()}
 
     idx: dict[str, int] | None = None
     seen: dict[str, list[str]] = {}

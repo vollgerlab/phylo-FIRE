@@ -93,14 +93,14 @@ rule extract_fastas:
 manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkpoint."""
     input:
         src=_extract_fastas_input,
-        peak_ids=_peak_ids_input,
-        highlight=_highlight_input,
+        peak_ids=optional_file("peak_ids"),
+        highlight=optional_file("highlight_file"),
     output:
         # Every requested peak is declared so the DAG is static. A peak that yields
         # nothing leaves a declared output missing; extract_fastas.py exits listing
         # those ids. fastas/ is temp; haplotypes.parquet is the persisted copy.
-        fa=temp(expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=_run_peak_ids())),
-        tsv=temp(expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=_run_peak_ids())),
+        fa=temp(expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=PEAK_IDS)),
+        tsv=temp(expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=PEAK_IDS)),
         manifest=PEAKS,
         haplotypes=HAP,
     threads: config.get("bgzip_threads", 16)

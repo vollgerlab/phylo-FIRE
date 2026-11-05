@@ -8,13 +8,22 @@ configfile: "config/config.yaml"
 
 include: "rules/common.smk"
 include: "rules/stage1_common.smk"
+
+
+# Persisted Stage-1 outputs that analysis.smk consumes; Stage 2 never re-enters this DAG.
+rule all:
+    default_target: True
+    input:
+        expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=PEAK_IDS),
+        expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=PEAK_IDS),
+        expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=PEAK_IDS),
+        HAP,
+        ALIGNMENTS,
+        TREES,
+        PHYLO_MM,
+
+
 include: "rules/extract.smk"
 include: "rules/align.smk"
 include: "rules/trees.smk"
 include: "rules/phylo_mm.smk"
-
-
-rule all:
-    default_target: True
-    input:
-        _stage1_targets(),

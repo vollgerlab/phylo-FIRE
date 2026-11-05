@@ -58,16 +58,7 @@ def _run_peak_ids():
     return sorted(_sanitize_peak(fa.stem) for fa in Path(RESULTS).glob("fastas/*.fa"))
 
 
-def _stage1_targets():
-    """Persisted Stage-1 outputs that analysis.smk consumes; Stage 2 never re-enters this DAG."""
-    peaks = _run_peak_ids()
-    return (
-        expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=peaks)
-        + expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=peaks)
-        + expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=peaks)
-        + [HAP]
-        + rules.stage1_tables.output
-    )
+PEAK_IDS = _run_peak_ids()
 
 
 def _extract_fastas_input(wildcards):
@@ -78,21 +69,20 @@ def _extract_fastas_input(wildcards):
     return config["input_table"]
 
 
-def _peak_ids_input(wildcards):
-    """Track the peak_ids file so switching it re-runs extraction."""
-    pi = config.get("peak_ids")
-    return [pi] if pi else []
+def optional_file(key: str):
+    """Input function tracking config[key] when set, so changing that file re-runs the rule."""
+    return lambda wildcards: [config[key]] if config.get(key) else []
 
 
-def _highlight_input(wildcards):
-    """Track the highlight TSV so changing it re-runs extraction."""
-    hf = config.get("highlight_file")
-    return [hf] if hf else []
+def iqtree_bootstrap(wildcards, input) -> str:
+    """Ultrafast bootstrap only with >=4 unique sequences; IQ-TREE deduplicates
+    internally and refuses bootstrap on fewer distinct taxa."""
+    return "-B 1000" if count_unique_seqs_phylip(str(input.nuc)) >= 4 else ""
 
 
 def _mafft_input(wildcards):
     """RE-only FASTA, or the flanked FASTA when flanking is enabled."""
-    if int(config.get("flank", 0)) > 0:
+    if FLANKED:
         return f"{TEMP}/flanked/{wildcards.peak_id}.fa"
     return f"{RESULTS}/fastas/{wildcards.peak_id}.fa"
 
@@ -100,13 +90,13 @@ def _mafft_input(wildcards):
 def _re_tree(wildcards):
     """RE-only rooted tree: the trimmed-then-rebuilt tree when flank>0, else
     the main tree (with no flank the RE *is* the whole alignment)."""
-    if config.get("flank", 0) > 0:
+    if FLANKED:
         return f"{TEMP}/re/trees/{wildcards.peak_id}.rooted.nwk"
     return f"{RESULTS}/trees/{wildcards.peak_id}.rooted.nwk"
 
 
 def _re_alignment(wildcards):
     """RE-only alignment paired with `_re_tree`."""
-    if config.get("flank", 0) > 0:
+    if FLANKED:
         return f"{TEMP}/re/aligned/{wildcards.peak_id}.fa"
     return f"{RESULTS}/aligned/{wildcards.peak_id}.fa"

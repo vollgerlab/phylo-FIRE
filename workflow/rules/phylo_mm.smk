@@ -45,9 +45,9 @@ rule stage1_tables:
     tables (single pass), so Stage 2 can run from ``tables/`` alone, e.g. locally
     after downloading it. See workflow/scripts/stage1_tables.py."""
     input:
-        aligned=lambda wc: expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=_run_peak_ids()),
-        trees=lambda wc: expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=_run_peak_ids()),
-        phylo_mm=lambda wc: expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=_run_peak_ids()),
+        aligned=expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=PEAK_IDS),
+        trees=expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=PEAK_IDS),
+        phylo_mm=expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=PEAK_IDS),
         peaks=PEAKS,
     output:
         ALIGNMENTS,

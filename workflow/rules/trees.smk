@@ -46,11 +46,7 @@ rule iqtree:
     params:
         prefix=lambda wc: os.path.abspath(f"{TEMP}/trees/{wc.peak_id}"),
         peak_id=lambda wc: wc.peak_id,
-        # Enable ultrafast bootstrap only when the alignment has >=4 unique sequences;
-        # IQ-TREE deduplicates internally and refuses bootstrap on fewer distinct taxa.
-        bootstrap=lambda wc, input: (
-            "-B 1000" if count_unique_seqs_phylip(str(input.nuc)) >= 4 else ""
-        ),
+        bootstrap=iqtree_bootstrap,
     shell:
         # iqtree runs beside the .nex (relative .phy refs) with an absolute --prefix
         # into TEMP/trees; shadow: conflicts with that prefix, so aux files are deleted
@@ -160,9 +156,7 @@ tree is copied instead, which only needs the right tips since H²ₚ(RE) is then
     params:
         prefix=lambda wc: os.path.abspath(f"{TEMP}/re/trees/{wc.peak_id}"),
         peak_id=lambda wc: wc.peak_id,
-        bootstrap=lambda wc, input: (
-            "-B 1000" if count_unique_seqs_phylip(str(input.nuc)) >= 4 else ""
-        ),
+        bootstrap=iqtree_bootstrap,
     shell:
         """
         if (cd $(dirname {input.nex}) && iqtree -p {params.peak_id}.nex \

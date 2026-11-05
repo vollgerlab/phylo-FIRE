@@ -123,8 +123,7 @@ def main() -> None:
         print(f"[project_all] {len(missing_aligned)} peaks missing aligned/*.fa "
               f"(skipped): {', '.join(missing_aligned[:10])}", file=sys.stderr)
 
-    # Reuse aggregate_hg38 (writes the variant table + plain VCF + BEDs), then
-    # bgzip + tabix the VCF (matching the old aggregate_hg38 rule shell).
+    # Reuse aggregate_hg38 (variant table + plain VCF + BEDs), then bgzip + tabix the VCF.
     args.outdir.mkdir(parents=True, exist_ok=True)
     vcf_plain = args.outdir / "variants.hg38.vcf"
     agg = Path(__file__).resolve().parent / "aggregate_hg38.py"

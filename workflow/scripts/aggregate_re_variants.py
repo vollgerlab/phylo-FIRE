@@ -34,15 +34,10 @@ def main() -> None:
     indir = Path(args.indir)
     peaks = [p.strip() for p in Path(args.peaks).read_text().splitlines() if p.strip()]
 
-    # Pin EVERY column's type up front so per-file inference can't disagree
-    # across peaks (concat how="vertical" requires identical schemas). Known
-    # numeric/bool columns get their type; read_csv reads "" as null for those,
-    # so a peak with an all-blank numeric column (e.g. attribution_mode=none →
-    # blank h2_re_*, non-carrier rows → blank n_other_diffs) stays numeric.
-    # EVERY OTHER column is forced to Utf8 — critically the comma-list columns
-    # (act_values, samples, driver_ids/positions/betas/p), which infer Float64
-    # in a peak whose rows each hold a single value ("0.55") and String in a peak
-    # with multiple ("0.1,0.55"); that mismatch is what breaks the concat.
+    # Pin every column's type so per-file inference can't break the vertical concat.
+    # Numeric/bool columns stay numeric even when all blank (attribution_mode=none,
+    # non-carrier rows). The rest are Utf8: comma-list columns infer Float64 for a
+    # single value ("0.55") but String for a list ("0.1,0.55").
     numeric_bool = {
         "gc_frac": pl.Float64, "act_mean": pl.Float64, "act_sd": pl.Float64,
         "act_min": pl.Float64, "act_max": pl.Float64, "total_cov": pl.Float64,

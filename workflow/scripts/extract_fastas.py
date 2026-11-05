@@ -17,10 +17,7 @@ import argparse
 import sys
 from pathlib import Path
 
-# Columns are resolved by header name (the union-peaks BED carries a
-# `#chrom ...` header). This survives column reordering across dataset
-# versions — e.g. fire_cov_OV_cov moved and asm_chr/start/end were replaced by
-# a single asm_peak_id between the cons-coord and asm-coord builds.
+# Columns are resolved by header name (the union-peaks BED has a `#chrom ...` header).
 COLUMN_NAMES = {                       # logical -> header column name
     "peak_id": "consensus_peak_id",
     "coverage": "coverage",
@@ -45,9 +42,9 @@ LEGACY_IDX = {
 def resolve_columns(header_fields: list[str]) -> dict:
     """Map logical column -> index from a `#`-prefixed header row.
 
-    asm coordinates come from either explicit asm_chr/asm_start/asm_end columns
-    (old schema) or by splitting `asm_peak_id = '{asm_chr}_{start}_{end}'`
-    (new schema). Records the chosen mode under the ``_asm`` key.
+    asm coordinates come from explicit asm_chr/asm_start/asm_end columns or from
+    splitting `asm_peak_id = '{asm_chr}_{start}_{end}'`. Records the chosen mode
+    under the ``_asm`` key.
     """
     names = [h.lstrip("#") for h in header_fields]
     idx = {n: i for i, n in enumerate(names)}

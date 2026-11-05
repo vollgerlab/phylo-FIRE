@@ -1,10 +1,7 @@
 #!/usr/bin/env Rscript
 # Root an ML tree ONCE into a canonical rooted Newick.
 #
-# Both phylo_mm.R and the plot read this rooted tree and neither re-roots, so
-# the clade each branch represents is identical everywhere — fixing the
-# scattered leader lines / detached annotations / mirror branches that came
-# from phylo_mm and the plot rooting independently.
+# phylo_mm.R and the plot both read this tree and never re-root, so clades match.
 #
 # ROOTING = ANCESTRAL PROXY. We root on the haplotype(s) closest to the MSA
 # consensus (the modal allele ≈ ancestral in young intraspecific variation).

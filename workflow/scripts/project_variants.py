@@ -2,15 +2,10 @@
 """Project every variable site in a peak's alignment to CHM13 + hg38 (+ each
 carrier's assembly), flagging which sites are attribution drivers.
 
-Projects onto the PIPELINE'S OWN Stage-1 flanked alignment (aligned/{peak}.fa),
-NOT a fresh re-alignment. This matters: phylo_mm's driver `linked_sites` and
-`descendants` are defined on that alignment's columns, so reusing it lets us flag
-a driver at the SAME column the tree/MSA plot annotates -- including homoplastic
-drivers (whose carriers are NOT a clean column partition) and flank drivers,
-which a fresh RE-only re-alignment silently dropped. The CHM13/hg38 reference
-sequences are added onto that fixed alignment with `mafft --add` (which only
-inserts all-hap-gap columns, so hap columns -- and thus phylo_mm's -- are
-preserved), then alignment columns map to genomic coordinates.
+Projects onto the Stage-1 flanked alignment (aligned/{peak}.fa) so driver columns
+match phylo_mm's `linked_sites` exactly, including homoplastic and flank drivers.
+CHM13/hg38 are added with `mafft --add`, which only inserts all-hap-gap columns,
+so hap columns are preserved; alignment columns then map to genomic coordinates.
 
 A driver is emitted as a bed/VCF SNV when at least one of its `linked_sites`
 columns (or a column whose carriers equal its clade) is a real substitution.
@@ -211,20 +206,14 @@ def _col_carriers(aln_haps: dict[str, str], min_carriers: int):
 
 
 def _driver_cols(colcar, drivers, re_band):
-    """For each driver, the SNV columns that represent it. Primary: its
-    `linked_sites` columns that are substitutions -- exactly what the tree/MSA
-    plot annotates, so the bed can't disagree with the plot. Fallback (only when
-    NONE of a driver's linked columns is a substitution -- e.g. a mono column
-    from a 1-col alignment nudge): a column whose minor-carriers equal its clade,
-    restricted to the RE band so a perfectly-linked flank hitchhiker isn't
-    mislabelled the causal variant. Returns (col->beta, list-of-unmatched).
+    """Map each driver to the SNV columns that represent it.
 
-    `drivers`: {frozenset(desc): (beta, [linked_1based])}; `re_band`: (lo,hi)
-    0-based inclusive RE columns, or None to allow all. Unmatched drivers
-    (indel-only / unresolvable) are returned for the unlifted list. `col_desc`
-    carries each driver column's clade (descendants) so the emit loop can pin the
-    reported driver allele + carriers to the phylo_mm clade, not to allele count
-    (which ties on balanced sites and can even disagree with the clade)."""
+    Primary: its `linked_sites` columns that are substitutions (what the plot
+    annotates). Fallback, only when none is: an RE-band column whose minor
+    carriers equal the driver's clade. `drivers` is {frozenset(desc): (beta,
+    [linked_1based])}; `re_band` is 0-based inclusive (lo, hi) or None (all).
+    Returns (col->beta, col->clade, unmatched drivers for the unlifted list);
+    col->clade pins the reported allele to the clade, not to allele count."""
     lo, hi = re_band if re_band else (0, 10**9)
     by_carrier = {}
     for c, (_, _, carr) in colcar.items():

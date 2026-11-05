@@ -1,6 +1,5 @@
 import os
 import shlex
-import sys
 from pathlib import Path
 from snakemake.utils import min_version
 
@@ -10,10 +9,8 @@ min_version("8.0")
 configfile: "config/config.yaml"
 
 
-# Plot outputs live in a category subdir (results/plots/{category}/{peak}); pin
-# the category to the known set and keep peak_id from swallowing the slash.
+# Keep peak_id from swallowing a slash.
 wildcard_constraints:
-    category="drivers|heritable_no_driver|random",
     peak_id=r"[^/]+",
 
 
@@ -24,41 +21,6 @@ wildcard_constraints:
 RUN = config.get("run_name", "default")
 RESULTS = f"results/{RUN}"
 TEMP = f"temp/{RUN}"
-
-# Interactive HTML plots are ~4 MB each; OFF by default (the static PDF is always
-# written). Enable with `--config plot_html=true`. (str() because --config values
-# arrive as strings, where bool("false") would be truthy.)
-PLOT_HTML = str(config.get("plot_html", "false")).lower() in ("true", "1", "yes")
-
-# hg38/CHM13 coordinate projection (for GWAS-enrichment). ON BY DEFAULT; it is
-# auto-skipped when it can't run — preextracted mode (no union BED / hg38 coords)
-# or no AGC available (see _hg38_targets). Additive: reads only persisted outputs
-# + the AGC, so it can also be run on a finished pipeline without recomputing
-# trees/stats. Disable with `--config project_hg38=false`.
-PROJECT_HG38 = str(config.get("project_hg38", "true")).lower() in ("true", "1", "yes")
-
-# Plasmid fiber-seq construct panel (per the experimental-design notes). Opt-in.
-# Builds the ≤4-construct on/off-both-backgrounds panel for every single-driver
-# peak + a seeded ~N-site sample, and draws the constructs under the driver plots.
-PLASMID = str(config.get("plasmid", "false")).lower() in ("true", "1", "yes")
-
-
-def count_unique_seqs(fa_path: str) -> int:
-    """Count unique sequences in a FASTA (handles multi-line format)."""
-    seqs: set[str] = set()
-    parts: list[str] = []
-    with open(fa_path) as fh:
-        for line in fh:
-            line = line.rstrip()
-            if line.startswith(">"):
-                if parts:
-                    seqs.add("".join(parts))
-                parts = []
-            else:
-                parts.append(line)
-    if parts:
-        seqs.add("".join(parts))
-    return len(seqs)
 
 
 def count_unique_seqs_phylip(phy_path: str) -> int:
@@ -332,7 +294,6 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
         # the persisted Stage-2 source of actuation + coords + RE sequence.
         fa=temp(expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=_run_peak_ids())),
         tsv=temp(expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=_run_peak_ids())),
-        done=touch(RESULTS + "/fastas/.done"),
         manifest=RESULTS + "/fastas/peak_ids.txt",
         haplotypes=RESULTS + "/tables/haplotypes.parquet",
     threads: config.get("bgzip_threads", 16)

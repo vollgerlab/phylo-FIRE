@@ -107,9 +107,8 @@ Three Snakemake steps driven by a checkpoint:
      ingesting PARE's per-paralog-group output (see "Cross-repo: PARE" below).
      `config["input_table"]` is ignored when `preextracted_dir` is set.
 
-   In both cases the checkpoint sentinel is `results/fastas/.done`; downstream
-   rules are discovered via `glob_wildcards("results/fastas/{peak_id}.fa")`
-   after it completes.
+   In both cases the peak set comes from the static manifest
+   `results/<run>/fastas/peak_ids.txt`, read at parse time.
 
 1b. `rule add_flanks` (only when `config["flank"] > 0`) -- pulls each haplotype's
    sequence with `flank` bp of assembly context each side from the AGC archive

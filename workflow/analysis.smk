@@ -11,7 +11,6 @@ results/{run}/tables/ (~40 MB) and fastas/peak_ids.txt.
 """
 
 import os
-import sys
 from pathlib import Path
 from snakemake.utils import min_version
 

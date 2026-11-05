@@ -1,119 +1,68 @@
 # phylo-FIRE
 
-Snakemake pipeline for building per-peak phylogenetic trees across HPRC fiber-seq samples.
-For each consensus FIRE peak, sequences are extracted from all 90 haplotypes (45 individuals),
-aligned with MAFFT, and used to infer a maximum-likelihood tree with IQ-TREE. Each tree is
-exported alongside a FIRE actuation heatmap showing per-sample accessibility.
-
-## Pipeline overview
-
-```
-union-peaks BED (bgzipped, ~3 GB)
-        |
-        v
-[checkpoint] extract_fastas.py   -- one-pass stream; writes fastas/{peak_id}.fa
-                                     and fastas/{peak_id}.tsv (per-sample actuation)
-        |
-        v (per peak, parallel)
-rule mafft        aligned/{peak_id}.fa     -- MAFFT --auto --maxiterate 1000
-rule iqtree       trees/{peak_id}.treefile -- IQ-TREE ModelFinder + bootstrap (if >=4 unique seqs)
-rule plot         plots/{peak_id}.pdf      -- tree + FIRE actuation heatmap
-```
-
-Intermediate aligned FASTAs are marked `temp()` and deleted after IQ-TREE completes.
-IQ-TREE auxiliary files (`.log`, `.iqtree`, `.bionj`, etc.) are isolated in a shadow
-directory and discarded; only the `.treefile` is kept.
+Snakemake pipeline that asks, for each consensus FIRE peak, whether chromatin
+actuation tracks the local sequence genealogy across HPRC haplotypes, and if so,
+which variants drive it. Each peak gets a flanked MSA, an ML tree, a phylogenetic
+mixed-model H²ₚ estimate and a forward-selection driver model. The deliverable is
+a per-RE-sequence variant table with hg38/CHM13 coordinates and plasmid designs.
 
 ## Quick start
 
 ```bash
-pixi install              # set up the environment
-pixi run dry-run          # preview the DAG (no execution)
-pixi run test             # clean build + run on 10 test peaks
-pixi run unit             # pytest unit tests for workflow/scripts
+pixi install
+pixi run test               # Stage 1 on 9 test peaks (results/test/)
+pixi run replot             # Stage 2 on the test run, re-rendering plots
+pixi run hap-selective-30   # both stages on 30 HSCA peaks
+pixi run test -n            # dry run; tasks pass extra flags to snakemake
+pixi run unit               # unit tests for the scripts
 ```
 
-## Running on the full dataset
+## Two stages
+
+Both stages write to `results/{run_name}/` and share `config/config.yaml`.
+
+**Stage 1, `workflow/Snakefile`** (rules in `workflow/rules/`). The expensive
+per-peak chain: extract sequences from the union BED, add AGC flanks, align with
+MAFFT, code indels, build an IQ-TREE tree, root it, then run `phylo_mm.R`
+(H²ₚ gate, then joint WLS driver selection). Key outputs:
+
+| Path | Contents |
+|------|----------|
+| `aligned/`, `trees/`, `phylo_mm/` | per-peak MSA, rooted tree, phylo_mm TSV |
+| `tables/{alignments,trees,phylo_mm}.parquet` | the per-peak files combined |
+| `tables/haplotypes.parquet` | per-haplotype sequence, actuation, assembly coords |
+| `fastas/peak_ids.txt` | peaks that survived extraction |
+
+**Stage 2, `workflow/analysis.smk`**. Single-pass jobs that read only the
+Stage-1 tables, so they finish in minutes and never recompute a tree:
+
+| Path | Contents |
+|------|----------|
+| `tables/re_variants.{parquet,tsv.gz}` | one row per unique RE sequence per peak, with drivers |
+| `tables/variants.hg38.{tsv.gz,vcf.gz}` | every variable site projected to hg38 |
+| `tables/variants.{hg38,chm13}.bed.gz`, `elements.hg38.bed.gz` | tabix-indexed BEDs |
+| `tables/drivers.unlifted.tsv` | indel-only drivers that cannot be a single-base site |
+| `plasmid_fiberseq/` | plasmid construct panel (`plasmid=true`) |
+| `plots/{drivers,heritable_no_driver,random}/` | tree + MSA + actuation PDFs for a subset |
+
+Optional: `dbsnp=<vcf.gz>` adds `variants.hg38.rsid.vcf.gz`, and
+`significant_loci=<tsv>` (with `dbsnp`) adds `phewas/significant_driver_rsids.*`.
+
+Stage 2 runs anywhere once you copy `results/<run>/tables/` (~40 MB) and
+`fastas/peak_ids.txt`. The hg38/CHM13 projection also needs the AGC archive and
+the union BED.
+
+## Cluster runs (CHPC Redwood)
 
 ```bash
-# All haplotype-selective peaks
-snakemake --profile profiles/slurm \
-    --config haplotype_distinct="Haplotype-selective" -j 200
-
-# A specific list of peaks
-snakemake --profile profiles/slurm \
-    --config peak_ids=my_peaks.txt -j 200
-
-# Both filters combined
-snakemake --profile profiles/slurm \
-    --config peak_ids=my_peaks.txt haplotype_distinct="Haplotype-selective" -j 200
+pixi run hsca-hapsel-ids && pixi run hsca-hapsel   # Stage 1, ~23K peaks
+pixi run hsca-hapsel-stage2                        # Stage 2
 ```
 
-## Outputs
+The full 180K-peak run uses `config/cluster.yaml`; see `docs/data-setup.md`.
 
-| Path | Description |
-|------|-------------|
-| `fastas/{peak_id}.fa` | Unaligned FASTA (one entry per primary sample/haplotype) |
-| `fastas/{peak_id}.tsv` | Per-sample FIRE actuation fraction (`fire_cov_OV_cov`, 0-1) |
-| `trees/{peak_id}.treefile` | Newick ML tree from IQ-TREE |
-| `plots/{peak_id}.pdf` | Tree + actuation heatmap (white-to-dark-red, 10% bins) |
+## More detail
 
-## Configuration (`config.yaml`)
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `input_table` | `Tables/union-peaks-cons.bed.gz` | bgzipped union-peaks BED |
-| `peak_ids` | `null` | Path to a file of consensus_peak_ids (one per line) |
-| `haplotype_distinct` | `null` | Filter peaks by classification (e.g. `Haplotype-selective`) |
-| `primary_only` | `true` | Restrict to primary samples |
-| `min_seqs` | `2` | Minimum unique sequences to build a tree |
-| `mafft_maxiterate` | `1000` | MAFFT iterative refinement cycles |
-| `bgzip_threads` | `16` | Threads for bgzip decompression |
-
-## Input table
-
-The input is the bgzipped BED produced by the `union-peaks.Rmd` pipeline. Key columns used:
-
-| Column | Index | Description |
-|--------|-------|-------------|
-| `consensus_peak_id` | 4 | Unique peak identifier (e.g. `chr8_8453862_8454062`) |
-| `fire_cov_OV_cov` | 9 | FIRE actuation fraction (fire_coverage / coverage, 0-1) |
-| `seq` | 23 | DNA sequence at this peak for this haplotype (NA if unmapped) |
-| `Individual_ID` | 25 | Sample individual (e.g. `HG00438`) |
-| `Haplotype` | 26 | `1` or `2` |
-| `is_primary_sample` | 36 | `TRUE` for the preferred sample per individual |
-| `haplotype_distinct` | 37 | Peak classification: Shared, Haplotype-selective, etc. |
-
-Peak IDs containing `#` (assembly-coordinate peaks) are sanitized to `_` for filenames.
-
-## Test dataset
-
-`test/test-union-peaks.bed.gz` contains 810 rows covering 9 peaks (90 haplotypes each):
-
-- 4 Haplotype-selective (genetic variants between haplotypes)
-- 3 Epigenetically haplotype-selective
-- 3 Shared (expect similar sequences; useful as controls)
-- `chr8_70445067_70445271`: two-driver exemplar (main-figure example). RE112 (β≈−0.33)
-  closes the element on two haplotype backgrounds; RE63 (β≈+0.17) opens it on a separate clade.
-
-`test_peak_ids.txt` lists all 9 peak IDs. All 9 produce trees; peaks with fewer than 4
-unique sequences run without ultrafast bootstrap.
-
-## Data locations (relative to `/mmfs1/gscratch/stergachislab/HPRC/mrv-figures/`)
-
-| File | Size | Description |
-|------|------|-------------|
-| `Tables/union-peaks-cons.bed.gz` | ~3 GB | Full union-peaks table (~65 M rows) |
-| `Tables/peaks-cons.bed.gz` | ~700 MB | Peaks-only subset (~7.7 M rows) |
-| `phylo-trees/test/test-union-peaks.bed.gz` | small | 900-row test subset |
-
-## Dependencies
-
-Managed via `pixi.toml` (conda-forge/bioconda):
-
-- `bgzip` / `htslib` (decompression)
-- `mafft` (multiple sequence alignment)
-- `iqtree` (ML tree inference; installs as `iqtree`, version 3+)
-- `biopython` (tree parsing and drawing)
-- `matplotlib` (visualization)
-- `snakemake >= 8.0` with `snakemake-executor-plugin-slurm`
+- `config/config.yaml`: every config key, with comments.
+- `docs/data-setup.md`: input data, the HSCA peak set and new test fixtures.
+- `docs/DEVELOPMENT.md`: rule list, design decisions and data gotchas.

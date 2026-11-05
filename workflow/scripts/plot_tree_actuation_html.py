@@ -32,6 +32,7 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common_io import read_fasta  # noqa: E402
+from phylo_mm_io import read_phylo_mm, to_float  # noqa: E402
 from pclai import PCLAI_MISSING, PCLAI_NEAREST_BP, query_pclai  # noqa: E402
 
 # ── Colour palettes ───────────────────────────────────────────────────────────
@@ -133,53 +134,28 @@ def load_phylo_mm(path: Path) -> dict:
 
     Rows carry the marginal carriers-vs-rest stats (mean_in/out, t_stat, p_raw,
     p_fdr), the joint forward-selection stats (beta, se, ci_*, p) and
-    ``is_split`` (selected driver). Missing or malformed file → empty.
+    ``is_split`` (selected driver). Numeric header values become floats; rows
+    whose field count differs from the header are skipped. Missing file → empty.
     """
+    pm = read_phylo_mm(path)
     out: dict = {"meta": {}, "branches": []}
-    try:
-        with path.open() as fh:
-            lines = [ln.rstrip("\n") for ln in fh]
-    except (OSError, AttributeError):
-        return out
-    data_lines: list[str] = []
-    for ln in lines:
-        if not ln.strip():
+    for key, val in pm.header.items():
+        try:
+            out["meta"][key] = float(val)
+        except ValueError:
+            out["meta"][key] = val
+    for f in pm.records:
+        if len(f) != len(pm.columns):
             continue
-        if ln.startswith("#"):
-            kv = ln.lstrip("# ").split("=", 1)
-            if len(kv) == 2:
-                key, val = kv[0].strip(), kv[1].strip()
-                try:
-                    out["meta"][key] = float(val)
-                except ValueError:
-                    out["meta"][key] = val
-            continue
-        data_lines.append(ln)
-    if len(data_lines) < 2:
-        return out
-    header, *rows = data_lines
-    cols = header.split("\t")
-    for raw in rows:
-        f = raw.split("\t")
-        if len(f) != len(cols):
-            continue
-        rec = dict(zip(cols, f))
+        rec = dict(zip(pm.columns, f))
         for k in ("branch_id", "n_below"):
             try:
                 rec[k] = int(rec[k])
             except (KeyError, ValueError):
                 pass
         for k in ("mean_in", "mean_out", "t_stat", "p_raw", "p_fdr",
-                  "lasso_coef", "beta", "se",
-                  "ci_lower", "ci_upper", "p"):
-            raw_val = rec.get(k, "")
-            if raw_val in ("", "NA"):
-                rec[k] = None
-            else:
-                try:
-                    rec[k] = float(raw_val)
-                except ValueError:
-                    rec[k] = None
+                  "lasso_coef", "beta", "se", "ci_lower", "ci_upper", "p"):
+            rec[k] = to_float(rec.get(k, ""))
         rec["selected_by_lasso"] = (
             str(rec.get("selected_by_lasso", "")).upper() == "TRUE"
         )

@@ -26,6 +26,7 @@ from pathlib import Path
 
 from build_re_variants import is_divergent
 from common_io import parse_fasta, revcomp
+from phylo_mm_io import PhyloMM, attributed_band, read_phylo_mm, selected_drivers
 
 _CHM13_CHR = re.compile(r"^chr([0-9]+|X|Y|M)$")
 
@@ -209,48 +210,17 @@ def _driver_cols(colcar, drivers, re_band):
     return col_beta, col_desc, unmatched
 
 
-def _re_header(phylo_mm):
-    """((lo, hi) 0-based inclusive RE columns or None, attribution_mode string).
-    `linked_sites` and re_first/last_col are 1-based columns -> subtract 1."""
-    band, mode = None, ""
-    if phylo_mm and Path(phylo_mm).exists():
-        lo = hi = None
-        for line in Path(phylo_mm).read_text().splitlines():
-            if not line.startswith("#"):
-                break
-            if line.startswith("# attribution_mode="):
-                mode = line.split("=", 1)[1].strip()
-            elif line.startswith("# re_first_col="):
-                lo = int(line.split("=", 1)[1])
-            elif line.startswith("# re_last_col="):
-                hi = int(line.split("=", 1)[1])
-        if lo is not None and hi is not None:
-            band = (lo - 1, hi - 1)
-    return band, mode
+def _re_band(header: dict[str, str]) -> tuple[int, int] | None:
+    """0-based inclusive RE columns from the phylo_mm header, or None if absent.
+    int() raises on the 'NA' written for flank=0 or an empty fit, as it always has."""
+    lo = int(header["re_first_col"]) if "re_first_col" in header else None
+    hi = int(header["re_last_col"]) if "re_last_col" in header else None
+    return (lo - 1, hi - 1) if lo is not None and hi is not None else None
 
 
-def _load_drivers(phylo_mm) -> dict[frozenset, tuple]:
-    """frozenset(clade leaves) -> (beta, [linked_sites]) for is_split rows."""
-    out = {}
-    if not phylo_mm or not Path(phylo_mm).exists():
-        return out
-    lines = [l for l in Path(phylo_mm).read_text().splitlines() if not l.startswith("#")]
-    if not lines:
-        return out
-    idx = {h: i for i, h in enumerate(lines[0].split("\t"))}
-    if "is_split" not in idx or "descendants" not in idx:
-        return out
-    for ln in lines[1:]:
-        f = ln.split("\t")
-        if len(f) <= idx["descendants"] or f[idx["is_split"]].upper() not in ("TRUE", "1"):
-            continue
-        desc = frozenset(d for d in f[idx["descendants"]].split(",") if d)
-        beta = f[idx["beta"]] if "beta" in idx and len(f) > idx["beta"] else "NA"
-        linked = []
-        if "linked_sites" in idx and len(f) > idx["linked_sites"]:
-            linked = [int(x) for x in f[idx["linked_sites"]].split(",") if x.strip().isdigit()]
-        out[desc] = (beta, linked)
-    return out
+def _load_drivers(pm: PhyloMM) -> dict[frozenset, tuple]:
+    """frozenset(clade leaves) -> (beta string, [linked_sites]) for is_split rows."""
+    return {d.carriers: (d.beta_str, list(d.cols)) for d in selected_drivers(pm)}
 
 
 def _left_flank(aln_hap_gapped: str, re_seq: str) -> int | None:
@@ -277,14 +247,17 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
     ``unlifted`` is indel-only drivers that can't be a single-base SNV."""
     if len(aln_haps) < 2:
         return [], []
-    drivers = _load_drivers(phylo_mm)
+    pm = read_phylo_mm(phylo_mm)
+    drivers = _load_drivers(pm)
     hap_names = list(aln_haps)
     L = len(next(iter(aln_haps.values())))
 
     colcar = _col_carriers(aln_haps, min_carriers)
-    re_band, attr_mode = _re_header(phylo_mm)
+    re_band = _re_band(pm.header)
+    attr_mode = pm.header.get("attribution_mode", "")
     # Same band build_re_variants attributes over: whole alignment in region mode.
-    band_len = L if (attr_mode == "region" or re_band is None) else re_band[1] - re_band[0] + 1
+    band_lo, band_hi = attributed_band(pm.header, L)
+    band_len = band_hi - band_lo + 1
     divergent = {desc: is_divergent(len(linked), band_len)
                  for desc, (_, linked) in drivers.items()}
     # Driver carrier-set fallback: whole alignment in region mode, else RE band.

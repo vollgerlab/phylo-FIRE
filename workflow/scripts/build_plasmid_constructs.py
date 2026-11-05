@@ -26,32 +26,9 @@ plasmid readout can be checked against the native effect.
 the whole run) and the aligned panel that plot_all draws as grey pseudo-leaf rows
 under the MSA.
 """
-from pathlib import Path
 
 from common_io import read_fasta
-
-
-def parse_phylo_mm(path):
-    """(header dict, [drivers]) — driver = {id, cols(0-based aln), carriers, beta}."""
-    header, cols, drivers = {}, [], []
-    if not path or not Path(path).exists():
-        return header, drivers
-    for line in Path(path).read_text().splitlines():
-        if line.startswith("#"):
-            k, _, v = line[1:].partition("=")
-            header[k.strip()] = v.strip()
-        elif not cols:
-            cols = line.split("\t")
-        else:
-            r = dict(zip(cols, line.split("\t")))
-            if r.get("is_split", "").upper() == "TRUE":
-                drivers.append({
-                    "id": f"d{r['branch_id']}",
-                    "cols": [int(c) - 1 for c in r.get("linked_sites", "").split(",") if c],
-                    "carriers": {d for d in r.get("descendants", "").split(",") if d},
-                    "beta": r.get("beta", "NA"),
-                })
-    return header, drivers
+from phylo_mm_io import read_phylo_mm, selected_drivers
 
 
 def cov_mean(haps, act):
@@ -98,27 +75,28 @@ def build_peak(aligned, act, phylo_mm, peak_id):
     driver, >1 distinct driver effect, or a rep group is empty).
     """
     aln = read_fasta(aligned, strip_r=False)
-    header, drivers = parse_phylo_mm(phylo_mm)
+    pm = read_phylo_mm(phylo_mm)
+    header, drivers = pm.header, selected_drivers(pm)
     aln_len = len(next(iter(aln.values()))) if aln else 0
     re_lo = int(header.get("re_first_col", 1)) - 1
     re_hi = int(header.get("re_last_col", aln_len)) - 1
 
     rows, panel = [], []
     # Exclusion: keep only peaks with a SINGLE distinct driver EFFECT (one beta).
-    betas = {d["beta"] for d in drivers}
+    betas = {d.beta_str for d in drivers}
     if len(drivers) == 0 or len(betas) > 1:
         return rows, panel
     drv = drivers[0]
     all_names = [n for n in aln]
-    carriers = [n for n in all_names if n in drv["carriers"]]
-    outgroup = [n for n in all_names if n not in drv["carriers"]]
+    carriers = [n for n in all_names if n in drv.carriers]
+    outgroup = [n for n in all_names if n not in drv.carriers]
     if not carriers or not outgroup:
         return rows, panel
 
     d_leaf, d_n, d_mean = pick_rep(carriers, aln, act, re_lo, re_hi, prefer_high=True)
     o_leaf, o_n, o_mean = pick_rep(outgroup, aln, act, re_lo, re_hi, prefer_high=False)
     d_seq, o_seq = list(aln[d_leaf]), list(aln[o_leaf])
-    cols = [c for c in drv["cols"] if 0 <= c < aln_len]
+    cols = [c - 1 for c in drv.cols if 0 <= c - 1 < aln_len]   # 1-based -> 0-based
     if not cols:
         # Flank-driven split with no RE-scoped variant: the driver isn't in a
         # column we can locate, so there's no clonable pair to build -- skip.
@@ -168,9 +146,9 @@ def build_peak(aligned, act, phylo_mm, peak_id):
             re_seq, re_len = "NA", "NA"
         else:
             re_seq, re_len = bseq, len(bseq)
-            panel.append((f"PL_{peak_id}_{drv['id']}_{role}", leaf, role, "".join(seq)))
+            panel.append((f"PL_{peak_id}_{drv.id}_{role}", leaf, role, "".join(seq)))
         rows.append({
-            "peak_id": peak_id, "driver_id": drv["id"], "driver_beta": drv["beta"],
+            "peak_id": peak_id, "driver_id": drv.id, "driver_beta": drv.beta_str,
             "driver_re_cols": ",".join(str(c - band_lo + 1) for c in cols),
             "role": role, "background": bg, "carries_driver": carries, "is_synthetic": synth,
             "collapsed": collapsed, "source_rep": rep, "source_leaf": leaf,

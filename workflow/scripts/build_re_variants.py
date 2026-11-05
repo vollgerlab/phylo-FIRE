@@ -26,6 +26,7 @@ import statistics
 from pathlib import Path
 
 from common_io import load_actuation_tsv, read_fasta, split_peak_id
+from phylo_mm_io import attributed_band, re_cols, read_phylo_mm, selected_drivers, to_float
 
 # A driver set whose linked sites cover more than this fraction of the attributed
 # band is flagged `divergent`: one clade differing at that many positions is a
@@ -55,47 +56,8 @@ COLUMNS = [
 ]
 
 
-def parse_phylo_mm(path: str) -> tuple[dict[str, str], list[dict]]:
-    """Return (header dict, driver rows). Driver rows are the is_split=TRUE
-    blocks with their carrier set, linked columns, beta and p."""
-    header: dict[str, str] = {}
-    col_names: list[str] = []
-    drivers: list[dict] = []
-    with open(path) as fh:
-        for line in fh:
-            line = line.rstrip("\n")
-            if line.startswith("#"):
-                k, _, v = line[1:].strip().partition("=")
-                header[k.strip()] = v.strip()
-                continue
-            parts = line.split("\t")
-            if not col_names:
-                col_names = parts
-                continue
-            row = dict(zip(col_names, parts))
-            if row.get("is_split", "").upper() != "TRUE":
-                continue
-            drivers.append({
-                "id": f"d{row.get('branch_id', '?')}",
-                "cols": [int(c) for c in row["linked_sites"].split(",") if c],
-                "carriers": set(
-                    d for d in row.get("descendants", "").split(",") if d
-                ),
-                "beta": _num(row.get("beta")),
-                "p": _num(row.get("p")),
-            })
-    return header, drivers
-
-
-def _num(x):
-    try:
-        return float(x)
-    except (TypeError, ValueError):
-        return None
-
-
 def _hnum(header: dict, key: str):
-    return _num(header.get(key))
+    return to_float(header.get(key))
 
 
 def gc_frac(seq: str) -> float:
@@ -106,29 +68,19 @@ def gc_frac(seq: str) -> float:
 
 
 def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
-    header, drivers = parse_phylo_mm(phylo_mm)
+    pm = read_phylo_mm(phylo_mm)
+    header, drivers = pm.header, selected_drivers(pm)
     peak_id = header.get("peak_id", Path(phylo_mm).stem)
     chrom, start, end = split_peak_id(peak_id)
 
     mode = header.get("attribution_mode", "none")
-    re_first = header.get("re_first_col", "NA")
-    re_first_col = int(re_first) if re_first not in ("NA", "") else 1
     seqs = read_fasta(aligned, strip_r=True)
     aln_len = len(next(iter(seqs.values()))) if seqs else 0
-    re_last = header.get("re_last_col", "NA")
-    re_last_col = int(re_last) if re_last not in ("NA", "") else aln_len
-
+    re_first_col = re_cols(header, aln_len)[0]
     # Attributed band = the span the drivers live in and the clonable unit.
-    # region mode attributes the whole alignment (flank drivers); otherwise the
-    # RE band. 1-based inclusive [lo, hi] → 0-based slice [lo-1 : hi].
-    if mode == "region":
-        lo, hi = 1, aln_len
-    else:
-        lo, hi = re_first_col, re_last_col
-    if hi < lo or hi == 0:
-        lo, hi = 1, aln_len
-    for d in drivers:
-        d["divergent"] = is_divergent(len(d["cols"]), hi - lo + 1)
+    # 1-based inclusive [lo, hi] -> 0-based slice [lo-1 : hi].
+    lo, hi = attributed_band(header, aln_len)
+    divergent = {d: is_divergent(len(d.cols), hi - lo + 1) for d in drivers}
 
     # actuation: sample → (act, cov). Accept either a pre-loaded dict (Stage-2
     # single-pass, from haplotypes.parquet) or a per-peak TSV path (CLI).
@@ -153,7 +105,7 @@ def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
         covs = [act[m][1] for m in members]
         tot_cov = sum(covs)
         wmean = sum(a * c for a, c in zip(acts, covs)) / tot_cov if tot_cov else 0.0
-        carried = [d for d in drivers if members[0] in d["carriers"]]
+        carried = [d for d in drivers if members[0] in d.carriers]
         rows.append({
             "members": members,
             "sub": sub,
@@ -169,7 +121,7 @@ def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
     out = []
     for r in rows:
         carried = r["carried"]
-        driver_cols = sorted({c for d in carried for c in d["cols"]})
+        driver_cols = sorted({c for d in carried for c in d.cols})
         nn_id, n_other, clean, edit = _nearest_noncarrier(
             r, rows, lo, driver_cols, re_first_col)
         out.append({
@@ -185,16 +137,16 @@ def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
             "act_values": ",".join(f"{a:.4g}" for a in r["acts"]),
             "samples": ",".join(r["members"]),
             "has_driver": bool(carried),
-            "driver_ids": ",".join(d["id"] for d in carried),
+            "driver_ids": ",".join(d.id for d in carried),
             "driver_positions": ",".join(
-                f"RE{min(d['cols']) - re_first_col + 1}" for d in carried),
+                f"RE{min(d.cols) - re_first_col + 1}" for d in carried),
             "driver_betas": ",".join(
-                f"{d['beta']:.4g}" if d["beta"] is not None else "NA" for d in carried),
+                f"{d.beta:.4g}" if d.beta is not None else "NA" for d in carried),
             "driver_p": ",".join(
-                f"{d['p']:.3g}" if d["p"] is not None else "NA" for d in carried),
+                f"{d.p:.3g}" if d.p is not None else "NA" for d in carried),
             "driver_divergent": ",".join(
-                "TRUE" if d["divergent"] else "FALSE" for d in carried),
-            "driver_delta": round(sum(d["beta"] or 0.0 for d in carried), 4) if carried else 0.0,
+                "TRUE" if divergent[d] else "FALSE" for d in carried),
+            "driver_delta": round(sum(d.beta or 0.0 for d in carried), 4) if carried else 0.0,
             "nearest_noncarrier_seq_id": nn_id,
             "n_other_diffs": n_other,
             "clean_pair": clean,

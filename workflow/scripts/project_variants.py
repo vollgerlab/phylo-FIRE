@@ -22,6 +22,8 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from dataclasses import dataclass
+from itertools import accumulate
 from pathlib import Path
 
 from build_re_variants import is_divergent
@@ -234,6 +236,98 @@ def _left_flank(aln_hap_gapped: str, re_seq: str) -> int | None:
     return i if i >= 0 else None
 
 
+@dataclass(frozen=True)
+class RefMap:
+    """A forward-strand reference pull placed in the alignment by mafft --add."""
+    fwd: str                  # forward-strand sequence
+    s0: int                   # 0-based genomic start of ``fwd``
+    orient: str               # "fwd" or "rev" relative to the alignment
+    col2pos: dict[int, int]   # aln_full column -> 0-based genomic position
+
+    def pos0(self, fcol: int | None) -> int | None:
+        return self.col2pos.get(fcol) if (self.col2pos and fcol is not None) else None
+
+    def base(self, pos0: int) -> str:
+        return self.fwd[pos0 - self.s0].upper()
+
+
+def _pull_refs(agc, span, cons_chr, cons_start, cons_end, hg38_chr, hg38_start, hg38_end):
+    """{"__CHM13__"/"__hg38__": (forward seq, 0-based start)} over the FLANKED
+    extent (peak +/- span) so flank columns also map to coordinates. A reference
+    that does not lift or fails to pull is left out."""
+    pulls = {}
+    cons_s0 = max(0, cons_start - span)
+    cons_contig = cons_agc_contig(cons_chr)      # CHM13#0#chrN, or the assembly contig
+    cons_fwd = pull_agc(agc, cons_contig, cons_s0, cons_end + span) if cons_contig else None
+    if cons_fwd:
+        pulls["__CHM13__"] = (cons_fwd, cons_s0)
+    if hg38_chr != "NA" and str(hg38_start).isdigit():
+        hg38_s0 = max(0, int(hg38_start) - span)
+        hg38_fwd = pull_agc(agc, f"GRCh38#0#{hg38_chr}", hg38_s0, int(hg38_end) + span)
+        if hg38_fwd:
+            pulls["__hg38__"] = (hg38_fwd, hg38_s0)
+    return pulls
+
+
+def _ref_maps(aln_haps, pulls, threads):
+    """Add the pulled references to the alignment. Returns (bridge from aln_haps
+    to aln_full columns, CHM13 RefMap or None, hg38 RefMap or None)."""
+    aln_full = add_refs(aln_haps, {n: fwd for n, (fwd, _) in pulls.items()}, threads)
+    bridge = _col_bridge(aln_haps, aln_full)
+    maps = {}
+    for name, (fwd, s0) in pulls.items():
+        if name in aln_full:
+            orient, col2pos = orient_and_map(aln_full[name], fwd, s0)
+            maps[name] = RefMap(fwd, s0, orient, col2pos)
+    return bridge, maps.get("__CHM13__"), maps.get("__hg38__")
+
+
+def _out_is_rev(cons: RefMap | None, hg38: RefMap | None) -> bool:
+    """Whether to reverse-complement hap alleles for the output genome.
+
+    The reported REF is the FORWARD base of whichever genome the bed/VCF keys on
+    (hg38 when the peak lifts, else CHM13); the cohort major/minor come from the
+    haps in the MSA's orientation, so flip them onto THAT genome's forward strand.
+    Use hg38's own orientation, NOT CHM13's -- CHM13 and GRCh38 sit on opposite
+    strands at some loci (a reference inversion, e.g. chr1_145862159), and keying
+    the flip on CHM13 there put the forward-hg38 REF next to reverse-strand ALTs."""
+    if hg38 is not None and hg38.col2pos:
+        return hg38.orient == "rev"
+    return cons is not None and cons.orient == "rev"
+
+
+def _ungapped_offsets(seq: str) -> list[int]:
+    """offsets[c] = number of non-gap bases before column c (one O(L) pass)."""
+    return list(accumulate((ch != "-" for ch in seq), initial=0))
+
+
+def _driver_allele(aln_haps, col, clade, out_is_rev):
+    """(reported allele, carriers) for a driver column: the phylo_mm clade's base,
+    which is INDEPENDENT of frequency (it can be the major allele) and of the
+    reference (it can be the REF base). Carriers become every hap with that base,
+    so beta and carriers describe the SAME haplotypes. None if no clade member
+    has a base at ``col``."""
+    hap_names = list(aln_haps)
+    clade = clade & set(hap_names)
+    cb = Counter(b for b in (_base(aln_haps[n][col]) for n in clade) if b)
+    if not cb:
+        return None
+    drv = cb.most_common(1)[0][0]                      # clade allele (aln)
+    carriers = frozenset(n for n in hap_names if _base(aln_haps[n][col]) == drv)
+    return (revcomp(drv) if out_is_rev else drv), carriers
+
+
+def _asm_hits(carriers, asm, left_flank, offsets, col) -> str:
+    """``sample=chr:pos`` assembly coordinates of ``col`` for each carrier."""
+    hits = []
+    for nm in sorted(carriers):
+        a = asm.get(nm)
+        lf = left_flank.get(nm)
+        if a and lf is not None and str(a["start"]).isdigit():
+            hits.append(f"{nm}={a['chr']}:{int(a['start']) + offsets[nm][col] - lf}")
+    return ";".join(hits) if hits else "NA"
+
+
 def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start, cons_end,
                  hg38_chr="NA", hg38_start="NA", hg38_end="NA", agc="",
                  flank=0, threads=2, pad=25, min_carriers=2):
@@ -254,50 +348,21 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
 
     colcar = _col_carriers(aln_haps, min_carriers)
     re_band = _re_band(pm.header)
-    attr_mode = pm.header.get("attribution_mode", "")
+    region_mode = pm.header.get("attribution_mode", "") == "region"
     # Same band build_re_variants attributes over: whole alignment in region mode.
     band_lo, band_hi = attributed_band(pm.header, L)
-    band_len = band_hi - band_lo + 1
-    divergent = {desc: is_divergent(len(linked), band_len)
+    divergent = {desc: is_divergent(len(linked), band_hi - band_lo + 1)
                  for desc, (_, linked) in drivers.items()}
     # Driver carrier-set fallback: whole alignment in region mode, else RE band.
     col_beta, col_desc, unmatched = _driver_cols(
-        colcar, drivers, None if attr_mode == "region" else re_band)
+        colcar, drivers, None if region_mode else re_band)
 
-    # Reference pulls span the FLANKED extent (peak +/- flank +/- pad) so flank
-    # columns also map to coordinates.
-    span = int(flank) + pad
-    refs: dict[str, str] = {}
-    cons_s0 = max(0, cons_start - span)
-    cons_contig = cons_agc_contig(cons_chr)      # CHM13#0#chrN, or the assembly contig
-    cons_fwd = pull_agc(agc, cons_contig, cons_s0, cons_end + span) if cons_contig else None
-    if cons_fwd:
-        refs["__CHM13__"] = cons_fwd
-    hg38_ok = hg38_chr != "NA" and str(hg38_start).isdigit()
-    hg38_s0 = hg38_fwd = None
-    if hg38_ok:
-        hg38_s0 = max(0, int(hg38_start) - span)
-        hg38_fwd = pull_agc(agc, f"GRCh38#0#{hg38_chr}", hg38_s0, int(hg38_end) + span)
-        if hg38_fwd:
-            refs["__hg38__"] = hg38_fwd
-
-    aln_full = add_refs(aln_haps, refs, threads)
-    bridge = _col_bridge(aln_haps, aln_full)
-    cons_map, cons_orient = None, "fwd"
-    if "__CHM13__" in aln_full and cons_fwd:
-        cons_orient, cons_map = orient_and_map(aln_full["__CHM13__"], cons_fwd, cons_s0)
-    hg38_map, hg38_orient = None, "fwd"
-    if "__hg38__" in aln_full and hg38_fwd and hg38_s0 is not None:
-        hg38_orient, hg38_map = orient_and_map(aln_full["__hg38__"], hg38_fwd, hg38_s0)
-    # The reported REF is the FORWARD base of whichever genome the bed/VCF keys on
-    # (hg38 when the peak lifts, else CHM13); the cohort major/minor come from the
-    # haps in the MSA's orientation, so flip them onto THAT genome's forward strand.
-    # Use hg38's own orientation, NOT CHM13's -- CHM13 and GRCh38 sit on opposite
-    # strands at some loci (a reference inversion, e.g. chr1_145862159), and keying
-    # the flip on CHM13 there put the forward-hg38 REF next to reverse-strand ALTs.
-    out_is_rev = (hg38_orient == "rev") if (hg38_fwd and hg38_map) else (cons_orient == "rev")
-
+    pulls = _pull_refs(agc, int(flank) + pad, cons_chr, cons_start, cons_end,
+                       hg38_chr, hg38_start, hg38_end)
+    bridge, cons, hg38 = _ref_maps(aln_haps, pulls, threads)
+    out_is_rev = _out_is_rev(cons, hg38)
     left_flank = {n: _left_flank(aln_haps[n], re_seqs.get(n, "")) for n in hap_names}
+    offsets = {n: _ungapped_offsets(s) for n, s in aln_haps.items()}
 
     rows = []
     for col in range(L):
@@ -310,61 +375,36 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
         # always emitted (incl. region-mode drivers that sit in the flank).
         if not is_driver and re_band is not None and not (re_band[0] <= col <= re_band[1]):
             continue
-        n_car = len(carriers)
-        n_ref = len(hap_names) - n_car
-        if not is_driver and min(n_car, n_ref) < min_carriers:
+        if not is_driver and min(len(carriers), len(hap_names) - len(carriers)) < min_carriers:
             continue
 
-        fcol = bridge.get(col)
-        cons_pos0 = cons_map.get(fcol) if (cons_map and fcol is not None) else None
-        hg38_pos0 = hg38_map.get(fcol) if (hg38_map and fcol is not None) else None
-        cons_ref = cons_fwd[cons_pos0 - cons_s0].upper() if cons_pos0 is not None else "NA"
-        hg38_ref = (hg38_fwd[hg38_pos0 - hg38_s0].upper()
-                    if (hg38_fwd and hg38_pos0 is not None) else "NA")
-        maj_f, min_f = (revcomp(major), revcomp(minor)) if out_is_rev else (major, minor)
-
-        # The driver/effect allele is the phylo_mm clade's allele -- reported
-        # explicitly because it is INDEPENDENT of frequency (it can be the major
-        # allele) and of the reference (it can be the REF base). For a driver we
-        # also set carriers/n_carriers to that clade, so beta and carriers describe
-        # the SAME haplotypes; hap_major/hap_minor stay pure frequency labels.
         driver_allele = "NA"
         if is_driver and col in col_desc:
-            clade = col_desc[col] & set(hap_names)
-            cb = Counter(b for b in (_base(aln_haps[n][col]) for n in clade) if b)
-            if cb:
-                drv = cb.most_common(1)[0][0]                      # clade allele (aln)
-                driver_allele = revcomp(drv) if out_is_rev else drv
-                carriers = frozenset(
-                    n for n in hap_names if _base(aln_haps[n][col]) == drv)
-                n_car = len(carriers)
+            hit = _driver_allele(aln_haps, col, col_desc[col], out_is_rev)
+            if hit:
+                driver_allele, carriers = hit
 
-        asm_hits = []
-        for nm in sorted(carriers):
-            a = asm.get(nm)
-            lf = left_flank.get(nm)
-            if a and lf is not None and str(a["start"]).isdigit():
-                # ungapped offset of this hap at `col`
-                off = sum(1 for ch in aln_haps[nm][:col] if ch != "-")
-                asm_hits.append(f"{nm}={a['chr']}:{int(a['start']) + off - lf}")
-
+        fcol = bridge.get(col)
+        cons_pos0 = cons.pos0(fcol) if cons else None
+        hg38_pos0 = hg38.pos0(fcol) if hg38 else None
+        maj_f, min_f = (revcomp(major), revcomp(minor)) if out_is_rev else (major, minor)
         rows.append({
             "peak_id": peak_id,
             "re_pos": (cons_pos0 - cons_start + 1) if cons_pos0 is not None else "NA",
             "cons_chr": cons_chr,
             "cons_pos": (cons_pos0 + 1) if cons_pos0 is not None else "NA",
-            "cons_ref": cons_ref,
+            "cons_ref": cons.base(cons_pos0) if cons_pos0 is not None else "NA",
             "hg38_chr": hg38_chr if hg38_pos0 is not None else "NA",
             "hg38_pos": (hg38_pos0 + 1) if hg38_pos0 is not None else "NA",
-            "hg38_ref": hg38_ref,
+            "hg38_ref": hg38.base(hg38_pos0) if hg38_pos0 is not None else "NA",
             "hap_major": maj_f,
             "hap_minor": min_f,
             "driver_allele": driver_allele,
-            "n_carriers": n_car,
+            "n_carriers": len(carriers),
             "is_driver": "TRUE" if is_driver else "FALSE",
             "beta": col_beta.get(col, "NA"),
             "carriers": ",".join(sorted(carriers)),
-            "asm_coords": ";".join(asm_hits) if asm_hits else "NA",
+            "asm_coords": _asm_hits(carriers, asm, left_flank, offsets, col),
             "divergent": "TRUE" if is_driver and divergent.get(col_desc.get(col)) else "FALSE",
         })
 

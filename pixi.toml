@@ -301,9 +301,6 @@ hsca-stage2 = { cmd = [
 #   pixi run -- snakemake -s workflow/analysis.smk --config run_name=<run> \
 #       input_table=<union.bed.gz> peak_ids=<peaks.txt> plasmid=true \
 #       --rerun-triggers mtime -j 8
-# Install selectiveInference + its CRAN deps into the pixi-managed R library.
-# selectiveInference isn't on conda-forge; r-remotes is. Run once after `pixi install`.
-setup-selectiveinference = """Rscript -e 'if (!requireNamespace("selectiveInference", quietly=TRUE)) install.packages("selectiveInference", repos="https://cloud.r-project.org") else cat("selectiveInference already installed\\n")'"""
 
 # Versions pinned to major.minor (patch floats) for reproducibility; bump
 # deliberately. Mirrors the exact versions in pixi.lock at time of writing.
@@ -323,16 +320,10 @@ plotly = ">=6.6,<6.7"
 # 0.2.x on the linux cluster (v1's choreographer/Chromium can't render there —
 # plotly/Kaleido#421, choreographer#287), v1 on macOS (0.2.x has no arm build).
 pysam = ">=0.24,<0.25"
-# R + phylogenetic mixed model (MCMCglmm) + LASSO (glmnet) + valid
-# post-LASSO inference (selectiveInference, Lee/Sun/Sun/Taylor 2016 exact
-# post-selection p-values — avoids the double-dipping issue Witten et al.
-# discuss). selectiveInference isn't on conda-forge as of 2026-05 — install
-# via `pixi run setup-selectiveinference` after `pixi install`.
+# R: phylogenetic mixed model (MCMCglmm) + ape.
 r-base = ">=4.5,<4.6"
 r-ape = ">=5.8,<5.9"
 r-mcmcglmm = ">=2.36,<2.37"
-r-glmnet = ">=5.0,<5.1"
-r-remotes = ">=2.5,<2.6"
 agc = ">=3.2.3,<3.3"
 
 # Headless-Chromium runtime shared libraries for Kaleido v1 (the `plot` rule's

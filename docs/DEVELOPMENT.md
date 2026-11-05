@@ -11,7 +11,6 @@ FIRE peaks, then renders each tree alongside a FIRE actuation heatmap.
 ```bash
 pixi install                       # first-time setup
 pixi run setup-pclai               # one-time: bulk-fetch HPRC R2 PCLAI BEDs → resources/pclai/hprc_r2_asm.bed.gz
-pixi run setup-selectiveinference  # one-time: install selectiveInference R pkg from CRAN (not on conda-forge)
 pixi run test                      # 8 test peaks via test-union-peaks.bed.gz
 pixi run test-paralog              # NOTCH2NL paralog group via PARE-style preextracted dir
 pixi run hap-selective-5           # 5 hap-selective peaks pulled from hyak via tabix-over-ssh

@@ -42,8 +42,6 @@
 suppressPackageStartupMessages({
     library(MCMCglmm)
     library(ape)
-    library(glmnet)
-    library(selectiveInference)   # post-LASSO valid p-values + CIs
 })
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
@@ -65,9 +63,8 @@ stopifnot(!is.null(opt$tree), !is.null(opt$actuation),
 # which only renders for the plotted subset). Pass --pdf for ad-hoc debugging.
 peak_id <- if (is.null(opt[["peak-id"]])) tools::file_path_sans_ext(basename(opt$tree)) else opt[["peak-id"]]
 
-# Reproducibility: MCMCglmm (MCMC) and cv.glmnet (random CV folds) are both
-# stochastic. Seed from the peak_id so each peak is deterministic across reruns
-# but peaks don't share an identical fold structure.
+# Reproducibility: MCMCglmm is stochastic. Seed from the peak_id so each peak is
+# deterministic across reruns.
 set.seed(sum(utf8ToInt(peak_id)) %% .Machine$integer.max)
 
 # Minimum effective sample size for the headline (alpha.V=1) H2_p posterior to
@@ -544,7 +541,6 @@ if (length(selected) > 0L && sum(ok) >= 4L) {
 # Aliases kept for the TSV header / PDF panel below.
 selected_branch_ids <- selected
 inference_method    <- "forward_wls"
-lasso_lambda_used   <- NA_real_
 cat(sprintf("[phylo_mm] %s variant attribution: %d candidate site-block(s), %d selected (forward WLS)\n",
             peak_id, length(blocks), length(selected)),
     file = stderr())

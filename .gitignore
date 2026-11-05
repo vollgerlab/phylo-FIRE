@@ -21,7 +21,7 @@ resources/hsca/
 # Derived HSCA peak-id list (regenerate: pixi run hsca-peak-ids)
 config/hsca_*peak_ids.txt
 
-# post.smk dbSNP subsets and local download scratch
+# dbSNP subsets and local download scratch
 resources/dbsnp.*
 /downloads/
 /GCF_000001405.40.gz.tbi

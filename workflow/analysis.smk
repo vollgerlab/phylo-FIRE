@@ -56,8 +56,9 @@ def _targets(_wildcards):
         out += [
             RESULTS + "/tables/variants.hg38.tsv.gz",
             RESULTS + "/tables/variants.hg38.vcf.gz",
-            RESULTS + "/tables/variants.hg38.bed",
-            RESULTS + "/tables/elements.hg38.bed",
+            RESULTS + "/tables/variants.hg38.bed.gz",
+            RESULTS + "/tables/variants.chm13.bed.gz",
+            RESULTS + "/tables/elements.hg38.bed.gz",
             RESULTS + "/tables/drivers.unlifted.tsv",
         ]
         if config.get("dbsnp"):
@@ -66,6 +67,11 @@ def _targets(_wildcards):
         out += [
             RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
             RESULTS + "/plasmid_fiberseq/plasmid_constructs.fa",
+        ]
+    if config.get("significant_loci") and config.get("dbsnp") and _hg38_ok():
+        out += [
+            RESULTS + "/phewas/significant_driver_rsids.tsv",
+            RESULTS + "/phewas/significant_driver_rsids.txt",
         ]
     return out
 
@@ -138,8 +144,12 @@ rule project_all:
         variants=RESULTS + "/tables/variants.hg38.tsv.gz",
         vcf=RESULTS + "/tables/variants.hg38.vcf.gz",
         tbi=RESULTS + "/tables/variants.hg38.vcf.gz.tbi",
-        variants_bed=RESULTS + "/tables/variants.hg38.bed",
-        elements_bed=RESULTS + "/tables/elements.hg38.bed",
+        variants_bed=RESULTS + "/tables/variants.hg38.bed.gz",
+        variants_bed_tbi=RESULTS + "/tables/variants.hg38.bed.gz.tbi",
+        variants_chm13_bed=RESULTS + "/tables/variants.chm13.bed.gz",
+        variants_chm13_bed_tbi=RESULTS + "/tables/variants.chm13.bed.gz.tbi",
+        elements_bed=RESULTS + "/tables/elements.hg38.bed.gz",
+        elements_bed_tbi=RESULTS + "/tables/elements.hg38.bed.gz.tbi",
         unlifted=RESULTS + "/tables/drivers.unlifted.tsv",
     # OWN knob (not stage2_threads): this rule's parallelism = concurrent `agc`
     # getctg processes, which abort (SIGABRT) under heavy contention on the shared
@@ -182,6 +192,26 @@ Opt-in: set config['dbsnp'] to a tabix-indexed dbSNP VCF."""
         "python {params.script} --vcf {input.vcf} --dbsnp {params.dbsnp} "
         "--out-vcf {output.vcf} --threads {threads}"
 
+
+
+rule significant_driver_rsids:
+    """Map significant plasmid Fiber-seq loci to their driver variants' rs IDs
+    (the PheWAS lookup list). Opt-in: set config['significant_loci'] to the
+    plasmid significance table (locus, driver_id, beta, ...); needs config['dbsnp']."""
+    input:
+        sig=config.get("significant_loci") or "significant_loci_not_set",
+        tsv=RESULTS + "/tables/variants.hg38.tsv.gz",
+        vcf=RESULTS + "/tables/variants.hg38.rsid.vcf.gz",
+        unlifted=RESULTS + "/tables/drivers.unlifted.tsv",
+    output:
+        tsv=RESULTS + "/phewas/significant_driver_rsids.tsv",
+        txt=RESULTS + "/phewas/significant_driver_rsids.txt",
+    params:
+        script=os.path.join(workflow.basedir, "scripts/significant_driver_rsids.py"),
+    shell:
+        "python {params.script} --sig {input.sig} --variants {input.tsv} "
+        "--rsid-vcf {input.vcf} --unlifted {input.unlifted} "
+        "--out-tsv {output.tsv} --out-rsids {output.txt}"
 
 rule plasmid_all:
     """Plasmid construct panel for every single-driver peak (single pass)."""

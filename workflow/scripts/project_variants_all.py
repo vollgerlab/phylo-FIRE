@@ -27,6 +27,7 @@ from pathlib import Path
 import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from stage1_tables import Stage1Store  # noqa: E402
 from project_variants import (  # noqa: E402
     project_peak, _COLS, _header, read_fasta, _unlifted_header, _UNLIFTED_COLS,
 )
@@ -66,6 +67,7 @@ def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="proj_all_"))
     hg38_dir = tmp / "hg38"
     hg38_dir.mkdir()
+    store = Stage1Store(args.aligned_dir.parent)  # per-peak dirs, else tables/*.parquet
     missing_coords: list[str] = []
     missing_aligned: list[str] = []
     unlifted_all: list[dict] = []
@@ -73,12 +75,12 @@ def main() -> None:
     def do_peak(peak: str) -> None:
         sub = parts.get((peak,))
         crow = coords.get(peak)
-        aln_fa = args.aligned_dir / f"{peak}.fa"
+        aln_fa = store.aligned(peak)
         out = hg38_dir / f"{peak}.tsv"
-        if sub is None or crow is None or not aln_fa.exists():
+        if sub is None or crow is None or aln_fa is None:
             if crow is None:
                 missing_coords.append(peak)
-            if not aln_fa.exists():
+            if aln_fa is None:
                 missing_aligned.append(peak)
             out.write_text(_header())
             return
@@ -94,9 +96,8 @@ def main() -> None:
         hg38 = ("NA", "NA", "NA")
         if str(crow.get("exists_in_hg38", "")).upper() in ("TRUE", "1"):
             hg38 = (crow["hg38_chr"], crow["hg38_start"], crow["hg38_end"])
-        pmm = args.phylo_mm_dir / f"{peak}.tsv"
         rows, unlifted = project_peak(
-            peak, aln_haps, re_seqs, asm, pmm if pmm.exists() else None,
+            peak, aln_haps, re_seqs, asm, store.phylo_mm(peak),
             crow["cons_chr"], int(crow["cons_start"]), int(crow["cons_end"]),
             hg38[0], hg38[1], hg38[2], args.agc,
             flank=args.flank, threads=1, pad=args.pad, min_carriers=args.min_carriers,
@@ -134,11 +135,20 @@ def main() -> None:
          "--out-variants", str(args.outdir / "variants.hg38.tsv.gz"),
          "--out-vcf", str(vcf_plain),
          "--out-variants-bed", str(args.outdir / "variants.hg38.bed"),
+         "--out-variants-chm13-bed", str(args.outdir / "variants.chm13.bed"),
          "--out-elements-bed", str(args.outdir / "elements.hg38.bed")],
         check=True,
     )
     subprocess.run(["bgzip", "-f", "-@", str(args.threads), str(vcf_plain)], check=True)
     subprocess.run(["tabix", "-f", "-p", "vcf", str(vcf_plain) + ".gz"], check=True)
+    # BEDs: sort (tabix needs contiguous chroms, increasing starts), bgzip, index
+    for name in ("variants.hg38.bed", "variants.chm13.bed", "elements.hg38.bed"):
+        bed = args.outdir / name
+        subprocess.run(
+            f"sort -k1,1 -k2,2n {bed} | bgzip -@ {args.threads} > {bed}.gz && "
+            f"tabix -f -p bed {bed}.gz && rm {bed}",
+            shell=True, check=True,
+        )
 
     # Drivers that are only an indel (a gap run, no single-base substitution
     # column) can't be a bed/VCF SNV; list them so they aren't silently dropped.
@@ -147,7 +157,7 @@ def main() -> None:
         fh.write(_unlifted_header())
         for r in unlifted_all:
             fh.write("\t".join(str(r[c]) for c in _UNLIFTED_COLS) + "\n")
-    print(f"[project_all] done -> {args.outdir}/variants.hg38.* "
+    print(f"[project_all] done -> {args.outdir}/variants.{{hg38,chm13}}.* "
           f"({len(unlifted_all)} indel-only drivers -> {unl_out.name})", file=sys.stderr)
 
 

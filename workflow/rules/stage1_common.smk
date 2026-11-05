@@ -1,5 +1,7 @@
 """Stage-1 helpers: wildcard constraints, the parse-time peak set and the input functions."""
 
+import shlex
+
 
 # Keep peak_id from swallowing a slash.
 wildcard_constraints:
@@ -72,6 +74,22 @@ def _extract_fastas_input(wildcards):
 def optional_file(key: str):
     """Input function tracking config[key] when set, so changing that file re-runs the rule."""
     return lambda wildcards: [config[key]] if config.get(key) else []
+
+
+def _extract_opt_args(wildcards, input) -> str:
+    """Optional extract_fastas.py flags from config and the optional inputs."""
+    args = []
+    if config.get("primary_only", True):
+        args.append("--primary-only")
+    if input.peak_ids:
+        args.append(f"--peak-ids {shlex.quote(str(input.peak_ids[0]))}")
+    if config.get("haplotype_distinct"):
+        args.append(
+            f"--haplotype-distinct {shlex.quote(str(config['haplotype_distinct']))}"
+        )
+    if input.highlight:
+        args.append(f"--highlight-file {shlex.quote(str(input.highlight[0]))}")
+    return " ".join(args)
 
 
 def iqtree_bootstrap(wildcards, input) -> str:

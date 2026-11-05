@@ -9,7 +9,10 @@ def load_parts(parquet) -> dict:
 
 
 def peak_actuation(parts: dict, peak: str) -> dict:
-    """sample -> (actuation, coverage) for one peak."""
+    """sample -> (actuation, coverage) for one peak.
+
+    Haplotypes with no actuation or coverage (null in haplotypes.parquet) are
+    left out, so callers never do arithmetic on None."""
     sub = parts.get((peak,))
     if sub is None:
         return {}
@@ -20,4 +23,5 @@ def peak_actuation(parts: dict, peak: str) -> dict:
             sub["actuation"].to_list(),
             sub["coverage"].to_list(),
         )
+        if a is not None and c is not None
     }

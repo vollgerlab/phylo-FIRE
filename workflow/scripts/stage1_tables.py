@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Stage-1 summary tables: the per-peak MSAs, rooted trees and phylo_mm stats
+combined into three parquet files, so Stage 2 can run from a handful of files
+instead of ~70K (e.g. locally, after downloading ``results/{run}/tables``).
+
+  * alignments.parquet  peak_id, idx, name, seq   (one row per aligned haplotype;
+                        ``idx`` keeps the FASTA order, ``seq`` keeps the gaps)
+  * trees.parquet       peak_id, newick           (the ancestral-proxy-rooted tree)
+  * phylo_mm.parquet    peak_id, text             (the full phylo_mm TSV, header
+                        comments included, so it is lossless)
+
+Build (end of Stage 1)::
+
+    python stage1_tables.py --results results/<run> --peaks <peak_ids.txt>
+
+Read (Stage 2): ``Stage1Store(results_dir)`` hands back a per-peak file path,
+from the per-peak directories when they exist, else materialized from the
+parquet tables into a temp dir. Callers keep passing paths, unchanged.
+"""
+
+from __future__ import annotations
+
+import argparse
+import tempfile
+import threading
+from pathlib import Path
+
+import polars as pl
+
+TABLES = {
+    "aligned": "alignments.parquet",
+    "trees": "trees.parquet",
+    "phylo_mm": "phylo_mm.parquet",
+}
+
+
+def _read_fasta(path: Path) -> list[tuple[str, str]]:
+    """(name, seq) records in file order; name is the header up to whitespace."""
+    recs, name, chunks = [], None, []
+    for line in path.read_text().splitlines():
+        if line.startswith(">"):
+            if name is not None:
+                recs.append((name, "".join(chunks)))
+            name, chunks = line[1:].split()[0], []
+        elif line:
+            chunks.append(line.strip())
+    if name is not None:
+        recs.append((name, "".join(chunks)))
+    return recs
+
+
+def build(results: Path, peaks: list[str]) -> None:
+    """Write the three Stage-1 summary tables to ``results/tables/``."""
+    aln_rows: dict[str, list] = {"peak_id": [], "idx": [], "name": [], "seq": []}
+    trees: dict[str, list] = {"peak_id": [], "newick": []}
+    pmm: dict[str, list] = {"peak_id": [], "text": []}
+    for peak in peaks:
+        fa = results / "aligned" / f"{peak}.fa"
+        if fa.exists():
+            for i, (name, seq) in enumerate(_read_fasta(fa)):
+                aln_rows["peak_id"].append(peak)
+                aln_rows["idx"].append(i)
+                aln_rows["name"].append(name)
+                aln_rows["seq"].append(seq)
+        nwk = results / "trees" / f"{peak}.rooted.nwk"
+        if nwk.exists():
+            trees["peak_id"].append(peak)
+            trees["newick"].append(nwk.read_text().strip())
+        tsv = results / "phylo_mm" / f"{peak}.tsv"
+        if tsv.exists():
+            pmm["peak_id"].append(peak)
+            pmm["text"].append(tsv.read_text())
+    out = results / "tables"
+    out.mkdir(parents=True, exist_ok=True)
+    for key, data in (("aligned", aln_rows), ("trees", trees), ("phylo_mm", pmm)):
+        pl.DataFrame(data).write_parquet(out / TABLES[key], compression="zstd")
+    print(f"[stage1_tables] {len(peaks)} peaks -> {len(aln_rows['peak_id'])} aligned "
+          f"haplotypes, {len(trees['peak_id'])} trees, {len(pmm['peak_id'])} phylo_mm "
+          f"in {out}")
+
+
+class Stage1Store:
+    """Per-peak Stage-1 files from directories, or from the summary tables.
+
+    ``aligned(peak)``, ``tree(peak)`` and ``phylo_mm(peak)`` return a Path to the
+    peak's file, or None if the peak is in neither source. Directories win when
+    the file exists there, so existing runs behave exactly as before."""
+
+    def __init__(self, results: Path):
+        self.results = Path(results)
+        self._tables: dict[str, dict[str, object]] = {}
+        self._tmp = Path(tempfile.mkdtemp(prefix="stage1_store_"))
+        self._lock = threading.Lock()
+
+    def _table(self, key: str) -> dict[str, object]:
+        """peak_id -> content for one summary table (loaded once, lazily)."""
+        with self._lock:
+            if key not in self._tables:
+                path = self.results / "tables" / TABLES[key]
+                if not path.exists():
+                    self._tables[key] = {}
+                elif key == "aligned":
+                    df = pl.read_parquet(path).sort(["peak_id", "idx"])
+                    self._tables[key] = {
+                        p[0]: list(zip(g["name"].to_list(), g["seq"].to_list()))
+                        for p, g in df.partition_by("peak_id", as_dict=True).items()
+                    }
+                else:
+                    col = "newick" if key == "trees" else "text"
+                    df = pl.read_parquet(path)
+                    self._tables[key] = dict(zip(df["peak_id"].to_list(), df[col].to_list()))
+            return self._tables[key]
+
+    def _get(self, key: str, peak: str, name: str) -> Path | None:
+        on_disk = self.results / key / name
+        if on_disk.exists():
+            return on_disk
+        content = self._table(key).get(peak)
+        if content is None:
+            return None
+        out = self._tmp / key / name
+        if not out.exists():
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if key == "aligned":
+                content = "".join(f">{n}\n{s}\n" for n, s in content)
+            elif key == "trees":
+                content = content + "\n"
+            out.write_text(content)
+        return out
+
+    def aligned(self, peak: str) -> Path | None:
+        return self._get("aligned", peak, f"{peak}.fa")
+
+    def tree(self, peak: str) -> Path | None:
+        return self._get("trees", peak, f"{peak}.rooted.nwk")
+
+    def phylo_mm(self, peak: str) -> Path | None:
+        return self._get("phylo_mm", peak, f"{peak}.tsv")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--results", required=True, type=Path, help="results/<run>")
+    ap.add_argument("--peaks", required=True, type=Path, help="peak id list")
+    args = ap.parse_args()
+    peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
+    build(args.results, peaks)
+
+
+if __name__ == "__main__":
+    main()

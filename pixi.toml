@@ -201,6 +201,17 @@ hsca-hapsel = { cmd = [
     "-j",
     "250",
 ] }
+# Combine hsca_hapsel's per-peak aligned/ trees/ phylo_mm/ into tables/
+# {alignments,trees,phylo_mm}.parquet in one pass (no DAG; ~3 min), so Stage 2 can
+# run from tables/ alone, e.g. locally after downloading ~40 MB.
+hsca-hapsel-tables = { cmd = [
+    "python",
+    "workflow/scripts/stage1_tables.py",
+    "--results",
+    "results/hsca_hapsel",
+    "--peaks",
+    "results/hsca_hapsel/fastas/peak_ids.txt",
+] }
 # Rebuild ONLY aligned/ for a pre-split hsca_hapsel run whose mafft output was
 # temp() and got deleted. Standalone single-pass (rebuild_aligned.py): reads the
 # surviving fastas/*.fa directly (no extract_fastas checkpoint) and reruns the

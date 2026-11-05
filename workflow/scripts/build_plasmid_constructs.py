@@ -28,19 +28,7 @@ under the MSA.
 """
 from pathlib import Path
 
-
-def read_fasta(path):
-    out, name, buf = {}, None, []
-    for line in Path(path).read_text().splitlines():
-        if line.startswith(">"):
-            if name is not None:
-                out[name] = "".join(buf)
-            name, buf = line[1:].split()[0], []
-        else:
-            buf.append(line.strip())
-    if name is not None:
-        out[name] = "".join(buf)
-    return out
+from common_io import read_fasta
 
 
 def parse_phylo_mm(path):
@@ -109,7 +97,7 @@ def build_peak(aligned, act, phylo_mm, peak_id):
     coverage)}. Returns (rows, panel). rows == [] when the peak is excluded (no
     driver, >1 distinct driver effect, or a rep group is empty).
     """
-    aln = read_fasta(aligned)
+    aln = read_fasta(aligned, strip_r=False)
     header, drivers = parse_phylo_mm(phylo_mm)
     aln_len = len(next(iter(aln.values()))) if aln else 0
     re_lo = int(header.get("re_first_col", 1)) - 1

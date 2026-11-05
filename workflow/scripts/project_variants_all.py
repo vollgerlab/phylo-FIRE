@@ -28,8 +28,9 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from stage1_tables import Stage1Store  # noqa: E402
+from common_io import read_fasta  # noqa: E402
 from project_variants import (  # noqa: E402
-    project_peak, _COLS, _header, read_fasta, _unlifted_header, _UNLIFTED_COLS,
+    project_peak, _COLS, _header, _unlifted_header, _UNLIFTED_COLS,
 )
 
 
@@ -84,7 +85,7 @@ def main() -> None:
             out.write_text(_header())
             return
         re_seqs = dict(zip(sub["sample"].to_list(), sub["seq"].to_list()))
-        aln_haps = read_fasta(aln_fa)
+        aln_haps = read_fasta(aln_fa, strip_r=False)
         asm = {
             s: {"chr": c, "start": st, "end": en}
             for s, c, st, en in zip(

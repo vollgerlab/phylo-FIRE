@@ -31,6 +31,7 @@ from Bio import Phylo
 import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common_io import read_fasta  # noqa: E402
 from pclai import PCLAI_MISSING, PCLAI_NEAREST_BP, query_pclai  # noqa: E402
 
 # ── Colour palettes ───────────────────────────────────────────────────────────
@@ -194,28 +195,9 @@ def load_phylo_mm(path: Path) -> dict:
 
 
 def load_alignment(path: Path) -> dict[str, str]:
-    """Read a FASTA into {name: sequence}.
-
-    Strips the leading ``_R_`` that MAFFT prepends when it reverse-complements
-    a sequence (``--adjustdirection``), so names match the actuation TSV.
-    """
-    seqs: dict[str, str] = {}
-    name = None
-    parts: list[str] = []
-    with path.open() as fh:
-        for line in fh:
-            line = line.rstrip()
-            if line.startswith(">"):
-                if name is not None:
-                    seqs[name] = "".join(parts)
-                raw = line[1:].split()[0]
-                name = raw[3:] if raw.startswith("_R_") else raw
-                parts = []
-            else:
-                parts.append(line)
-    if name is not None:
-        seqs[name] = "".join(parts)
-    return seqs
+    """Read a FASTA into {name: sequence}, stripping MAFFT's ``_R_`` prefix
+    (``--adjustdirection``) so names match the actuation TSV."""
+    return read_fasta(path, strip_r=True)
 
 
 # ── Tree position computation ─────────────────────────────────────────────────

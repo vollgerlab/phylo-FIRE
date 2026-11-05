@@ -25,6 +25,8 @@ Library only: re_variants_all.py calls ``build`` for every peak.
 import statistics
 from pathlib import Path
 
+from common_io import load_actuation_tsv, read_fasta, split_peak_id
+
 # A driver set whose linked sites cover more than this fraction of the attributed
 # band is flagged `divergent`: one clade differing at that many positions is a
 # divergent haplotype (paralog / mismapped copy / misalignment), not a clonable
@@ -51,28 +53,6 @@ COLUMNS = [
     "h2_region_mean", "h2_region_lower", "h2_region_upper", "h2_region_ok",
     "n_unique_seqs", "n_variants_selected",
 ]
-
-
-def read_fasta(path: str) -> dict[str, str]:
-    """Aligned FASTA → {leaf: seq}, stripping mafft's _R_ reverse-prefix."""
-    seqs: dict[str, str] = {}
-    name = None
-    buf: list[str] = []
-    with open(path) as fh:
-        for line in fh:
-            line = line.rstrip("\n")
-            if line.startswith(">"):
-                if name is not None:
-                    seqs[name] = "".join(buf)
-                name = line[1:].split()[0]
-                if name.startswith("_R_"):
-                    name = name[3:]
-                buf = []
-            else:
-                buf.append(line)
-    if name is not None:
-        seqs[name] = "".join(buf)
-    return seqs
 
 
 def parse_phylo_mm(path: str) -> tuple[dict[str, str], list[dict]]:
@@ -128,17 +108,12 @@ def gc_frac(seq: str) -> float:
 def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
     header, drivers = parse_phylo_mm(phylo_mm)
     peak_id = header.get("peak_id", Path(phylo_mm).stem)
-    # peak_id = "{chrom}_{start}_{end}" (chrom may itself contain underscores,
-    # e.g. chr8_MATERNAL_...), so split off the last two fields.
-    chrom, _, rest = peak_id.rpartition("_")
-    chrom, _, start = chrom.rpartition("_")
-    end = rest
-    # phylo_mm reports the chrom/start/end via peak_id; keep raw on parse failure.
+    chrom, start, end = split_peak_id(peak_id)
 
     mode = header.get("attribution_mode", "none")
     re_first = header.get("re_first_col", "NA")
     re_first_col = int(re_first) if re_first not in ("NA", "") else 1
-    seqs = read_fasta(aligned)
+    seqs = read_fasta(aligned, strip_r=True)
     aln_len = len(next(iter(seqs.values()))) if seqs else 0
     re_last = header.get("re_last_col", "NA")
     re_last_col = int(re_last) if re_last not in ("NA", "") else aln_len
@@ -160,15 +135,7 @@ def build(aligned: str, actuation: str, phylo_mm: str) -> list[dict]:
     if isinstance(actuation, dict):
         act = {s: v for s, v in actuation.items() if v[1] and v[1] > 0}
     else:
-        act = {}
-        with open(actuation) as fh:
-            cols = fh.readline().rstrip("\n").split("\t")
-            si, ai, ci = cols.index("sample"), cols.index("actuation"), cols.index("coverage")
-            for line in fh:
-                p = line.rstrip("\n").split("\t")
-                a, c = _num(p[ai]), _num(p[ci])
-                if a is not None and c is not None and c > 0:
-                    act[p[si]] = (a, c)
+        act = load_actuation_tsv(actuation)
 
     # Group tips (with actuation) by their attributed-band aligned substring.
     groups: dict[str, list[str]] = {}

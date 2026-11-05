@@ -25,6 +25,7 @@ from collections import Counter
 from pathlib import Path
 
 from build_re_variants import is_divergent
+from common_io import parse_fasta, revcomp
 
 _CHM13_CHR = re.compile(r"^chr([0-9]+|X|Y|M)$")
 
@@ -45,35 +46,10 @@ def cons_agc_contig(cons_chr: str) -> str | None:
             return f"HG002#{hap}#{cons_chr[: -len(suffix)]}"
     return None
 
-_COMP = str.maketrans("ACGTNacgtn-", "TGCANtgcan-")
-
-
-def revcomp(s: str) -> str:
-    return s.translate(_COMP)[::-1]
-
-
 def _base(ch: str):
     """Upper-cased A/C/G/T, or None for a gap/N/other."""
     ch = ch.upper()
     return ch if ch in ("A", "C", "G", "T") else None
-
-
-def read_fasta(path: Path) -> dict[str, str]:
-    return read_fasta_str(Path(path).read_text())
-
-
-def read_fasta_str(text: str) -> dict[str, str]:
-    out, name, parts = {}, None, []
-    for line in text.splitlines():
-        if line.startswith(">"):
-            if name is not None:
-                out[name] = "".join(parts)
-            name, parts = line[1:].split()[0], []
-        else:
-            parts.append(line.strip())
-    if name is not None:
-        out[name] = "".join(parts)
-    return out
 
 
 def parse_agc_fasta(text: str) -> str:
@@ -138,8 +114,7 @@ def add_refs(aln_haps: dict[str, str], refs: dict[str, str], threads: int) -> di
     finally:
         Path(base).unlink(missing_ok=True)
         Path(addf).unlink(missing_ok=True)
-    aln = read_fasta_str(res.stdout)
-    return {n[3:] if n.startswith("_R_") else n: s for n, s in aln.items()}
+    return parse_fasta(res.stdout, strip_r=True)
 
 
 def orient_and_map(aln_ref: str, fwd_seq: str, start0: int):

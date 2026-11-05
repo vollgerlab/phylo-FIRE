@@ -13,8 +13,8 @@
 
 Sites without an hg38 coordinate (peak not in hg38, or the site sits in an
 insertion relative to hg38) are kept in the TSV but omitted from the VCF/BED.
+Called in-process by project_variants_all.py.
 """
-import argparse
 import gzip
 import re
 from pathlib import Path
@@ -49,7 +49,8 @@ def _alt(ref: str, *alleles: str) -> str:
     seen, out = set(), []
     for a in alleles:
         if a and a != ref and a not in ("-", "N", "NA") and a not in seen:
-            seen.add(a); out.append(a)
+            seen.add(a)
+            out.append(a)
     return ",".join(out) if out else "."
 
 
@@ -83,22 +84,11 @@ def _chrom_key(c: str):
     return (0, int(s)) if s.isdigit() else (1, order.get(s, 99))
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--indir", required=True, type=Path)
-    ap.add_argument("--peaks", required=True, type=Path, help="run manifest")
-    ap.add_argument("--coords", required=True, type=Path, help="peak_coords.tsv")
-    ap.add_argument("--out-variants", required=True, type=Path)
-    ap.add_argument("--out-vcf", required=True, type=Path)
-    ap.add_argument("--out-variants-bed", required=True, type=Path)
-    ap.add_argument("--out-variants-chm13-bed", type=Path, default=None)
-    ap.add_argument("--out-elements-bed", required=True, type=Path)
-    args = ap.parse_args()
-
-    peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
+def load_rows(indir: Path, peaks: list[str]) -> list[dict]:
+    """Every row of ``{indir}/{peak}.tsv`` (header skipped) as {VCOLS: str}."""
     rows, missing = [], 0
     for peak in peaks:
-        f = args.indir / f"{peak}.tsv"
+        f = indir / f"{peak}.tsv"
         if not f.exists():
             missing += 1
             continue
@@ -107,14 +97,21 @@ def main() -> None:
                 rows.append(dict(zip(VCOLS, ln.split("\t"))))
     if missing:
         print(f"[aggregate_hg38] {missing}/{len(peaks)} peak projections missing", flush=True)
+    return rows
 
-    args.out_variants.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(args.out_variants, "wt") as fh:      # full table
+
+def write_variants_tsv(rows: list[dict], path: Path) -> None:
+    """The full gzipped variant table (every site, every column)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt") as fh:
         fh.write("\t".join(VCOLS) + "\n")
         for r in rows:
             fh.write("\t".join(r[c] for c in VCOLS) + "\n")
 
-    # sites with a usable hg38 coordinate + single-base reference (SNV)
+
+def write_vcf(rows: list[dict], path: Path) -> int:
+    """Sites-only hg38 VCF of the SNV sites with an hg38 coordinate; returns the
+    number of records."""
     sites = [r for r in rows
              if r["hg38_chr"] != "NA" and r["hg38_pos"].lstrip("-").isdigit()
              and r["hg38_ref"] in ("A", "C", "G", "T")]
@@ -122,10 +119,7 @@ def main() -> None:
     # _chrom_key (1, 99), so without it distinct contigs interleave by position and
     # tabix rejects the file ("Chromosome blocks not continuous").
     sites.sort(key=lambda r: (_chrom_key(r["hg38_chr"]), r["hg38_chr"], int(r["hg38_pos"])))
-
-    # VCF
-    n_vcf = 0
-    with args.out_vcf.open("w") as fh:
+    with path.open("w") as fh:
         fh.write(VCF_HEADER)
         for r in sites:
             alt = _alt(r["hg38_ref"], r["hap_major"], r["hap_minor"], r.get("driver_allele", "NA"))
@@ -143,29 +137,27 @@ def main() -> None:
             vid = f"{r['peak_id']}:RE{r['re_pos']}"
             fh.write("\t".join([r["hg38_chr"], r["hg38_pos"], vid, r["hg38_ref"],
                                 alt, ".", "PASS", ";".join(info)]) + "\n")
-            n_vcf += 1
+    return len(sites)
 
-    # variant BEDs: hg38, and CHM13 (consensus coords on CHM13 chromosomes)
-    _write_variant_bed(args.out_variants_bed, rows, "hg38_chr", "hg38_pos", "hg38_ref")
-    if args.out_variants_chm13_bed:
-        chm13_rows = [r for r in rows if _CHM13_CHR.match(r["cons_chr"])]
-        n_chm13 = _write_variant_bed(args.out_variants_chm13_bed, chm13_rows,
-                                     "cons_chr", "cons_pos", "cons_ref")
-        print(f"[aggregate_hg38] {n_chm13} sites in CHM13 BED", flush=True)
 
-    # per-peak counts (over ALL rows, not just hg38-mapped)
+def count_per_peak(rows: list[dict]) -> tuple[dict[str, int], dict[str, int]]:
+    """(variants per peak, drivers per peak) over ALL rows, not just hg38-mapped."""
     n_var, n_drv = {}, {}
     for r in rows:
         p = r["peak_id"]
         n_var[p] = n_var.get(p, 0) + 1
         if r["is_driver"] == "TRUE":
             n_drv[p] = n_drv.get(p, 0) + 1
+    return n_var, n_drv
 
-    # element BED from the coords table (peaks that exist in hg38)
+
+def write_elements_bed(coords: Path, n_var: dict, n_drv: dict, path: Path) -> int:
+    """One hg38 interval per peak that exists in hg38 (from the coords table),
+    with has_driver, n_variants and n_drivers; returns the number written."""
     n_elem = 0
-    clines = args.coords.read_text().splitlines()
+    clines = coords.read_text().splitlines()
     ci = {h: i for i, h in enumerate(clines[0].split("\t"))}
-    with args.out_elements_bed.open("w") as fh:
+    with path.open("w") as fh:
         for ln in clines[1:]:
             c = ln.split("\t")
             if c[ci["exists_in_hg38"]].upper() not in ("TRUE", "1"):
@@ -177,11 +169,24 @@ def main() -> None:
                 str(n_var.get(pid, 0)), str(n_drv.get(pid, 0)),
             ]) + "\n")
             n_elem += 1
+    return n_elem
 
+
+def aggregate(indir: Path, peaks: list[str], coords: Path, out_variants: Path,
+              out_vcf: Path, out_variants_bed: Path, out_elements_bed: Path,
+              out_variants_chm13_bed: Path | None = None) -> None:
+    """Write the variant table, plain VCF and BEDs from the per-peak TSVs."""
+    rows = load_rows(Path(indir), peaks)
+    write_variants_tsv(rows, Path(out_variants))
+    n_vcf = write_vcf(rows, Path(out_vcf))
+    _write_variant_bed(Path(out_variants_bed), rows, "hg38_chr", "hg38_pos", "hg38_ref")
+    if out_variants_chm13_bed:
+        chm13_rows = [r for r in rows if _CHM13_CHR.match(r["cons_chr"])]
+        n_chm13 = _write_variant_bed(Path(out_variants_chm13_bed), chm13_rows,
+                                     "cons_chr", "cons_pos", "cons_ref")
+        print(f"[aggregate_hg38] {n_chm13} sites in CHM13 BED", flush=True)
+    n_var, n_drv = count_per_peak(rows)
+    n_elem = write_elements_bed(Path(coords), n_var, n_drv, Path(out_elements_bed))
     print(f"[aggregate_hg38] {len(rows)} sites "
-          f"({sum(1 for r in rows if r['is_driver']=='TRUE')} drivers) over {len(n_var)} "
+          f"({sum(1 for r in rows if r['is_driver'] == 'TRUE')} drivers) over {len(n_var)} "
           f"peaks → {n_vcf} in VCF/BED, {n_elem} elements")
-
-
-if __name__ == "__main__":
-    main()

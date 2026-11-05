@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Concatenate per-peak ``re_variants`` tables and pick which peaks to plot.
 
-Reads every ``{indir}/{peak}.tsv`` listed in the run manifest, concatenates
+Reads every ``{indir}/{peak}.tsv`` for the run's peaks, concatenates
 them into one parquet (the unified deliverable) plus a gzipped TSV, and writes
 three plot manifests that drive data-driven plotting:
 
@@ -11,52 +11,41 @@ three plot manifests that drive data-driven plotting:
 
 Peak-level fields (``n_variants_selected``, ``h2_re_ok``, ``h2_region_ok``) are
 repeated on every row of a peak, so classification reads the first row per peak.
+Called in-process by re_variants_all.py.
 """
-import argparse
 import gzip
 import random
 from pathlib import Path
 
 import polars as pl
 
+# Pin every column's type so per-file inference can't break the vertical concat.
+# Numeric/bool columns stay numeric even when all blank (attribution_mode=none,
+# non-carrier rows). The rest are Utf8: comma-list columns infer Float64 for a
+# single value ("0.55") but String for a list ("0.1,0.55").
+NUMERIC_BOOL = {
+    "gc_frac": pl.Float64, "act_mean": pl.Float64, "act_sd": pl.Float64,
+    "act_min": pl.Float64, "act_max": pl.Float64, "total_cov": pl.Float64,
+    "driver_delta": pl.Float64,
+    "h2_re_mean": pl.Float64, "h2_re_lower": pl.Float64, "h2_re_upper": pl.Float64,
+    "h2_region_mean": pl.Float64, "h2_region_lower": pl.Float64,
+    "h2_region_upper": pl.Float64,
+    "re_len": pl.Int64, "n_haps": pl.Int64, "n_other_diffs": pl.Int64,
+    "n_unique_seqs": pl.Int64, "n_variants_selected": pl.Int64,
+    "has_driver": pl.Boolean, "clean_pair": pl.Boolean,
+    "h2_re_ok": pl.Boolean, "h2_region_ok": pl.Boolean,
+}
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--indir", required=True)
-    ap.add_argument("--peaks", required=True, help="run manifest, one peak_id per line")
-    ap.add_argument("--out-parquet", required=True)
-    ap.add_argument("--out-tsv", required=True, help="gzipped TSV path")
-    ap.add_argument("--manifest-dir", required=True)
-    ap.add_argument("--random-n", type=int, default=100)
-    ap.add_argument("--seed", type=int, default=42)
-    args = ap.parse_args()
 
-    indir = Path(args.indir)
-    peaks = [p.strip() for p in Path(args.peaks).read_text().splitlines() if p.strip()]
-
-    # Pin every column's type so per-file inference can't break the vertical concat.
-    # Numeric/bool columns stay numeric even when all blank (attribution_mode=none,
-    # non-carrier rows). The rest are Utf8: comma-list columns infer Float64 for a
-    # single value ("0.55") but String for a list ("0.1,0.55").
-    numeric_bool = {
-        "gc_frac": pl.Float64, "act_mean": pl.Float64, "act_sd": pl.Float64,
-        "act_min": pl.Float64, "act_max": pl.Float64, "total_cov": pl.Float64,
-        "driver_delta": pl.Float64,
-        "h2_re_mean": pl.Float64, "h2_re_lower": pl.Float64, "h2_re_upper": pl.Float64,
-        "h2_region_mean": pl.Float64, "h2_region_lower": pl.Float64,
-        "h2_region_upper": pl.Float64,
-        "re_len": pl.Int64, "n_haps": pl.Int64, "n_other_diffs": pl.Int64,
-        "n_unique_seqs": pl.Int64, "n_variants_selected": pl.Int64,
-        "has_driver": pl.Boolean, "clean_pair": pl.Boolean,
-        "h2_re_ok": pl.Boolean, "h2_region_ok": pl.Boolean,
-    }
+def read_tables(indir: Path, peaks: list[str]) -> pl.DataFrame:
+    """Concatenate ``{indir}/{peak}.tsv`` in manifest order with pinned types."""
     first = next(
         (indir / f"{p}.tsv" for p in peaks if (indir / f"{p}.tsv").exists()), None
     )
     header = (
         pl.read_csv(first, separator="\t", n_rows=0).columns if first is not None else []
     )
-    schema = {c: numeric_bool.get(c, pl.Utf8) for c in header}
+    schema = {c: NUMERIC_BOOL.get(c, pl.Utf8) for c in header}
 
     frames, missing = [], 0
     for peak in peaks:
@@ -70,18 +59,17 @@ def main() -> None:
     if missing:
         print(f"[aggregate] WARNING: {missing}/{len(peaks)} peak TSVs missing "
               f"(failed/incomplete?) — omitted from the table", flush=True)
+    return pl.concat(frames, how="vertical") if frames else pl.DataFrame()
 
-    table = pl.concat(frames, how="vertical") if frames else pl.DataFrame()
 
-    Path(args.out_parquet).parent.mkdir(parents=True, exist_ok=True)
-    table.write_parquet(args.out_parquet)
-    with gzip.open(args.out_tsv, "wb") as fh:
-        table.write_csv(fh, separator="\t")
+def classify_peaks(table: pl.DataFrame, random_n: int, seed: int):
+    """(drivers, heritable, random, present) peak lists for the plot manifests.
 
-    # ── classify peaks for plotting ───────────────────────────────────────────
-    # One representative row per peak carries the peak-level fields.
-    drivers, heritable = [], []
-    present = []
+    One representative row per peak carries the peak-level fields. The random
+    sample is a NEGATIVE control: peaks that are neither drivers nor
+    heritable-no-driver (no selected driver, no identified H²; the epigenetic /
+    not-sequence-driven majority), so it deliberately excludes them. Seeded."""
+    drivers, heritable, present = [], [], []
     if table.height:
         per_peak = table.group_by("peak_id").first()
         for r in per_peak.iter_rows(named=True):
@@ -92,18 +80,24 @@ def main() -> None:
                 drivers.append(pid)
             elif r.get("h2_re_ok") or r.get("h2_region_ok"):
                 heritable.append(pid)
-
-    # Random NEGATIVE-CONTROL sample: peaks that are neither drivers NOR
-    # heritable-no-driver — the "background" (no selected driver, no identified
-    # H²; the epigenetic / not-sequence-driven majority). This is the visual
-    # contrast to the drivers dir, so it deliberately EXCLUDES driver/heritable
-    # peaks rather than sampling everything. Seeded → reproducible.
-    rng = random.Random(args.seed)
+    rng = random.Random(seed)
     exclude = set(drivers) | set(heritable)
     pool = sorted(p for p in present if p not in exclude)
-    rand = sorted(rng.sample(pool, min(args.random_n, len(pool)))) if pool else []
+    rand = sorted(rng.sample(pool, min(random_n, len(pool)))) if pool else []
+    return drivers, heritable, rand, present
 
-    mdir = Path(args.manifest_dir)
+
+def aggregate(indir: Path, peaks: list[str], out_parquet: Path, out_tsv: Path,
+              manifest_dir: Path, random_n: int = 100, seed: int = 42) -> None:
+    """Write the unified parquet + gzipped TSV and the three plot manifests."""
+    table = read_tables(Path(indir), peaks)
+    Path(out_parquet).parent.mkdir(parents=True, exist_ok=True)
+    table.write_parquet(out_parquet)
+    with gzip.open(out_tsv, "wb") as fh:
+        table.write_csv(fh, separator="\t")
+
+    drivers, heritable, rand, present = classify_peaks(table, random_n, seed)
+    mdir = Path(manifest_dir)
     mdir.mkdir(parents=True, exist_ok=True)
     (mdir / "plot_drivers.txt").write_text("\n".join(sorted(drivers)) + "\n")
     (mdir / "plot_heritable_no_driver.txt").write_text("\n".join(sorted(heritable)) + "\n")
@@ -112,7 +106,3 @@ def main() -> None:
     print(f"[aggregate] {table.height} rows over {len(present)} peaks → "
           f"{len(drivers)} drivers, {len(heritable)} heritable-no-driver, "
           f"{len(rand)} random-background")
-
-
-if __name__ == "__main__":
-    main()

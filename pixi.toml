@@ -110,7 +110,7 @@ hap-selective-5-samples = { cmd = [
 # repressive driver (X=RE55, β≈-0.50) with a synthetic reversing variant
 # (Z=RE1, β≈+0.31, OPPOSITE sign) injected into a 15-hap SUBSET of X's 35
 # carriers. Exercises opposite-sign nested attribution + the violin/shape plot.
-# Built by workflow/scripts/make_nested_fixture.py from chr1_157664372.
+# Built by workflow/scripts/tools/make_nested_fixture.py from chr1_157664372.
 test-nested = { cmd = [
     "snakemake",
     "--notemp",

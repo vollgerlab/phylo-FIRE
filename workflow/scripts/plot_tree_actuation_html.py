@@ -425,18 +425,11 @@ def query_pclai(
 
 
 def load_phylo_mm(path: Path) -> dict:
-    """Parse the per-peak phylo_mm TSV (workflow/scripts/phylo_mm.R).
+    """Parse a phylo_mm TSV into ``{"meta": header k=v, "branches": per-variant rows}``.
 
-    Returns a dict with two keys:
-      - ``meta`` — header summary including the 3-prior H²_p sensitivity
-        (h2_alpha{1000,1,025}_{mean,lower,upper}), n_tips,
-        n_branches_tested, n_branches_selected, lasso_lambda.
-      - ``branches`` — list of per-internal-branch dicts. Each carries
-        the Welch t-test fields (branch_id, n_below, descendants,
-        mean_in, mean_out, t_stat, p_raw, p_fdr, linked_sites) plus
-        LASSO-selection fields (selected_by_lasso bool, lasso_coef,
-        beta, se, ci_lower, ci_upper, p).
-    Missing-or-malformed file → ``{"meta": {}, "branches": []}``.
+    Rows carry the marginal carriers-vs-rest stats (mean_in/out, t_stat, p_raw,
+    p_fdr), the joint forward-selection stats (beta, se, ci_*, p) and
+    ``is_split`` (selected driver). Missing or malformed file → empty.
     """
     out: dict = {"meta": {}, "branches": []}
     try:
@@ -624,14 +617,14 @@ def logo_freqs(raw_z: list[list[int]], aln_len: int) -> dict[str, list[float]]:
 
 TOP_SNP_COLOR = "#d62728"   # red, used as the FIRST group colour (headline)
 
-# Palette for sig-branch groups (Plotly D3-default qualitative). Red is the
-# headline / most-significant group; subsequent groups cycle through the rest.
+# Driver palette (Plotly D3 qualitative). Red is the first driver (smallest
+# marginal p_fdr); later drivers cycle through the rest.
 SIG_GROUP_PALETTE = [
     "#d62728", "#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e",
     "#17becf", "#e377c2", "#8c564b", "#bcbd22", "#7f7f7f",
 ]
 
-# BH-FDR threshold for ANNOTATING a selected branch on the tree.
+# Unused: drivers are drawn on is_split alone (see _branch_is_sig).
 SIG_FDR = 0.05
 
 
@@ -650,10 +643,8 @@ def _branch_is_sig(b: dict) -> bool:
 def _branch_group_key(b: dict) -> frozenset:
     """Group identity = the branch's own clade (its descendant tip set).
 
-    Each significant selected branch is its own annotation. We no longer merge
-    branches by shared linked-variants: real clades (e.g. the ancestral/derived
-    split) frequently have NO linked variant, so a linked-variant key would
-    collapse every such clade into one group and draw only one of them.
+    Each driver is its own annotation. Many real clades have no linked
+    variant, so keying on linked sites would merge them into one group.
     """
     return frozenset(b.get("descendants") or ())
 
@@ -1057,14 +1048,9 @@ def make_figure(
 
     fig = go.Figure()
 
-    # ── 0a. Precompute leaf → LASSO-rep-clade colour ─────────────────────────
-    # Mirrors the grouping rule used by the branch-overlay block below
-    # (group by linked-variants set, order groups by smallest p_fdr).
-    # **Only leaves that belong to a group's REPRESENTATIVE branch** —
-    # the branch that actually gets a label drawn on the tree — get a
-    # coloured leader line. Leaves in nested non-rep members of the same
-    # group stay gray. This keeps leader-line colours in 1-to-1
-    # correspondence with on-tree annotations.
+    # ── 0a. Leaf → driver colour for leader lines ────────────────────────────
+    # Same grouping and order as the overlay below. Only the representative
+    # branch's leaves are coloured, so leader lines match on-tree annotations.
     _lasso_sig = [
         b for b in (phylo_mm or {}).get("branches") or []
         if _branch_is_sig(b)
@@ -1107,8 +1093,7 @@ def make_figure(
     # (LABEL_X[1]) rather than running on through the PCLAI / actuation / MSA
     # panels. When labels are hidden (tiny rows) there are no names to land on,
     # so the lines extend the full width as the only row guide.
-    # Leaves inside a LASSO-selected clade get a slightly heavier coloured
-    # line matched to that clade's annotation; uncovered leaves stay light gray.
+    # Leaves carrying a driver get a heavier line in its colour; others stay gray.
     _leader_x1 = LABEL_X[1] if show_labels else 1.0
     _tree_axis_min = -0.01 * max_depth
     _tree_axis_max = max_depth * 1.05
@@ -1170,34 +1155,24 @@ def make_figure(
     # below and by the header-summary block lower down).
     pm = phylo_mm or {"meta": {}, "branches": []}
     pm_branches = pm.get("branches") or []
-    # Headline branches = significant SPLITS: each internal node's smaller
-    # daughter (`is_split`) whose sister-clade contrast clears BH-FDR < 0.05.
-    # One annotation per node, so the set is naturally small and each Δ is a
-    # local (clade-vs-sister) effect with no joint-β sign instability.
+    # Drivers = rows phylo_mm's forward selection kept (`is_split`).
     sig = [b for b in pm_branches if _branch_is_sig(b)]
     significant = bool(sig)
 
-    # ── 1c. Significant-splits overlay (phylo_mm) ────────────────────────────
-    # Each significant split is its own annotation (keyed by its clade). Each
-    # group represents one biological signal — possibly detected at several
-    # nested resolutions on the tree. Each group gets its own palette color;
-    # the most-significant member of each group is drawn thick + annotated;
-    # other members of the same group are drawn thin in the same colour.
-    # MSA columns are colour-matched to the group they're linked to (5b).
+    # ── 1c. Driver overlay (phylo_mm) ────────────────────────────────────────
+    # One annotation per driver (keyed by its carrier set), each in its own
+    # palette colour; its MSA columns are colour-matched (5b).
     _all_tip_names = frozenset(
         parse_leaf_meta(t.name)["sample_hap"] for t in tree.get_terminals()
     )
 
     def _find_branch_endpoints(rec: dict) -> tuple[float, float, float] | None:
-        """Resolve a phylo_mm branch record to (px, cx, py) endpoints.
+        """Resolve a phylo_mm row to (px, cx, py) endpoints.
 
-        A bipartition has two halves. R's `ape::extract.clade` returns one
-        half (as specified by R's own rooting). Bio.Phylo's midpoint-rooted
-        tree may materialise *either* half as a clade. We try to find a
-        clade whose tip set equals the want set directly; failing that, we
-        find a clade whose tip set equals the *complement* and then resolve
-        the sibling clade (in the same parent) — that sibling IS the want
-        clade in Bio.Phylo, and we use ITS endpoints (correct x AND y).
+        The carrier set can match either half of a bipartition in the drawn
+        tree. Try a clade whose tips equal the want set; failing that, find
+        the clade equal to the complement and use its sibling's endpoints
+        (correct x AND y).
 
         Using the sibling's actual `pos[id(...)]["y"]` matters: a geometric
         centroid of the want tips disagrees with the recursive
@@ -1254,18 +1229,13 @@ def make_figure(
                 return (pos[id(parent)]["x"], pos[id(clade)]["x"], cy)
         return None
 
-    # Group LASSO-selected branches by their linked-variants set. Each
-    # distinct linked-variants signature is one annotation; branches with
-    # no linked variants form their own group (the "outlier-clade" signal
-    # not explained by any visible SNP).
+    # One annotation per driver, keyed by its carrier set (_branch_group_key).
     sig_groups: dict[frozenset, list[dict]] = {}
     for rec in sig:
         key = _branch_group_key(rec)
         sig_groups.setdefault(key, []).append(rec)
 
-    # Order groups by per-branch BH-FDR (smallest first). p_fdr is the
-    # headline p (pre-specified-hypothesis multiple testing, no double-
-    # dipping); post-LASSO p is reported in hover only.
+    # Colour order: smallest marginal p_fdr first (index 0 = red).
     def _group_p(members: list[dict]) -> float:
         ps = [m.get("p_fdr") for m in members if isinstance(m.get("p_fdr"), float)]
         return min(ps) if ps else 1.0
@@ -1443,11 +1413,7 @@ def make_figure(
     def _fmt_beta(b):
         return f"{b:+.2f}" if isinstance(b, float) else "NA"
     def _marginal_delta(rec: dict) -> float | None:
-        """Raw-actuation Δ = mean_in − mean_out from the coverage-weighted
-        per-split scan. mean_out is the clade's SISTER subtree (the other
-        daughter of its parent node), so Δ is the local contrast: how much this
-        lineage's actuation differs from the one it split from.
-        """
+        """Marginal Δ = mean_in − mean_out: carriers vs all other haplotypes."""
         mi, mo = rec.get("mean_in"), rec.get("mean_out")
         if isinstance(mi, float) and isinstance(mo, float):
             return mi - mo
@@ -1507,10 +1473,6 @@ def make_figure(
                 if isinstance(mi, float) and isinstance(mo, float)
                 else ""
             )
-            # Headline = Δ (clade vs SISTER, raw actuation) + its BH-FDR p, the
-            # sister-clade contrast. β/CI from the LASSO+selectiveInference fit
-            # are secondary (joint effect, may differ in sign when correlated
-            # clades are co-selected) and live in hover only.
             # Headline = the JOINT (conditional) contribution β and its p from
             # the forward-selection regression: "this variant changes actuation
             # by β, after accounting for the others." A nested variant that
@@ -1752,19 +1714,10 @@ def make_figure(
             xaxis="x3", yaxis="y1",
         ))
 
-    # ── 5b. Linked-variant highlight in MSA — colour-matched to branch group.
-    # Each MSA column whose allele exactly co-segregates with a sig-branch
-    # bipartition gets a dashed highlight in the colour of that branch's
-    # group. Columns linked to multiple groups get the most-significant
-    # group's colour (first match wins, since sorted_groups is sorted by
-    # best p_fdr ascending).
-    #
-    # Contiguous runs of linked columns (typical for an indel spanning many
-    # MSA positions) are collapsed into a single dashed rectangle outline
-    # — drawing N parallel vertical dashes for a 50-column indel produces a
-    # solid noise block; one outlined box around the run reads as "this
-    # whole block is linked." Singleton linked columns still render as a
-    # single vertical dash.
+    # ── 5b. Driver columns (linked_sites) in the MSA, colour-matched ─────────
+    # A column linked to several drivers takes the first (lowest p_fdr) colour.
+    # Contiguous runs (e.g. a 50-column indel) draw as one outlined box instead
+    # of N parallel dashes; singleton columns draw as one dash.
     col_to_color: dict[int, str] = {}
     if significant:
         for key, _members in sorted_groups:
@@ -2034,14 +1987,9 @@ def make_figure(
         summary_bits.append(
             f"<b>RE</b>=cols {re_band[0]+1}–{re_band[1]+1} (+{flank}bp flank)"
         )
-    # Phylogenetic heritability from MCMCglmm (rule phylo_mm). Headline =
-    # alpha.V=1 (Gelman 2006's default half-Cauchy(0,1) on σ_phylo); the
-    # alpha.V=0.25 fit is shown as a conservative-prior flank when it
-    # differs by >0.05. alpha.V=1000 is retained in the TSV as a stress
-    # test but NOT used in the headline: on weakly-identified peaks (small
-    # n_unique, big within-cluster spread) the wide half-Cauchy(0,~32)
-    # mass at large σ_phylo systematically inflates H² toward 1 without
-    # adding identification information.
+    # H² headline = alpha.V=1 (half-Cauchy(0,1)); alpha.V=0.25 is shown when it
+    # differs by >0.05. alpha.V=1000 stays in the TSV only: on weakly identified
+    # peaks it inflates H² toward 1.
     meta = pm.get("meta", {})
     h2_main = meta.get("h2_alpha1_mean")
     h2_low  = meta.get("h2_alpha025_mean")
@@ -2167,11 +2115,9 @@ def main() -> None:
     parser.add_argument(
         "--phylo-mm", type=Path, default=None,
         help="Optional per-peak phylo_mm TSV (workflow/scripts/phylo_mm.R). "
-             "Supplies the phylogenetic heritability H²_p sensitivity (header) "
-             "and per-internal-branch rows (coverage-weighted test + LASSO). "
-             "When provided, the header summary gains H²_p + the sig-branch "
-             "count, and LASSO-selected branches are annotated on the tree "
-             "with their linked MSA columns highlighted.",
+             "Adds H²_p and the driver count to the header summary; per-variant "
+             "drivers (forward-selection WLS, is_split) are annotated on the "
+             "tree with their MSA columns highlighted.",
     )
     parser.add_argument(
         "--panel", type=Path, default=None,
@@ -2183,9 +2129,7 @@ def main() -> None:
     args = parser.parse_args()
 
     tree                = Phylo.read(str(args.tree), "newick")
-    # asm_pos is no longer used since the PCLAI lookup is CHM13-coord-based
-    # (one tabix query per peak, keyed by peak_id). The loader keeps the
-    # third return for forward-compat with any future asm-coord consumers.
+    # asm_pos is unused: the PCLAI lookup is CHM13-based (one tabix query per peak).
     actuation, coverage, _ = load_actuation(args.actuation)
     alignment           = load_alignment(args.alignment)
     peak_id             = args.peak_id or args.tree.stem

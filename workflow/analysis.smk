@@ -10,8 +10,6 @@ results/{run}/tables/ (~40 MB) and fastas/peak_ids.txt.
     snakemake -s workflow/analysis.smk --config run_name=<run> --rerun-triggers mtime -j <N>
 """
 
-import os
-from pathlib import Path
 from snakemake.utils import min_version
 
 min_version("8.0")
@@ -20,32 +18,7 @@ min_version("8.0")
 configfile: "config/config.yaml"
 
 
-RUN = config.get("run_name", "default")
-RESULTS = f"results/{RUN}"
-
-PLOT_HTML = str(config.get("plot_html", "false")).lower() in ("true", "1", "yes")
-PROJECT_HG38 = str(config.get("project_hg38", "true")).lower() in ("true", "1", "yes")
-PLASMID = str(config.get("plasmid", "false")).lower() in ("true", "1", "yes")
-
-HAP = RESULTS + "/tables/haplotypes.parquet"
-PEAKS = RESULTS + "/fastas/peak_ids.txt"
-# Stage-1 summary tables (stage1_tables rule / pixi run <run>-tables): Stage 2
-# reads only these, never the per-peak aligned/ trees/ phylo_mm/ directories.
-TABLES = RESULTS + "/tables"
-ALIGNMENTS = TABLES + "/alignments.parquet"
-TREES = TABLES + "/trees.parquet"
-PHYLO_MM = TABLES + "/phylo_mm.parquet"
-
-
-def _hg38_ok() -> bool:
-    """hg38 projection runnable? (union-BED mode + an AGC on disk)."""
-    agc = config.get("agc")
-    return bool(
-        PROJECT_HG38
-        and not config.get("preextracted_dir")
-        and agc
-        and Path(agc).exists()
-    )
+include: "rules/common.smk"
 
 
 def _targets(_wildcards):
@@ -238,11 +211,6 @@ rule plasmid_all:
         "--haplotypes {input.haplotypes} "
         "--peaks {input.drivers} --out-constructs {output.constructs} "
         "--out-fa {output.fa}"
-
-
-def _pclai_arg(_wildcards):
-    p = config.get("pclai_bed")
-    return f"--pclai-bed {p}" if p and Path(p).exists() else ""
 
 
 rule plot_all:

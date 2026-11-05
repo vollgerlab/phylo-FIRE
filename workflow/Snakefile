@@ -1,6 +1,4 @@
-import os
 import shlex
-from pathlib import Path
 from snakemake.utils import min_version
 
 min_version("8.0")
@@ -9,15 +7,12 @@ min_version("8.0")
 configfile: "config/config.yaml"
 
 
+include: "rules/common.smk"
+
+
 # Keep peak_id from swallowing a slash.
 wildcard_constraints:
     peak_id=r"[^/]+",
-
-
-# Namespace outputs per run (results/{run}, temp/{run}) so runs never clobber each other.
-RUN = config.get("run_name", "default")
-RESULTS = f"results/{RUN}"
-TEMP = f"temp/{RUN}"
 
 
 def count_unique_seqs_phylip(phy_path: str) -> int:
@@ -52,7 +47,7 @@ def _run_peak_ids():
             for fa in src.glob("*.fa")
             if (src / f"{fa.stem}.tsv").exists()
         )
-    manifest = Path(RESULTS + "/fastas/peak_ids.txt")
+    manifest = Path(PEAKS)
     if manifest.exists():
         return [ln.strip() for ln in manifest.read_text().splitlines() if ln.strip()]
     pi = config.get("peak_ids")
@@ -72,7 +67,7 @@ def _stage1_targets():
         expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=peaks)
         + expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=peaks)
         + expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=peaks)
-        + [RESULTS + "/tables/haplotypes.parquet"]
+        + [HAP]
         + rules.stage1_tables.output
     )
 
@@ -89,11 +84,11 @@ rule stage1_tables:
         aligned=lambda wc: expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=_run_peak_ids()),
         trees=lambda wc: expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=_run_peak_ids()),
         phylo_mm=lambda wc: expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=_run_peak_ids()),
-        peaks=RESULTS + "/fastas/peak_ids.txt",
+        peaks=PEAKS,
     output:
-        RESULTS + "/tables/alignments.parquet",
-        RESULTS + "/tables/trees.parquet",
-        RESULTS + "/tables/phylo_mm.parquet",
+        ALIGNMENTS,
+        TREES,
+        PHYLO_MM,
     params:
         script=os.path.join(workflow.basedir, "scripts/stage1_tables.py"),
     shell:
@@ -225,8 +220,8 @@ manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkp
         # those ids. fastas/ is temp; haplotypes.parquet is the persisted copy.
         fa=temp(expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=_run_peak_ids())),
         tsv=temp(expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=_run_peak_ids())),
-        manifest=RESULTS + "/fastas/peak_ids.txt",
-        haplotypes=RESULTS + "/tables/haplotypes.parquet",
+        manifest=PEAKS,
+        haplotypes=HAP,
     threads: config.get("bgzip_threads", 16)
     resources:
         mem_mb=32768,

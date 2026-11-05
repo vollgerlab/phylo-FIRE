@@ -5,8 +5,9 @@
 input_table: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/fiber-seq-pilot/union-peaks-asm.bed.gz"
 agc: "/scratch/ucgd/lustre-labs/vollger/projects/HPRCv2/impg/HPRC_r2_assemblies_0.6.1.agc"
 
-# The 180,684 HSCA peaks; without this, peak_ids=null targets every peak in the
-# union BED. Regenerate: pixi run hsca-peak-ids (needs pixi run setup-hsca).
+# The 180,684 HSCA peaks. Required on a fresh run: with no fastas/peak_ids.txt
+# manifest and no peak_ids, Stage 1 resolves zero peaks. Regenerate:
+# pixi run hsca-peak-ids (needs pixi run setup-hsca).
 peak_ids: "config/hsca_peak_ids.txt"
 run_name: "hsca"
 

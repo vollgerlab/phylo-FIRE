@@ -35,10 +35,6 @@ set-resources:
     mem_mb: 16384
     runtime: 240
     threads: 8
-  aggregate_results:
-    mem_mb: 49152
-    runtime: 240
-    threads: 4
 
 rerun-incomplete: true
 show-failed-logs: true

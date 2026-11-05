@@ -1,7 +1,6 @@
 rule phylo_mm:
     """MCMCglmm H²ₚ (3 priors) in the TSV header + one row per candidate variant with
-forward-selection joint WLS stats (`is_split` = driver). Schema in phylo_mm.R;
-pass --pdf to phylo_mm.R by hand for a diagnostic plot."""
+forward-selection joint WLS stats (`is_split` = driver). Schema in phylo_mm.R."""
     input:
         tree=RESULTS + "/trees/{peak_id}.rooted.nwk",
         actuation=RESULTS + "/fastas/{peak_id}.tsv",

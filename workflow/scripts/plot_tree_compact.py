@@ -202,7 +202,7 @@ def main() -> None:
     # from their group. Collapse those into polytomies, then order each node's
     # children: lone leaves first (shortest branch first), then clades by size.
     collapse_zero(tree.root)
-    act, _, _ = load_actuation(args.actuation)
+    act, _ = load_actuation(args.actuation)
 
     def leaf_act(c):
         a = act.get(parse_leaf_meta(c.name)["sample_hap"], act.get(c.name))

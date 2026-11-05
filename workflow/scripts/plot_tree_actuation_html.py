@@ -8,7 +8,7 @@ Layout (left to right):
 Always writes HTML. Also writes PDF via kaleido (already in pixi deps).
 
 The PCLAI stripe uses HPRC R2's pre-baked PCLAI palette (col 9 of the bgzipped
-+ tabix-indexed CHM13-coord BED at resources/pclai/hprc_r2_chm13.bed.gz). The
++ tabix-indexed CHM13-coord BED at resources/pclai/hprc_r2.bed.gz). The
 peak_id is parsed as ``{chrom}_{start}_{end}`` and a single tabix query
 returns one row per sample-haplotype overlapping the peak; each row's sample/hap
 identity is taken from BED col 4. Leaves use ``{sample}_{hap}`` directly
@@ -26,7 +26,7 @@ Usage:
         --alignment aligned/chr8_8453862_8454062.fa \\
         --html      plots/chr8_8453862_8454062.html \\
         --pdf       plots/chr8_8453862_8454062.pdf \\
-        --pclai-bed resources/pclai/hprc_r2_chm13.bed.gz   # optional
+        --pclai-bed resources/pclai/hprc_r2.bed.gz   # optional
 """
 
 import argparse
@@ -117,21 +117,10 @@ def assign_paralog_colors(metas: list[dict]) -> tuple[dict[str, str], list[str],
 
 # ── Data loaders ──────────────────────────────────────────────────────────────
 
-def load_actuation(
-    path: Path,
-) -> tuple[
-    dict[str, float | None],
-    dict[str, int | None],
-    dict[str, tuple[str, int, int]],
-]:
-    """Return (actuation, coverage, asm_pos) dicts keyed by sample name.
-
-    asm_pos[sample] = (asm_chr, asm_start, asm_end) when the TSV has those
-    columns; absent otherwise (older/preextracted TSVs).
-    """
+def load_actuation(path: Path) -> tuple[dict[str, float | None], dict[str, int | None]]:
+    """Return (actuation, coverage) dicts keyed by sample name."""
     actuation: dict[str, float | None] = {}
     coverage: dict[str, int | None] = {}
-    asm_pos: dict[str, tuple[str, int, int]] = {}
     with path.open() as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
             name = row["sample"]
@@ -139,13 +128,7 @@ def load_actuation(
             actuation[name] = None if val in ("NA", "") else float(val)
             cov = row.get("coverage", "NA")
             coverage[name] = None if cov in ("NA", "") else int(cov)
-            asm_chr = row.get("asm_chr")
-            if asm_chr and asm_chr != "NA":
-                try:
-                    asm_pos[name] = (asm_chr, int(row["asm_start"]), int(row["asm_end"]))
-                except (KeyError, ValueError):
-                    pass
-    return actuation, coverage, asm_pos
+    return actuation, coverage
 
 
 # ── PCLAI lookup ──────────────────────────────────────────────────────────────
@@ -175,33 +158,11 @@ def _parse_peak_coords(s: str) -> tuple[str, int, int] | None:
         return None
 
 
-def _pansn_chrom(leaf_name: str, asm_chr: str) -> str:
-    """Normalize an input-table ``asm_chr`` to the PanSN chrom key used by
-    HPRC's asm-coord PCLAI BED (``{sample}#{hap}#{contig}``).
-
-    Most non-HG002 rows already arrive PanSN-formatted (``HG02886#1#CMxxxx.1``)
-    and pass through unchanged. The HG002 reference uses parental-suffix style
-    (``chr12_PATERNAL``); we strip the suffix and prefix with the leaf's own
-    ``{sample}#{hap}#``.
-    """
-    if "#" in asm_chr:
-        return asm_chr
-    contig = asm_chr
-    for suf in ("_PATERNAL", "_MATERNAL"):
-        if contig.endswith(suf):
-            contig = contig[: -len(suf)]
-            break
-    sample_hap = _leaf_to_sample_hap(leaf_name)
-    sample, hap = sample_hap.rsplit("_", 1)
-    return f"{sample}#{hap}#{contig}"
-
-
 def _row_to_info(f: list[str], distance_bp: int = 0) -> dict:
     """Convert a parsed tabix row into the per-leaf info dict.
 
     ``distance_bp`` is 0 for rows that directly overlap the peak, and >0 when
-    the row was picked by the nearest-window fallback (Pass 1b in
-    :func:`query_pclai`).
+    the row was picked by the nearest-window fallback.
     """
     try:
         pc_str = f[3].rsplit("_", 1)[-1].strip("()")
@@ -218,21 +179,34 @@ def _row_to_info(f: list[str], distance_bp: int = 0) -> dict:
     }
 
 
-def _match_pclai_rows(
-    rows: list[str],
-    start: int,
-    end: int,
-    leaf_names: list[str],
-) -> dict[str, dict]:
-    """Pick the tabix row with largest peak overlap per sample-hap.
+def _overlap_score(rs: int, re_: int, start: int, end: int) -> tuple[int, int] | None:
+    """(cost, distance_bp) for exact overlap: larger overlap wins; no overlap drops."""
+    overlap = max(0, min(re_, end) - max(rs, start))
+    return None if overlap <= 0 else (-overlap, 0)
 
-    Rows that don't overlap the peak interval at all are dropped.
+
+def _nearest_score(rs: int, re_: int, start: int, end: int) -> tuple[int, int] | None:
+    """(cost, distance_bp) for the nearest window within PCLAI_NEAREST_BP (0 = overlap)."""
+    if re_ <= start:
+        dist = start - re_
+    elif rs >= end:
+        dist = rs - end
+    else:
+        dist = 0
+    return None if dist > PCLAI_NEAREST_BP else (dist, dist)
+
+
+def _match_pclai(rows, start, end, leaf_names, score) -> dict[str, dict]:
+    """Pick the lowest-cost tabix row per sample-hap and fan it out to its leaves.
+
+    ``score(rs, re_, start, end)`` returns ``(cost, distance_bp)`` or None to
+    drop the row; ties keep the first row seen.
     """
     leaves_by_sample_hap: dict[str, list[str]] = {}
     for nm in leaf_names:
         leaves_by_sample_hap.setdefault(_leaf_to_sample_hap(nm), []).append(nm)
 
-    best_by_sample_hap: dict[str, tuple[int, list[str]]] = {}
+    best: dict[str, tuple[int, int, list[str]]] = {}
     for raw in rows:
         f = raw.split("\t")
         try:
@@ -242,183 +216,67 @@ def _match_pclai_rows(
         sample_hap = f"{sample}_{hap_str.lstrip('h')}"
         if sample_hap not in leaves_by_sample_hap:
             continue
-        rs, re_ = int(f[1]), int(f[2])
-        overlap = max(0, min(re_, end) - max(rs, start))
-        if overlap <= 0:
+        sc = score(int(f[1]), int(f[2]), start, end)
+        if sc is None:
             continue
-        prev = best_by_sample_hap.get(sample_hap)
-        if prev is None or overlap > prev[0]:
-            best_by_sample_hap[sample_hap] = (overlap, f)
+        prev = best.get(sample_hap)
+        if prev is None or sc[0] < prev[0]:
+            best[sample_hap] = (sc[0], sc[1], f)
 
     out: dict[str, dict] = {}
-    for sample_hap, (_, f) in best_by_sample_hap.items():
-        info = _row_to_info(f, distance_bp=0)
-        for leaf in leaves_by_sample_hap[sample_hap]:
-            out[leaf] = info
-    return out
-
-
-def _match_pclai_nearest(
-    rows: list[str],
-    start: int,
-    end: int,
-    leaf_names: list[str],
-    max_distance: int,
-) -> dict[str, dict]:
-    """Pick the row whose interval is *nearest* to the peak per sample-hap.
-
-    Rows beyond ``max_distance`` bp from the peak interval are dropped, and
-    rows that overlap (distance 0) win over any non-overlapping row. Returns
-    only entries where the chosen row sits within ``max_distance``; the
-    ``distance_bp`` field on each info dict records the gap (0 for overlap).
-    """
-    leaves_by_sample_hap: dict[str, list[str]] = {}
-    for nm in leaf_names:
-        leaves_by_sample_hap.setdefault(_leaf_to_sample_hap(nm), []).append(nm)
-
-    best_by_sample_hap: dict[str, tuple[int, list[str]]] = {}
-    for raw in rows:
-        f = raw.split("\t")
-        try:
-            sample, hap_str = f[3].split("/")[:2]
-        except (IndexError, ValueError):
-            continue
-        sample_hap = f"{sample}_{hap_str.lstrip('h')}"
-        if sample_hap not in leaves_by_sample_hap:
-            continue
-        rs, re_ = int(f[1]), int(f[2])
-        # Distance is 0 when the row overlaps the peak; otherwise the gap
-        # between the two intervals (positive integer).
-        if re_ <= start:
-            dist = start - re_
-        elif rs >= end:
-            dist = rs - end
-        else:
-            dist = 0
-        if dist > max_distance:
-            continue
-        prev = best_by_sample_hap.get(sample_hap)
-        if prev is None or dist < prev[0]:
-            best_by_sample_hap[sample_hap] = (dist, f)
-
-    out: dict[str, dict] = {}
-    for sample_hap, (dist, f) in best_by_sample_hap.items():
+    for sample_hap, (_, dist, f) in best.items():
         info = _row_to_info(f, distance_bp=dist)
         for leaf in leaves_by_sample_hap[sample_hap]:
             out[leaf] = info
     return out
 
 
-def query_pclai(
-    pclai_bed: Path,
-    peak_id: str,
-    leaf_names: list[str],
-    asm_pos: dict[str, tuple[str, int, int]] | None = None,
-) -> dict[str, dict]:
-    """Look up PCLAI annotation per leaf against the unified bed.
+def _fetch(tabix, chrom: str, start: int, end: int) -> list[str]:
+    """Tabix rows in [start, end), or [] when the chrom is absent."""
+    try:
+        return list(tabix.fetch(chrom, start, end))
+    except (ValueError, OSError):
+        return []
 
-    The merged ``hprc_r2.bed.gz`` carries BOTH coordinate spaces — CHM13
-    rows keyed by reference chrom (``chr1``), and asm rows keyed by PanSN
-    contig (``{sample}#{hap}#{contig}``). They never collide on chrom keys,
-    so a tabix query against either chrom-space hits only rows in that space.
 
-    Lookup proceeds in three passes:
-      1. **CHM13 overlap.** For union peaks ``peak_id`` parses as
-         ``{chrom}_{start}_{end}`` → one tabix query at that interval. For
-         paralog groups (``peak_id="pg_64"``), each leaf carries its own
-         sub-peak coords as the first ``__``-segment of its name; leaves are
-         grouped by sub-peak and one query runs per distinct sub-peak.
-      1b. **CHM13 nearest-within-1Mb.** For leaves still unannotated after
-         pass 1 (sample-haps whose assemblies have no PCLAI window directly
-         overlapping the peak), a wider tabix query at ``peak ± PCLAI_NEAREST_BP``
-         picks the *nearest* PCLAI window per sample-hap. This avoids
-         "missing" stripes for haplotypes whose closest annotated window
-         simply lies in the immediate flanking region. Rows beyond
-         ``PCLAI_NEAREST_BP`` are not considered. Inherited annotations
-         carry a positive ``distance_bp`` field.
-      2. **Asm fallback.** For leaves still unannotated, if ``asm_pos`` is
-         supplied (extract_fastas-emitted ``asm_chr / asm_start / asm_end``
-         from the per-peak TSV), each leaf gets one tabix query in PanSN
-         chrom space. This recovers HG002-only peaks (no CHM13
-         representation) and segmental-duplication paralogs whose CHM13
-         ortholog windows have no PCLAI coverage.
+def query_pclai(pclai_bed: Path, peak_id: str, leaf_names: list[str]) -> dict[str, dict]:
+    """Per-leaf PCLAI lookup in CHM13 space.
+
+    Union peaks parse ``peak_id`` as ``{chrom}_{start}_{end}``; paralog groups
+    take each leaf's sub-peak from the first ``__``-segment of its name. Each
+    leaf gets the window with the largest overlap, else the nearest window
+    within PCLAI_NEAREST_BP (``distance_bp`` > 0).
 
     Returns ``{leaf_name: {"rgb", "centroid", "pc1", "pc2", "confidence",
-    "distance_bp"}}``. Leaves still unannotated after all passes are absent.
+    "distance_bp"}}``; unannotated leaves are absent.
     """
     import pysam   # lazy: only required when PCLAI is wired in
+
+    parsed = _parse_peak_coords(peak_id)
+    if parsed is not None:
+        intervals = [(*parsed, leaf_names)]
+    else:
+        by_peak: dict[tuple[str, int, int], list[str]] = {}
+        for nm in leaf_names:
+            coords = _parse_peak_coords(nm.split("__", 1)[0])
+            if coords:
+                by_peak.setdefault(coords, []).append(nm)
+        intervals = [(*k, v) for k, v in by_peak.items()]
+
     out: dict[str, dict] = {}
-
-    # Sub-peaks that get queried in CHM13 space, retained so Pass 1b can
-    # widen the same intervals without re-parsing leaf names.
-    chm13_intervals: list[tuple[str, int, int, list[str]]] = []
-
     tabix = pysam.TabixFile(str(pclai_bed))
     try:
-        # ── Pass 1: CHM13 overlap ──
-        parsed = _parse_peak_coords(peak_id)
-        if parsed is not None:
-            chrom, start, end = parsed
-            chm13_intervals.append((chrom, start, end, leaf_names))
-            try:
-                rows = list(tabix.fetch(chrom, start, end))
-            except (ValueError, OSError):
-                rows = []
+        for chrom, start, end, leaves in intervals:
+            rows = _fetch(tabix, chrom, start, end)
             if rows:
-                out.update(_match_pclai_rows(rows, start, end, leaf_names))
-        else:
-            # Paralog mode: group leaves by sub-peak parsed from name[0].
-            by_peak: dict[tuple[str, int, int], list[str]] = {}
-            for nm in leaf_names:
-                head = nm.split("__", 1)[0]
-                coords = _parse_peak_coords(head)
-                if coords:
-                    by_peak.setdefault(coords, []).append(nm)
-            for (chrom, start, end), peak_leaves in by_peak.items():
-                chm13_intervals.append((chrom, start, end, peak_leaves))
-                try:
-                    rows = list(tabix.fetch(chrom, start, end))
-                except (ValueError, OSError):
-                    continue
-                if rows:
-                    out.update(_match_pclai_rows(rows, start, end, peak_leaves))
-
-        # ── Pass 1b: CHM13 nearest-within-PCLAI_NEAREST_BP ──
-        # Widen each Pass 1 interval and pick the closest window for any
-        # sample-hap not yet annotated. This handles haplotypes whose PCLAI
-        # call set has no window directly over the peak but does have one
-        # nearby (common at SDs and assembly-gap edges).
-        for chrom, start, end, peak_leaves in chm13_intervals:
-            unannot = [nm for nm in peak_leaves if nm not in out]
+                out.update(_match_pclai(rows, start, end, leaves, _overlap_score))
+        for chrom, start, end, leaves in intervals:
+            unannot = [nm for nm in leaves if nm not in out]
             if not unannot:
                 continue
-            wide_start = max(0, start - PCLAI_NEAREST_BP)
-            wide_end   = end + PCLAI_NEAREST_BP
-            try:
-                rows = list(tabix.fetch(chrom, wide_start, wide_end))
-            except (ValueError, OSError):
-                continue
+            rows = _fetch(tabix, chrom, max(0, start - PCLAI_NEAREST_BP), end + PCLAI_NEAREST_BP)
             if rows:
-                out.update(_match_pclai_nearest(
-                    rows, start, end, unannot, PCLAI_NEAREST_BP,
-                ))
-
-        # ── Pass 2: asm fallback per leaf ──
-        if asm_pos:
-            for leaf in leaf_names:
-                if leaf in out:
-                    continue
-                pos = asm_pos.get(leaf)
-                if pos is None:
-                    continue
-                asm_chr, a_start, a_end = pos
-                pansn_chrom = _pansn_chrom(leaf, asm_chr)
-                try:
-                    rows = list(tabix.fetch(pansn_chrom, a_start, a_end))
-                except (ValueError, OSError):
-                    continue
-                if rows:
-                    out.update(_match_pclai_rows(rows, a_start, a_end, [leaf]))
+                out.update(_match_pclai(rows, start, end, unannot, _nearest_score))
     finally:
         tabix.close()
     return out
@@ -615,17 +473,12 @@ def logo_freqs(raw_z: list[list[int]], aln_len: int) -> dict[str, list[float]]:
 
 # ── Main figure builder ───────────────────────────────────────────────────────
 
-TOP_SNP_COLOR = "#d62728"   # red, used as the FIRST group colour (headline)
-
 # Driver palette (Plotly D3 qualitative). Red is the first driver (smallest
 # marginal p_fdr); later drivers cycle through the rest.
 SIG_GROUP_PALETTE = [
     "#d62728", "#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e",
     "#17becf", "#e377c2", "#8c564b", "#bcbd22", "#7f7f7f",
 ]
-
-# Unused: drivers are drawn on is_split alone (see _branch_is_sig).
-SIG_FDR = 0.05
 
 
 def _branch_is_sig(b: dict) -> bool:
@@ -640,13 +493,33 @@ def _branch_is_sig(b: dict) -> bool:
     return bool(b.get("is_split"))
 
 
-def _branch_group_key(b: dict) -> frozenset:
-    """Group identity = the branch's own clade (its descendant tip set).
+DRIVER_SYMBOLS = ["cross", "circle", "star", "diamond", "triangle-up",
+                  "x", "square", "hexagram"]
 
-    Each driver is its own annotation. Many real clades have no linked
-    variant, so keying on linked sites would merge them into one group.
+
+def driver_groups(phylo_mm: dict | None) -> list[dict]:
+    """Drivers (is_split rows) ordered by marginal p_fdr, smallest first.
+
+    Each entry is ``{"rec", "idx", "color", "symbol", "links"}``: the phylo_mm
+    row, its position among the is_split rows, its palette colour (index 0 =
+    red), its marker symbol and its linked MSA sites. phylo_mm merges identical
+    and complementary partitions, so every driver has its own carrier set.
     """
-    return frozenset(b.get("descendants") or ())
+    sig = [b for b in (phylo_mm or {}).get("branches") or [] if _branch_is_sig(b)]
+    ranked = sorted(
+        enumerate(sig),
+        key=lambda ib: ib[1]["p_fdr"] if isinstance(ib[1].get("p_fdr"), float) else 1.0,
+    )
+    return [
+        {
+            "rec": b,
+            "idx": idx,
+            "color": SIG_GROUP_PALETTE[i % len(SIG_GROUP_PALETTE)],
+            "symbol": DRIVER_SYMBOLS[i % len(DRIVER_SYMBOLS)],
+            "links": frozenset(b.get("linked_sites") or ()),
+        }
+        for i, (idx, b) in enumerate(ranked)
+    ]
 
 
 # Synthetic mutagenesis constructs (from make_mutagenesis_panel --aligned-out)
@@ -887,10 +760,8 @@ def make_figure(
     # inner driver's carriers are a subset of an outer driver's, the inner
     # column's filled cells line up inside the outer's — which the tree can't
     # show because the carriers needn't be a clade.
-    _sig_branches = [
-        b for b in (phylo_mm or {}).get("branches") or [] if _branch_is_sig(b)
-    ]
-    n_drv = len(_sig_branches)
+    drivers = driver_groups(phylo_mm)
+    n_drv = len(drivers)
 
     # Regulatory-element band (only when the alignment carries flanks).
     re_band = re_band_columns(alignment, names, flank, aln_len)
@@ -1049,39 +920,13 @@ def make_figure(
     fig = go.Figure()
 
     # ── 0a. Leaf → driver colour for leader lines ────────────────────────────
-    # Same grouping and order as the overlay below. Only the representative
-    # branch's leaves are coloured, so leader lines match on-tree annotations.
-    _lasso_sig = [
-        b for b in (phylo_mm or {}).get("branches") or []
-        if _branch_is_sig(b)
-    ]
-    _groups_by_key: dict[frozenset, list[dict]] = {}
-    for _rec in _lasso_sig:
-        _key = _branch_group_key(_rec)
-        _groups_by_key.setdefault(_key, []).append(_rec)
-    def _gkey_p(ms: list[dict]) -> float:
-        _ps = [m.get("p_fdr") for m in ms if isinstance(m.get("p_fdr"), float)]
-        return min(_ps) if _ps else 1.0
-    _sorted_keys = sorted(
-        _groups_by_key.keys(),
-        key=lambda k: _gkey_p(_groups_by_key[k]),
-    )
-    _key_color = {
-        k: SIG_GROUP_PALETTE[i % len(SIG_GROUP_PALETTE)]
-        for i, k in enumerate(_sorted_keys)
-    }
-    # Pick the rep per group using the same rule as the overlay block.
-    def _rep_key_early(b: dict) -> tuple:
-        hl = 0 if (b.get("linked_sites") or ()) else 1
-        p = b.get("p_fdr") if isinstance(b.get("p_fdr"), float) else 1.0
-        return (hl, p)
+    # A leaf in several drivers takes the smallest one's colour.
     leaf_clade_color: dict[str, str] = {}
     leaf_clade_size: dict[str, int] = {}
-    for _key, _members in _groups_by_key.items():
-        _rep = sorted(_members, key=_rep_key_early)[0]
-        _color = _key_color[_key]
-        _n = _rep.get("n_below") or 10**9
-        for _tip in _rep.get("descendants", ()):
+    for _d in sorted(drivers, key=lambda d: d["idx"]):
+        _color = _d["color"]
+        _n = _d["rec"].get("n_below") or 10**9
+        for _tip in _d["rec"].get("descendants", ()):
             _sh = parse_leaf_meta(_tip)["sample_hap"]
             if _sh not in leaf_clade_size or _n < leaf_clade_size[_sh]:
                 leaf_clade_size[_sh] = _n
@@ -1154,10 +999,6 @@ def make_figure(
     # phylo_mm output (parsed once here; consumed by the branch overlay
     # below and by the header-summary block lower down).
     pm = phylo_mm or {"meta": {}, "branches": []}
-    pm_branches = pm.get("branches") or []
-    # Drivers = rows phylo_mm's forward selection kept (`is_split`).
-    sig = [b for b in pm_branches if _branch_is_sig(b)]
-    significant = bool(sig)
 
     # ── 1c. Driver overlay (phylo_mm) ────────────────────────────────────────
     # One annotation per driver (keyed by its carrier set), each in its own
@@ -1229,45 +1070,18 @@ def make_figure(
                 return (pos[id(parent)]["x"], pos[id(clade)]["x"], cy)
         return None
 
-    # One annotation per driver, keyed by its carrier set (_branch_group_key).
-    sig_groups: dict[frozenset, list[dict]] = {}
-    for rec in sig:
-        key = _branch_group_key(rec)
-        sig_groups.setdefault(key, []).append(rec)
-
-    # Colour order: smallest marginal p_fdr first (index 0 = red).
-    def _group_p(members: list[dict]) -> float:
-        ps = [m.get("p_fdr") for m in members if isinstance(m.get("p_fdr"), float)]
-        return min(ps) if ps else 1.0
-    sorted_groups = sorted(
-        sig_groups.items(),
-        key=lambda kv: _group_p(kv[1]),
-    )
-    # Colour assignment: index 0 → red (TOP_SNP_COLOR), then cycle through palette.
-    group_color: dict[frozenset, str] = {}
-    # Linked MSA sites per group (from its representative) — group identity is
-    # now the clade, so the linked variants for labels / MSA highlighting come
-    # off the branch record, not the group key.
-    group_links: dict[frozenset, frozenset] = {}
-    for i, (key, _members) in enumerate(sorted_groups):
-        group_color[key] = SIG_GROUP_PALETTE[i % len(SIG_GROUP_PALETTE)]
-        _ls: set = set()
-        for _m in _members:
-            _ls.update(_m.get("linked_sites") or ())
-        group_links[key] = frozenset(_ls)
-
     # ── Per-driver carrier columns ────────────────────────────────────────────
     # One column per contributing variant, ordered as the legend; a filled cell
     # means that haplotype carries that driver's allele. SET-NESTING is visible
     # here and nowhere else: if an inner driver's carriers are a subset of an
     # outer driver's, the inner column's filled rows fall inside the outer's.
-    if sorted_groups:
+    if drivers:
         _sh_to_ly = {
             parse_leaf_meta(names[i])["sample_hap"]: ly[i] for i in range(n)
         }
-        for j, (key, members) in enumerate(sorted_groups):
+        for j, drv in enumerate(drivers):
             cy = []
-            for d in members[0].get("descendants", ()):
+            for d in drv["rec"].get("descendants", ()):
                 sh = parse_leaf_meta(d)["sample_hap"]
                 if sh in _sh_to_ly:
                     cy.append(_sh_to_ly[sh])
@@ -1276,7 +1090,7 @@ def make_figure(
             fig.add_trace(go.Bar(
                 x=[0.86] * len(cy), base=[j - 0.43] * len(cy), y=cy,
                 orientation="h", width=0.9,
-                marker=dict(color=group_color[key], line=dict(width=0)),
+                marker=dict(color=drv["color"], line=dict(width=0)),
                 hoverinfo="skip", showlegend=False,
                 xaxis="x8", yaxis="y1",
             ))
@@ -1288,13 +1102,6 @@ def make_figure(
     # haps' % actuation (LEFT half) against the rest (RIGHT half). Read a row's
     # symbol, find its point in the matching violin. The Δ (mean_in − mean_out)
     # and joint β are annotated above each violin.
-    DRIVER_SYMBOLS = ["cross", "circle", "star", "diamond", "triangle-up",
-                      "x", "square", "hexagram"]
-    group_symbol = {
-        key: DRIVER_SYMBOLS[i % len(DRIVER_SYMBOLS)]
-        for i, (key, _m) in enumerate(sorted_groups)
-    }
-
     def _hex_rgba(h: str, a: float) -> str:
         h = h.lstrip("#")
         if len(h) == 6:
@@ -1303,7 +1110,7 @@ def make_figure(
         return h
 
     vio_ticktext: list[str] = []
-    if sorted_groups:
+    if drivers:
         _sh_ly = {
             parse_leaf_meta(names[i])["sample_hap"]: ly[i]
             for i in range(n) if names[i] not in construct_names
@@ -1315,11 +1122,11 @@ def make_figure(
         }
         all_sh = set(_sh_act)
         driver_carriers = [
-            {parse_leaf_meta(d)["sample_hap"] for d in m[0].get("descendants", ())}
-            for _, m in sorted_groups
+            {parse_leaf_meta(d)["sample_hap"] for d in drv["rec"].get("descendants", ())}
+            for drv in drivers
         ]
-        for j, (key, members) in enumerate(sorted_groups):
-            sym, col = group_symbol[key], group_color[key]
+        for j, drv in enumerate(drivers):
+            sym, col = drv["symbol"], drv["color"]
             carrier_sh = driver_carriers[j]
             # Comparison group = the LOCAL contrast, not the whole tree. If this
             # driver is NESTED (its carriers ⊂ another driver's), compare against
@@ -1377,9 +1184,9 @@ def make_figure(
                     meanline_visible=True, scalemode="width", spanmode="hard",
                     hoverinfo="x", showlegend=False, xaxis="x10", yaxis="y3",
                 ))
-            _ls = group_links.get(key) or frozenset()
+            _ls = drv["links"]
             vio_ticktext.append(_site_label(min(_ls)) if _ls else f"d{j}")
-            _b = members[0].get("beta")
+            _b = drv["rec"].get("beta")
             _bits = []
             # Δ is the LOCAL contrast (carriers − comparison group), so it agrees
             # with the joint β; for a nested reversing driver both come out
@@ -1419,24 +1226,12 @@ def make_figure(
             return mi - mo
         return None
 
-    # Draw branches per group.
-    for _gi, (key, members) in enumerate(sorted_groups):
-        color = group_color[key]
-        # Pick the representative within the group:
-        #   1. Prefer a member that carries linked variants (the
-        #      biologically interpretable bipartition — its split is mirrored
-        #      by an MSA SNP). Nested no-SNP refinements are demoted to
-        #      thin lines in the same colour.
-        #   2. Tie-break by smallest p_fdr (strongest pre-specified signal).
-        def _rep_key(b: dict) -> tuple:
-            has_link = 0 if (b.get("linked_sites") or ()) else 1
-            p = b.get("p_fdr") if isinstance(b.get("p_fdr"), float) else 1.0
-            return (has_link, p)
-        members_sorted = sorted(members, key=_rep_key)
-        rep = members_sorted[0]
-        rest = members_sorted[1:]
+    # Draw one branch per driver.
+    for _gi, drv in enumerate(drivers):
+        color = drv["color"]
+        rep = drv["rec"]
 
-        # Representative — thick horizontal branch line + annotation. (No
+        # Driver — thick horizontal branch line + annotation. (No
         # vertical bracket: drawing one at the MRCA's x spanning the clade's
         # full tip y-range put a vertical line near the root cutting across
         # many rows, mis-reading as if it were a branch. The thick horizontal
@@ -1444,7 +1239,7 @@ def make_figure(
         seg = _find_branch_endpoints(rep)
         if seg is not None:
             px, cx, py = seg
-            links = group_links.get(key, frozenset())
+            links = drv["links"]
             sorted_sites = (
                 [_site_label(s) for s in sorted(links, key=int)] if links else []
             )
@@ -1459,7 +1254,6 @@ def make_figure(
                     + f", +{len(sorted_sites) - 4} more"
                 )
             beta = rep.get("beta")
-            sel_p = rep.get("p")
             ci_lo = rep.get("ci_lower"); ci_hi = rep.get("ci_upper")
             ci_str = (
                 f" [{ci_lo:+.2f}, {ci_hi:+.2f}]"
@@ -1496,7 +1290,7 @@ def make_figure(
                     f"β={_fmt_beta(beta)} p={_fmt_p(head_p)} "
                     f"pos: {linked_str_short}"
                 ),
-                legendgroup=f"sig_group_{id(key)}",
+                legendgroup=f"sig_group_{_gi}",
                 # Legend entry comes uniformly from §5c (one per contributing
                 # variant) so non-clade variants — whose carriers don't form a
                 # branch and so never reach this block — still appear.
@@ -1510,39 +1304,6 @@ def make_figure(
             # below), which always exists. The coloured branch segment here +
             # the colour-matched leader lines just show WHICH haplotypes carry
             # it when they do form a clade.
-
-        # Other members of this group — thin lines in the same colour.
-        if rest:
-            rxs: list = []; rys: list = []; rhov: list = []
-            n_drawn = 0
-            for rec in rest:
-                rseg = _find_branch_endpoints(rec)
-                if rseg is None:
-                    continue
-                px, cx, py = rseg
-                rxs += [px, cx, None]
-                rys += [py, py, None]
-                txt = (
-                    f"<b>LASSO-selected (group member)</b>  n={rec['n_below']}<br>"
-                    f"Δ={_fmt_beta(_marginal_delta(rec))}  "
-                    f"β={_fmt_beta(rec.get('beta'))}  "
-                    f"p_fdr={_fmt_p(rec.get('p_fdr'))}"
-                )
-                rhov += [txt, txt, txt]
-                n_drawn += 1
-            if n_drawn > 0:
-                fig.add_trace(go.Scatter(
-                    x=rxs, y=rys,
-                    mode="lines",
-                    line=dict(color=color, width=1.4),
-                    opacity=0.55,
-                    hoverinfo="text",
-                    hovertext=rhov,
-                    name=f"  (+{n_drawn} nested)",
-                    legendgroup=f"sig_group_{id(key)}",
-                    showlegend=True,
-                    xaxis="x1", yaxis="y1",
-                ))
 
     # ── 1b. Bootstrap support labels on internal nodes (≥70 only) ───────────
     boot_x, boot_y, boot_text = [], [], []
@@ -1719,10 +1480,10 @@ def make_figure(
     # Contiguous runs (e.g. a 50-column indel) draw as one outlined box instead
     # of N parallel dashes; singleton columns draw as one dash.
     col_to_color: dict[int, str] = {}
-    if significant:
-        for key, _members in sorted_groups:
-            color = group_color[key]
-            for s in group_links.get(key, frozenset()):
+    if drivers:
+        for drv in drivers:
+            color = drv["color"]
+            for s in drv["links"]:
                 try:
                     c = int(s) - 1
                 except (TypeError, ValueError):
@@ -1778,20 +1539,14 @@ def make_figure(
     # exists — is the reliable anchor. One label per contributing variant, in
     # its colour, at its representative (left-most) linked column, staggered
     # vertically so neighbouring columns don't collide.
-    if significant:
+    if drivers:
         _msa_top = Y_RANGE[1]   # data-y of the MSA top (reversed axis)
-        for _i, (key, members) in enumerate(sorted_groups):
-            rep = members[0]
-            positions = sorted(group_links.get(key, frozenset()), key=int)
+        for _i, drv in enumerate(drivers):
+            rep = drv["rec"]
+            positions = sorted(drv["links"], key=int)
             if not positions:
                 continue
             c0 = int(positions[0]) - 1   # 0-based column → x3 coordinate
-            # Cap the position list: a single variant block can span 20-50+
-            # perfectly-correlated columns (a big indel), which overflows the
-            # label and the legend.
-            _labs = [_site_label(s) for s in positions]
-            pos_str = (", ".join(_labs) if len(_labs) <= 4
-                       else ", ".join(_labs[:3]) + f", +{len(_labs) - 3} more")
             _beta = _fmt_beta(rep.get("beta"))
             _p = _fmt_p(rep.get("p"))
             # One short line only (β/p) so the box is ~1 row tall and the
@@ -1804,19 +1559,19 @@ def make_figure(
                 yshift=4 + 14 * (_i % 4),
                 text=f"<b>β={_beta}</b> p={_p}",
                 showarrow=True, arrowhead=0, arrowwidth=0.8,
-                arrowcolor=group_color[key], ax=0, ay=-8,
-                font=dict(size=8, color=group_color[key]),
+                arrowcolor=drv["color"], ax=0, ay=-8,
+                font=dict(size=8, color=drv["color"]),
                 bgcolor="rgba(255,255,255,0.85)",
-                bordercolor=group_color[key], borderwidth=0.5,
+                bordercolor=drv["color"], borderwidth=0.5,
             )
             # Uniform legend entry per contributing variant — so a variant whose
             # carriers aren't a clade (no branch drawn) still appears.
-            _short = _site_label(min(group_links[key])) if group_links.get(key) else "driver"
+            _short = _site_label(min(drv["links"])) if drv["links"] else "driver"
             fig.add_trace(go.Scatter(
                 x=[None], y=[None], mode="lines",
-                line=dict(color=group_color[key], width=3.0),
+                line=dict(color=drv["color"], width=3.0),
                 name=f"{_short} β={_beta}",
-                legendgroup=f"sig_group_{id(key)}",
+                legendgroup=f"sig_group_{_i}",
                 showlegend=True, legendrank=3000 + _i,
                 xaxis="x3", yaxis="y1",
             ))
@@ -2042,7 +1797,7 @@ def make_figure(
             )
     # Headline count = the variants the forward regression flagged as
     # contributing (drawn on the tree).
-    summary_bits.append(f"<b>contributing variants</b>={len(sig)}")
+    summary_bits.append(f"<b>contributing variants</b>={n_drv}")
     summary_text = "  ·  ".join(summary_bits)
     # Title left-aligned, summary stats just under it.
     fig.add_annotation(
@@ -2108,7 +1863,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--pclai-bed", type=Path, default=None,
-        help="Optional bgzipped + tabix-indexed HPRC PCLAI asm-coord BED. "
+        help="Optional bgzipped + tabix-indexed HPRC PCLAI CHM13-coord BED. "
              "When supplied, draws a per-leaf ancestry stripe colored by HPRC's "
              "pre-baked PCLAI palette.",
     )
@@ -2129,8 +1884,7 @@ def main() -> None:
     args = parser.parse_args()
 
     tree                = Phylo.read(str(args.tree), "newick")
-    # asm_pos is unused: the PCLAI lookup is CHM13-based (one tabix query per peak).
-    actuation, coverage, _ = load_actuation(args.actuation)
+    actuation, coverage = load_actuation(args.actuation)
     alignment           = load_alignment(args.alignment)
     peak_id             = args.peak_id or args.tree.stem
 

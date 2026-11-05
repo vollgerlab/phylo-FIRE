@@ -75,9 +75,9 @@ def pull_agc(agc: str, contig: str, start0: int, end0: int, retries: int = 4) ->
                 ["agc", "getctg", agc, region, "-p"],
                 capture_output=True, text=True, check=True,
             )
-            seq = parse_agc_fasta(res.stdout).upper()
-            if seq:
-                return seq
+            # exit 0 with no sequence = contig not in the archive (agc does not
+            # error on that): deterministic, so fail fast instead of retrying.
+            return parse_agc_fasta(res.stdout).upper() or None
         except FileNotFoundError:
             print("[project_variants] agc not found on PATH", file=sys.stderr)
             return None

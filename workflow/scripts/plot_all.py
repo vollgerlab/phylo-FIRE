@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hap_io import load_parts, peak_actuation  # noqa: E402
 from build_plasmid_constructs import build_peak as plasmid_peak  # noqa: E402
+from stage1_tables import Stage1Store  # noqa: E402
 
 CATEGORIES = ["drivers", "heritable_no_driver", "random"]
 PLOT_SCRIPT = Path(__file__).resolve().parent / "plot_tree_actuation_html.py"
@@ -70,13 +71,14 @@ def main() -> None:
             jobs.append((cat, peak))
 
     failed: list[str] = []
+    store = Stage1Store(args.aligned_dir.parent)  # per-peak dirs, else tables/*.parquet
 
     def render(job) -> None:
         cat, peak = job
-        aligned = args.aligned_dir / f"{peak}.fa"
-        tree = args.trees_dir / f"{peak}.rooted.nwk"
-        pmm = args.phylo_mm_dir / f"{peak}.tsv"
-        if not (aligned.exists() and tree.exists() and pmm.exists()):
+        aligned = store.aligned(peak)
+        tree = store.tree(peak)
+        pmm = store.phylo_mm(peak)
+        if aligned is None or tree is None or pmm is None:
             failed.append(peak)
             return
         act_tsv = tmp / f"{peak}.act.tsv"

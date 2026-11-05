@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_plasmid_constructs import build_peak, COLS
 from hap_io import load_parts, peak_actuation
+from stage1_tables import Stage1Store
 
 
 def main() -> None:
@@ -39,13 +40,15 @@ def main() -> None:
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
     parts = load_parts(args.haplotypes)
     all_rows, missing = [], []
+    store = Stage1Store(args.aligned_dir.parent)  # per-peak dirs, else tables/*.parquet
     for peak in peaks:
-        aln = args.aligned_dir / f"{peak}.fa"
-        if not aln.exists():
+        aln = store.aligned(peak)
+        if aln is None:
             missing.append(peak)
             continue
         rows, _ = build_peak(
-            aln, peak_actuation(parts, peak), args.phylo_mm_dir / f"{peak}.tsv", peak
+            aln, peak_actuation(parts, peak),
+            store.phylo_mm(peak) or args.phylo_mm_dir / f"{peak}.tsv", peak
         )
         all_rows.extend(rows)
 

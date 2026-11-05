@@ -28,6 +28,7 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_re_variants import build, COLUMNS  # noqa: E402
 from hap_io import load_parts, peak_actuation  # noqa: E402
+from stage1_tables import Stage1Store  # noqa: E402
 
 
 def main() -> None:
@@ -47,12 +48,13 @@ def main() -> None:
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
     parts = load_parts(args.haplotypes)
     tmp = Path(tempfile.mkdtemp(prefix="re_variants_all_"))
+    store = Stage1Store(args.aligned_dir.parent)  # per-peak dirs, else tables/*.parquet
     skipped: list[str] = []
 
     def do_peak(peak: str) -> None:
-        aligned = args.aligned_dir / f"{peak}.fa"
-        pmm = args.phylo_mm_dir / f"{peak}.tsv"
-        if not (aligned.exists() and pmm.exists()):
+        aligned = store.aligned(peak)
+        pmm = store.phylo_mm(peak)
+        if aligned is None or pmm is None:
             skipped.append(peak)
             return
         rows = build(str(aligned), peak_actuation(parts, peak), str(pmm))

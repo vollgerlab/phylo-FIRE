@@ -15,6 +15,8 @@ Usage:
 
 import argparse
 import sys
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 # Columns are resolved by header name (the union-peaks BED has a `#chrom ...` header).
@@ -84,61 +86,179 @@ def sanitize(peak_id: str) -> str:
 HAP_COLS = ["peak_id", "sample", "seq", "actuation", "coverage",
             "fire_coverage", "asm_chr", "asm_start", "asm_end"]
 
+# (fasta_header, seq, actuation, coverage, fire_coverage, asm_chr, asm_start, asm_end)
+Entry = tuple[str, str, str, str, str, str, str, str]
 
-def flush_peak(
+
+@dataclass
+class Counts:
+    """Row tallies reported on stderr after the stream is consumed."""
+
+    rows: int = 0
+    skipped_allowlist: int = 0
+
+
+def parse_row(
+    fields: list[str],
+    cols: dict,
     peak_id: str,
-    entries: list[tuple[str, str, str, str, str, str, str, str]],
-    peak_hd_values: set[str],
-    outdir: Path,
-    min_seqs: int,
-    haplotype_distinct_filter: str | None,
-    written: list[str],
-    hap_cols: dict[str, list] | None = None,
-) -> None:
-    """Write one FASTA + actuation TSV if the peak passes the filters.
+    primary_only: bool,
+    highlight: set[tuple[str, str]],
+    highlight_tag: str,
+) -> tuple[str, Entry] | None:
+    """Return (haplotype_distinct, entry) for a row, or None if it is filtered out."""
+    if primary_only and fields[cols["is_primary"]] != "TRUE":
+        return None
+    seq = fields[cols["seq"]]
+    if seq == "NA":
+        return None
+    sample = f"{fields[cols['individual']]}_{fields[cols['haplotype']]}"
+    if (peak_id, sample) in highlight:
+        sample = f"{highlight_tag}__{sample}"
+    entry = (
+        sample, seq, fields[cols["actuation"]], fields[cols["coverage"]],
+        fields[cols["fire_coverage"]], *asm_coords(fields, cols),
+    )
+    return fields[cols["hap_distinct"]], entry
 
-    entries: list of (fasta_header, sequence, actuation, coverage, fire_coverage,
-                      asm_chr, asm_start, asm_end) tuples
 
-    When ``hap_cols`` is given, the written peak's rows are also appended to the
-    consolidated haplotypes-parquet accumulator (column-major to keep memory low).
+def iter_peaks(
+    lines: Iterable[str],
+    counts: Counts,
+    allowed_peaks: frozenset[str] | None = None,
+    primary_only: bool = False,
+    highlight: set[tuple[str, str]] | frozenset = frozenset(),
+    highlight_tag: str = "highlight",
+) -> Iterator[tuple[str, list[Entry], set[str]]]:
+    """Group consecutive rows by consensus_peak_id.
+
+    Yields (peak_id, entries, haplotype_distinct values) for every run of rows
+    sharing a peak id, including runs whose rows were all filtered out (empty
+    entries). The first line resolves the schema: a `#`-prefixed header maps
+    columns by name; otherwise the legacy fixed indices apply.
     """
-    if not entries:
-        return
-    # Peak-level haplotype_distinct filter: include peaks with at least one
-    # row matching the target classification.
-    if haplotype_distinct_filter is not None and haplotype_distinct_filter not in peak_hd_values:
-        return
-    unique_seqs = {seq for _, seq, *_ in entries}
-    if len(unique_seqs) < min_seqs:
-        return
-    safe_id = sanitize(peak_id)
+    cols: dict | None = None
+    min_fields = 0
+    current_peak_id: str | None = None
+    entries: list[Entry] = []
+    hd_values: set[str] = set()
 
-    fa_path = outdir / f"{safe_id}.fa"
-    with fa_path.open("w") as fh:
-        for header, seq, *_ in entries:
-            fh.write(f">{header}\n{seq}\n")
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        if cols is None:
+            if line.startswith("#"):
+                cols = resolve_columns(line.split("\t"))
+                min_fields = max(v for v in cols.values() if isinstance(v, int)) + 1
+                continue
+            cols = dict(LEGACY_IDX)
+            min_fields = 38
+        elif line.startswith("#"):
+            continue
 
-    tsv_path = outdir / f"{safe_id}.tsv"
-    with tsv_path.open("w") as fh:
-        fh.write("sample\tactuation\tcoverage\tfire_coverage\tasm_chr\tasm_start\tasm_end\n")
-        for header, _, actuation, coverage, fire_coverage, asm_chr, asm_start, asm_end in entries:
-            fh.write(
-                f"{header}\t{actuation}\t{coverage}\t{fire_coverage}\t"
-                f"{asm_chr}\t{asm_start}\t{asm_end}\n"
+        fields = line.split("\t")
+        if len(fields) < min_fields:
+            continue
+        counts.rows += 1
+        peak_id = fields[cols["peak_id"]]
+
+        # The peak transition runs before row filters, so a peak with no
+        # accepted rows still ends the previous peak.
+        if peak_id != current_peak_id:
+            if current_peak_id is not None:
+                yield current_peak_id, entries, hd_values
+            current_peak_id, entries, hd_values = peak_id, [], set()
+
+        if allowed_peaks is not None and peak_id not in allowed_peaks:
+            counts.skipped_allowlist += 1
+            continue
+        parsed = parse_row(fields, cols, peak_id, primary_only, highlight, highlight_tag)
+        if parsed is None:
+            continue
+        haplotype_distinct, entry = parsed
+        if haplotype_distinct != "NA":
+            hd_values.add(haplotype_distinct)
+        entries.append(entry)
+
+    if current_peak_id is not None:
+        yield current_peak_id, entries, hd_values
+
+
+class PeakWriter:
+    """Write per-peak FASTA + actuation TSV files that pass the peak filters.
+
+    Tracks the written (sanitized) ids and, when ``collect_haplotypes`` is set,
+    accumulates every written row column-major for the consolidated parquet.
+    """
+
+    def __init__(
+        self,
+        outdir: Path,
+        min_seqs: int,
+        haplotype_distinct: str | None = None,
+        collect_haplotypes: bool = False,
+    ) -> None:
+        self.outdir = outdir
+        self.min_seqs = min_seqs
+        self.haplotype_distinct = haplotype_distinct
+        self.written: list[str] = []
+        self.hap_cols: dict[str, list] | None = (
+            {k: [] for k in HAP_COLS} if collect_haplotypes else None
+        )
+
+    def passes(self, entries: list[Entry], hd_values: set[str]) -> bool:
+        """Peak-level filters: non-empty, haplotype_distinct match, >= min_seqs unique."""
+        if not entries:
+            return False
+        if self.haplotype_distinct is not None and self.haplotype_distinct not in hd_values:
+            return False
+        return len({seq for _, seq, *_ in entries}) >= self.min_seqs
+
+    def write(self, peak_id: str, entries: list[Entry], hd_values: set[str]) -> None:
+        """Write one peak's .fa and .tsv if it passes the filters."""
+        if not self.passes(entries, hd_values):
+            return
+        safe_id = sanitize(peak_id)
+        with (self.outdir / f"{safe_id}.fa").open("w") as fh:
+            for header, seq, *_ in entries:
+                fh.write(f">{header}\n{seq}\n")
+        with (self.outdir / f"{safe_id}.tsv").open("w") as fh:
+            fh.write("sample\tactuation\tcoverage\tfire_coverage\tasm_chr\tasm_start\tasm_end\n")
+            for header, _, *rest in entries:
+                fh.write("\t".join((header, *rest)) + "\n")
+        if self.hap_cols is not None:
+            for entry in entries:
+                for k, v in zip(HAP_COLS, (safe_id, *entry)):
+                    self.hap_cols[k].append(v)
+        self.written.append(safe_id)
+
+    def write_parquet(self, path: Path) -> None:
+        """Write the accumulated haplotype rows (requires ``collect_haplotypes``)."""
+        import polars as pl
+
+        assert self.hap_cols is not None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        (
+            pl.DataFrame(self.hap_cols, schema={c: pl.Utf8 for c in HAP_COLS})
+            .with_columns(
+                pl.col("actuation").cast(pl.Float64, strict=False),
+                pl.col("coverage").cast(pl.Float64, strict=False),
+                pl.col("fire_coverage").cast(pl.Float64, strict=False),
             )
-            if hap_cols is not None:
-                for k, v in zip(
-                    HAP_COLS,
-                    (safe_id, header, _, actuation, coverage, fire_coverage,
-                     asm_chr, asm_start, asm_end),
-                ):
-                    hap_cols[k].append(v)
+            .write_parquet(path)
+        )
+        print(f"wrote {len(self.hap_cols['peak_id'])} haplotype rows to {path}", file=sys.stderr)
 
-    written.append(safe_id)
+    def write_manifest(self) -> None:
+        """Write peak_ids.txt, the authoritative list of peaks produced this run.
+
+        Downstream rules read it instead of globbing the directory, so stale
+        files from prior runs never enter the build graph.
+        """
+        manifest = self.outdir / "peak_ids.txt"
+        manifest.write_text("\n".join(sorted(self.written)) + "\n")
 
 
-def main() -> None:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Extract per-peak FASTA + actuation TSV files from union-peaks BED on stdin.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -189,156 +309,52 @@ def main() -> None:
             "+ RE sequence, replacing the per-peak fastas dir."
         ),
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    args.outdir.mkdir(parents=True, exist_ok=True)
 
-    allowed_peaks: frozenset[str] | None = None
-    if args.peak_ids is not None:
-        allowed_peaks = frozenset(
-            line.strip()
-            for line in args.peak_ids.read_text().splitlines()
-            if line.strip()
-        )
+def read_peak_ids(path: Path) -> frozenset[str]:
+    """Read a one-id-per-line allowlist, ignoring blank lines."""
+    return frozenset(line.strip() for line in path.read_text().splitlines() if line.strip())
 
+
+def read_highlight(path: Path) -> set[tuple[str, str]]:
+    """Read (peak_id, sample_hap) pairs from a TSV, skipping blank and `#` lines."""
     highlight: set[tuple[str, str]] = set()
-    if args.highlight_file is not None:
-        for line in args.highlight_file.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            pk, _, sm = line.partition("\t")
-            if pk and sm:
-                highlight.add((pk.strip(), sm.strip()))
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        pk, _, sm = line.partition("\t")
+        if pk and sm:
+            highlight.add((pk.strip(), sm.strip()))
+    return highlight
 
-    written: list[str] = []
-    hap_cols: dict[str, list] | None = (
-        {k: [] for k in HAP_COLS} if args.haplotypes_parquet else None
+
+def main() -> None:
+    args = parse_args()
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    allowed_peaks = read_peak_ids(args.peak_ids) if args.peak_ids is not None else None
+    highlight = read_highlight(args.highlight_file) if args.highlight_file is not None else set()
+
+    counts = Counts()
+    writer = PeakWriter(
+        args.outdir, args.min_seqs, args.haplotype_distinct,
+        collect_haplotypes=args.haplotypes_parquet is not None,
     )
-    current_peak_id: str | None = None
-    current_entries: list[tuple[str, str, str, str, str, str, str, str]] = []
-    current_hd_values: set[str] = set()
-    n_skipped_allowlist = 0
-    n_rows = 0
+    for peak in iter_peaks(
+        sys.stdin, counts, allowed_peaks, args.primary_only, highlight, args.highlight_tag
+    ):
+        writer.write(*peak)
 
-    cols: dict | None = None
-    min_fields = 0
-
-    for raw_line in sys.stdin:
-        line = raw_line.rstrip("\n")
-
-        if cols is None:
-            # First line resolves the schema: a `#`-prefixed header maps columns
-            # by name; otherwise fall back to the legacy fixed indices.
-            if line.startswith("#"):
-                cols = resolve_columns(line.split("\t"))
-                min_fields = max(v for v in cols.values() if isinstance(v, int)) + 1
-                continue
-            cols = dict(LEGACY_IDX)
-            min_fields = 38
-        elif line.startswith("#"):
-            continue
-
-        fields = line.split("\t")
-        if len(fields) < min_fields:
-            continue
-
-        n_rows += 1
-        peak_id = fields[cols["peak_id"]]
-
-        # Detect peak transition — always runs before any row-level filtering so
-        # we correctly flush even if the peak had no accepted rows.
-        if peak_id != current_peak_id:
-            if current_peak_id is not None:
-                flush_peak(
-                    current_peak_id,
-                    current_entries,
-                    current_hd_values,
-                    args.outdir,
-                    args.min_seqs,
-                    args.haplotype_distinct,
-                    written,
-                    hap_cols,
-                )
-            current_peak_id = peak_id
-            current_entries = []
-            current_hd_values = set()
-
-        # Peak-level allowlist: skip row collection entirely for non-allowed peaks.
-        if allowed_peaks is not None and peak_id not in allowed_peaks:
-            n_skipped_allowlist += 1
-            continue
-
-        # Row-level filters
-        if args.primary_only and fields[cols["is_primary"]] != "TRUE":
-            continue
-
-        seq = fields[cols["seq"]]
-        if seq == "NA":
-            continue
-
-        haplotype_distinct = fields[cols["hap_distinct"]]
-        if haplotype_distinct != "NA":
-            current_hd_values.add(haplotype_distinct)
-
-        individual_id = fields[cols["individual"]]
-        haplotype = fields[cols["haplotype"]]
-        actuation = fields[cols["actuation"]]
-        coverage = fields[cols["coverage"]]
-        fire_coverage = fields[cols["fire_coverage"]]
-        asm_chr, asm_start, asm_end = asm_coords(fields, cols)
-        sample = f"{individual_id}_{haplotype}"
-        if (peak_id, sample) in highlight:
-            sample = f"{args.highlight_tag}__{sample}"
-        current_entries.append((
-            sample, seq, actuation, coverage, fire_coverage,
-            asm_chr, asm_start, asm_end,
-        ))
-
-    # Flush the final peak
-    if current_peak_id is not None:
-        flush_peak(
-            current_peak_id,
-            current_entries,
-            current_hd_values,
-            args.outdir,
-            args.min_seqs,
-            args.haplotype_distinct,
-            written,
-            hap_cols,
-        )
-
-    if hap_cols is not None:
-        import polars as pl
-
-        args.haplotypes_parquet.parent.mkdir(parents=True, exist_ok=True)
-        (
-            pl.DataFrame(hap_cols, schema={c: pl.Utf8 for c in HAP_COLS})
-            .with_columns(
-                pl.col("actuation").cast(pl.Float64, strict=False),
-                pl.col("coverage").cast(pl.Float64, strict=False),
-                pl.col("fire_coverage").cast(pl.Float64, strict=False),
-            )
-            .write_parquet(args.haplotypes_parquet)
-        )
-        print(
-            f"wrote {len(hap_cols['peak_id'])} haplotype rows to "
-            f"{args.haplotypes_parquet}",
-            file=sys.stderr,
-        )
-
+    if args.haplotypes_parquet is not None:
+        writer.write_parquet(args.haplotypes_parquet)
     print(
-        f"Processed {n_rows} rows; wrote {len(written)} FASTA files to {args.outdir}",
+        f"Processed {counts.rows} rows; wrote {len(writer.written)} FASTA files to {args.outdir}",
         file=sys.stderr,
     )
-    if n_skipped_allowlist:
-        print(f"  Skipped {n_skipped_allowlist} rows not in peak-ids allowlist", file=sys.stderr)
-
-    # Authoritative manifest of the peaks produced this run. Downstream
-    # snakemake rules read this file instead of globbing the directory, so
-    # stale files from prior runs never enter the build graph.
-    manifest = args.outdir / "peak_ids.txt"
-    manifest.write_text("\n".join(sorted(sanitize(p) for p in written)) + "\n")
+    if counts.skipped_allowlist:
+        print(f"  Skipped {counts.skipped_allowlist} rows not in peak-ids allowlist", file=sys.stderr)
+    writer.write_manifest()
 
     # Each requested peak's FASTA is a DECLARED snakemake output, so a peak that
     # produced nothing (all-NA, or fewer than --min-seqs unique) would leave a
@@ -346,7 +362,7 @@ def main() -> None:
     # offending ids, so the fix (drop them from the peak-ids file, or lower
     # --min-seqs) is obvious. At --min-seqs=1 only a truly empty peak trips this.
     if allowed_peaks is not None:
-        dropped = sorted({sanitize(p) for p in allowed_peaks} - set(written))
+        dropped = sorted({sanitize(p) for p in allowed_peaks} - set(writer.written))
         if dropped:
             sys.exit(
                 f"extract_fastas: {len(dropped)} requested peak(s) yielded no "

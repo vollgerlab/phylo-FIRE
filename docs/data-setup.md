@@ -89,19 +89,14 @@ pixi run setup-hsca && pixi run hsca-peak-ids
 # verify the partition/account first
 sinfo
 
-# stage on a 1000-peak slice before the full run (calibrate group-components +
-# watch head-process DAG RAM) — outputs under results/hsca_stage/
-pixi run hsca-stage-ids     # → config/hsca_stage_peak_ids.txt (first 1000 HSCA peaks)
-pixi run hsca-stage -n      # dry-run first: check DAG build + head RAM
-pixi run hsca-stage         # real staging run
-
 # full run — outputs under results/hsca/, temp under temp/hsca/
 pixi run -- snakemake --configfile config/cluster.yaml --profile profiles/slurm -j 200
 ```
 
 The SLURM profile batches the per-peak chain via `group: "peak_chain"` +
 `group-components: peak_chain=100` so ~180K peaks don't become ~2M sbatch jobs;
-calibrate the component count and the per-job allocation on the staging slice.
+calibrate the component count and the per-job allocation on a small
+`peak_ids` slice first.
 Do **not** pass `--notemp` in production (it would keep `temp/hsca/`). The
 deliverable is `results/hsca/tables/re_variants.parquet`; plots render only for
 the drivers / heritable-no-driver / random subsets.

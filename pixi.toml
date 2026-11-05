@@ -159,27 +159,6 @@ setup-hsca = "bash workflow/scripts/build_hsca_table.sh"
 # Derive the production peak-id list (config/hsca_peak_ids.txt, ~180.7K ids)
 # from the HSCA index. Pinned by config/cluster.yaml. Run after setup-hsca.
 hsca-peak-ids = "bash -c 'tail -n +2 resources/hsca/hsca-index.tsv | cut -f6 > config/hsca_peak_ids.txt && echo wrote $(wc -l < config/hsca_peak_ids.txt) peak ids'"
-# First 1000 HSCA peaks → config/hsca_stage_peak_ids.txt (the staging slice).
-hsca-stage-ids = "bash -c 'head -1000 config/hsca_peak_ids.txt > config/hsca_stage_peak_ids.txt && echo wrote $(wc -l < config/hsca_stage_peak_ids.txt) staging peak ids'"
-# Staging run: the 1000-peak slice on SLURM (run_name=hsca_stage → results/hsca_stage/)
-# to calibrate group-components + watch head-process DAG RAM before the full
-# 180K. Run `pixi run hsca-stage-ids` first. Dry-run with `pixi run hsca-stage -n`,
-# then drop -n for the real run. The full run is the documented cluster command
-# (config/cluster.yaml, no --config needed).
-hsca-stage = { cmd = [
-    "snakemake",
-    "--configfile",
-    "config/cluster.yaml",
-    "--config",
-    "run_name=hsca_stage",
-    "peak_ids=config/hsca_stage_peak_ids.txt",
-    # mtime-only reruns: a resume (or an unrelated code edit) must NOT recompute
-    # the trees already on disk — only build what is missing or has newer inputs.
-    "--rerun-triggers",
-    "mtime",
-    "-j",
-    "400",
-] }
 # Scope a run to ONE HSCA class. Haplotype-selective = the het-SNV class
 # (~23K peaks). Build the id list first (needs resources/hsca/ from setup-hsca),
 # then run. Dry-run with `pixi run hsca-hapsel -n`, drop -n for real. Outputs

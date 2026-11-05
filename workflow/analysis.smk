@@ -1,12 +1,5 @@
-"""Stage 2 -- single-pass analysis on the persisted Stage-1 outputs.
-
-Run AFTER workflow/Snakefile (Stage 1) has produced results/{run}/tables/
-{haplotypes,alignments,trees,phylo_mm}.parquet. Each rule is ONE single-pass job
-over the whole run (the build_plasmid_table.py pattern), so the DAG is a handful
-of nodes and builds in seconds -- no per-peak fan-out, no tree recompute. Reads
-only those tables + the AGC, so it also runs locally after downloading
-results/{run}/tables/ (~40 MB) and fastas/peak_ids.txt.
-
+"""Stage 2: one single-pass job per rule over the Stage-1 tables in results/{run}/tables/.
+Reads only those tables, fastas/peak_ids.txt and the AGC, so it also runs locally.
     snakemake -s workflow/analysis.smk --config run_name=<run> --rerun-triggers mtime -j <N>
 """
 
@@ -126,10 +119,7 @@ rule project_all:
         elements_bed=RESULTS + "/tables/elements.hg38.bed.gz",
         elements_bed_tbi=RESULTS + "/tables/elements.hg38.bed.gz.tbi",
         unlifted=RESULTS + "/tables/drivers.unlifted.tsv",
-    # OWN knob (not stage2_threads): this rule's parallelism = concurrent `agc`
-    # getctg processes, which abort (SIGABRT) under heavy contention on the shared
-    # 3.3 GB archive. Keep it modest (agc-safe); raise with --set-threads
-    # project_all=N only if agc tolerates it. Plots/re_variants keep stage2_threads.
+    # Own knob: concurrent agc getctg calls SIGABRT under contention; keep it modest.
     threads: config.get("project_threads", 32)
     resources:
         mem_mb=32768,

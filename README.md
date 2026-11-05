@@ -87,13 +87,15 @@ Peak IDs containing `#` (assembly-coordinate peaks) are sanitized to `_` for fil
 
 ## Test dataset
 
-`test/test-union-peaks.bed.gz` contains 900 rows covering 10 peaks (90 haplotypes each):
+`test/test-union-peaks.bed.gz` contains 810 rows covering 9 peaks (90 haplotypes each):
 
 - 4 Haplotype-selective (genetic variants between haplotypes)
 - 3 Epigenetically haplotype-selective
 - 3 Shared (expect similar sequences; useful as controls)
+- `chr8_70445067_70445271`: two-driver exemplar (main-figure example). RE112 (β≈−0.33)
+  closes the element on two haplotype backgrounds; RE63 (β≈+0.17) opens it on a separate clade.
 
-`test_peak_ids.txt` lists all 10 peak IDs. All 10 produce trees; peaks with fewer than 4
+`test_peak_ids.txt` lists all 9 peak IDs. All 9 produce trees; peaks with fewer than 4
 unique sequences run without ultrafast bootstrap.
 
 ## Data locations (relative to `/mmfs1/gscratch/stergachislab/HPRC/mrv-figures/`)

@@ -1,0 +1,65 @@
+{
+  "_source": "REAL values from peak chr8_70445067_70445271 (results/test/: aligned/, trees/*.rooted.nwk, fastas/*.tsv, phylo_mm/*.tsv). Tree is a 14-tip subsample of 78 haplotypes (9 unique sequences); topology follows the real rooted tree with identical sequences collapsed into polytomies. Forward-selection R2 recomputed with phylo_mm.R logic; final betas/P match phylo_mm output exactly.",
+  "peak": {"id": "chr8_70445067_70445271", "re_bp": 204, "flank_bp": 250, "aligned_cols": 704,
+           "n_haplotypes": 78, "n_individuals": 39, "n_unique_seqs": 9},
+  "panel1_example_individual": {
+    "id": "HG02257",
+    "haplotypes": [
+      {"tip": "HG02257_1", "fibers": 15, "fire_fibers": 1, "actuation": 0.07, "carries": ["RE112"]},
+      {"tip": "HG02257_2", "fibers": 14, "fire_fibers": 7, "actuation": 0.50, "carries": []}
+    ]
+  },
+  "tree_newick": "((HG02257_2:0,HG002_1:0,HG00673_1:0,HG01106_1:0,HG04160_1:0)ancestral:0.3,(HG02071_2:0,HG02132_2:0,HG00438_2:0,HG01106_2:0)RE63:1,((HG01891_1:0,HG02257_1:0)bg1:0.3,((HG02622_1:0,HG00735_1:0)RE159:1,HG03579_2:0.3)bg2:2)RE112:1)root;",
+  "tree_note": "Branch lengths = schematic substitution counts (0.3 = display stub). Root sits on the ancestral proxy group (haplotypes identical to the MSA consensus, 38/78).",
+  "tips": [
+    {"tip": "HG02257_2", "group": "ancestral", "actuation": 0.50, "fibers": 14, "RE63": 0, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG002_1",   "group": "ancestral", "actuation": 0.38, "fibers": 39, "RE63": 0, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG00673_1", "group": "ancestral", "actuation": 0.32, "fibers": 22, "RE63": 0, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG01106_1", "group": "ancestral", "actuation": 0.26, "fibers": 19, "RE63": 0, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG04160_1", "group": "ancestral", "actuation": 0.17, "fibers": 12, "RE63": 0, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG02071_2", "group": "RE63",      "actuation": 0.68, "fibers": 19, "RE63": 1, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG02132_2", "group": "RE63",      "actuation": 0.57, "fibers": 23, "RE63": 1, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG00438_2", "group": "RE63",      "actuation": 0.50, "fibers": 14, "RE63": 1, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG01106_2", "group": "RE63",      "actuation": 0.38, "fibers": 24, "RE63": 1, "RE112": 0, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG01891_1", "group": "RE112_bg1", "actuation": 0.00, "fibers": 20, "RE63": 0, "RE112": 1, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG02257_1", "group": "RE112_bg1", "actuation": 0.07, "fibers": 15, "RE63": 0, "RE112": 1, "RE74_RE148": 0, "RE159": 0},
+    {"tip": "HG02622_1", "group": "RE112_bg2", "actuation": 0.00, "fibers": 12, "RE63": 0, "RE112": 1, "RE74_RE148": 1, "RE159": 1},
+    {"tip": "HG00735_1", "group": "RE112_bg2", "actuation": 0.00, "fibers": 15, "RE63": 0, "RE112": 1, "RE74_RE148": 1, "RE159": 1},
+    {"tip": "HG03579_2", "group": "RE112_bg2", "actuation": 0.00, "fibers": 11, "RE63": 0, "RE112": 1, "RE74_RE148": 1, "RE159": 0}
+  ],
+  "re_variable_sites": [
+    {"site": "RE63",  "change": "A>G", "carriers": 28, "status": "candidate"},
+    {"site": "RE74",  "change": "G>T", "carriers": 8,  "status": "candidate, merged with RE148 (identical carriers)"},
+    {"site": "RE112", "change": "T>C", "carriers": 10, "status": "candidate"},
+    {"site": "RE148", "change": "G>A", "carriers": 8,  "status": "candidate, merged with RE74"},
+    {"site": "RE159", "change": "C>T", "carriers": 7,  "status": "candidate"},
+    {"site": "RE170", "change": "T>C", "carriers": 1,  "status": "excluded (<2 haplotypes)"}
+  ],
+  "h2_examples": {
+    "pass":         {"peak": "chr8_70445067_70445271", "scope": "RE", "h2": 1.00, "hpd": [0.99, 1.00], "width": 0.01, "pass": true},
+    "fail_wide":    {"peak": "chr22_42161362_42161557", "scope": "RE", "h2": 0.49, "hpd": [0.00, 0.93], "width": 0.93, "pass": false, "reason": "width > 0.5"},
+    "fail_near0":   {"peak": "chr7_95893728_95894540",  "scope": "RE", "h2": 0.05, "hpd": [0.00, 0.45], "width": 0.45, "pass": false, "reason": "lower < 0.1"},
+    "exemplar_region": {"h2": 1.00, "hpd": [0.96, 1.00], "pass": true}
+  },
+  "forward_selection": {
+    "n_haplotypes_used": 78,
+    "step1_candidate_r2": {"RE112": 0.445, "RE74+RE148": 0.343, "RE63": 0.322, "RE159": 0.307},
+    "steps": [
+      {"step": 0, "model": "none",          "r2": 0.000},
+      {"step": 1, "add": "RE112",            "r2": 0.445, "delta_r2": 0.445, "p": 2.6e-11, "accepted": true},
+      {"step": 2, "add": "RE63",             "r2": 0.604, "delta_r2": 0.159, "p": 5.3e-7, "accepted": true},
+      {"step": 3, "add": "RE74+RE148 (best remaining)", "r2": 0.604, "delta_r2": 0.0005, "p": 0.77, "accepted": false}
+    ],
+    "step_p_note": "Step-1 P is the single-site WLS P for RE112; step-2 P is RE63 in the 2-site model (equals the final joint P). Step-3 RE159 alternative: delta 0.0003, P=0.81."
+  },
+  "joint_model": {
+    "intercept": 0.339,
+    "means_note": "mean_carriers/mean_rest are unweighted means of per-haplotype actuation (as in plot_tree_compact.py drivers.tsv).",
+    "drivers": [
+      {"site": "RE112", "change": "T>C", "beta": -0.33, "se": 0.045, "p": 2.4e-10, "n_carriers": 10, "n_rest": 68,
+       "mean_carriers": 0.007, "mean_rest": 0.410, "rsid": "rs410015"},
+      {"site": "RE63",  "change": "A>G", "beta": 0.17,  "se": 0.031, "p": 5.3e-7,  "n_carriers": 28, "n_rest": 50,
+       "mean_carriers": 0.513, "mean_rest": 0.272, "rsid": "rs9298155"}
+    ]
+  }
+}

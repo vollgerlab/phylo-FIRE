@@ -24,6 +24,7 @@ Usage:
 import argparse
 import csv
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from Bio import Phylo
@@ -315,7 +316,7 @@ def logo_freqs(raw_z: list[list[int]], aln_len: int) -> dict[str, list[float]]:
     return freqs
 
 
-# ── Main figure builder ───────────────────────────────────────────────────────
+# ── Drivers ───────────────────────────────────────────────────────────────────
 
 # Driver palette (Plotly D3 qualitative). Red is the first driver (smallest
 # marginal p_fdr); later drivers cycle through the rest.
@@ -409,131 +410,167 @@ def load_panel(path: Path) -> list[dict]:
         add()
     return rows
 
+# ── Formatting helpers ────────────────────────────────────────────────────────
 
-def make_figure(
-    tree,
-    actuation: dict[str, float | None],
-    coverage: dict[str, int | None],
-    alignment: dict[str, str],
-    peak_id: str,
-    pclai_bed: Path | None = None,
-    phylo_mm: dict | None = None,
-    flank: int = 0,
-    panel: list[dict] | None = None,
-) -> go.Figure:
-    # The tree is already midpoint-rooted upstream (rule root_tree) — the SAME
-    # rooting phylo_mm sees — so we do NOT re-root here. Just ladderize for a
-    # tidy display order (ladderize doesn't change the rooting or clades).
+def _fmt_p(p) -> str:
+    """Compact p-value (None → "NA")."""
+    return f"{p:.2g}" if isinstance(p, float) else "NA"
+
+
+def _fmt_beta(b) -> str:
+    """Signed effect size (None → "NA")."""
+    return f"{b:+.2f}" if isinstance(b, float) else "NA"
+
+
+def _marginal_delta(rec: dict) -> float | None:
+    """Marginal Δ = mean_in − mean_out: carriers vs all other haplotypes."""
+    mi, mo = rec.get("mean_in"), rec.get("mean_out")
+    if isinstance(mi, float) and isinstance(mo, float):
+        return mi - mo
+    return None
+
+
+def _hex_rgba(h: str, a: float) -> str:
+    """``#rrggbb`` → ``rgba(r,g,b,a)``; other strings pass through without '#'."""
+    h = h.lstrip("#")
+    if len(h) == 6:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{a})"
+    return h
+
+
+def _site_label(s, re_band: tuple[int, int] | None) -> str:
+    """Label a linked site by RE-relative position when flanks are present.
+
+    phylo_mm reports linked sites as 1-based alignment columns; subtracting the
+    RE's 0-based start column gives the 1-based position within the RE (`RE13`
+    = 13 bp into the element). Without flanks the column is shown as-is.
+    """
+    if re_band is None:
+        return str(s)
+    try:
+        return f"RE{int(s) - re_band[0]}"
+    except (TypeError, ValueError):
+        return str(s)
+
+
+def _sample_hap(name: str) -> str:
+    return parse_leaf_meta(name)["sample_hap"]
+
+
+# ── Row order ─────────────────────────────────────────────────────────────────
+
+def prepare_tree(tree) -> None:
+    """Ladderize and strip MAFFT's ``_R_`` prefix from leaf names, in place.
+
+    The tree is already midpoint-rooted upstream (rule root_tree), the same
+    rooting phylo_mm sees, so it is not re-rooted here.
+    """
     tree.ladderize()
+    for leaf in tree.get_terminals():
+        if leaf.name and leaf.name.startswith("_R_"):
+            leaf.name = leaf.name[3:]
 
-    # MAFFT --adjustdirection prefixes reversed-complemented leaf names with "_R_".
-    # IQ-TREE inherits those names; strip the prefix so they match the actuation TSV.
-    for _leaf in tree.get_terminals():
-        if _leaf.name and _leaf.name.startswith("_R_"):
-            _leaf.name = _leaf.name[3:]
 
-    pos    = compute_positions(tree.root)
-    leaves = list(tree.get_terminals())
-    n      = len(leaves)
+def order_display_leaves(leaves: list, pos: dict, alignment: dict, actuation: dict) -> list:
+    """Tree order, but runs of identical aligned sequences sorted by % actuation.
 
-    # Display order: tree order (by leaf y), but within each contiguous block of
-    # IDENTICAL aligned sequences, order rows by % actuation (high at top) so the
-    # actuation gradient inside a haplotype cluster is visible. We reorder the
-    # leaves list itself and renumber y to 0..n-1 — kept MONOTONIC because the
-    # MSA / actuation go.Heatmap traces (y=ly) render gaps for a non-monotonic y.
-    # Only identical-sequence (≈zero-length-branch) runs reorder, so the MSA and
-    # tree geometry don't visibly change. Internal-node y is then recomputed.
-    _ord = sorted(range(n), key=lambda i: pos[id(leaves[i])]["y"])
-    _disp: list[int] = []
-    _i = 0
-    while _i < n:
-        _seq = alignment.get(leaves[_ord[_i]].name)
-        _j = _i + 1
-        while _seq and _j < n and alignment.get(leaves[_ord[_j]].name) == _seq:
-            _j += 1
-        run = _ord[_i:_j]
-        if _seq and len(run) > 1:
+    Only identical-sequence (≈zero-length-branch) runs reorder, so the MSA and
+    tree geometry do not visibly change while the actuation gradient inside a
+    haplotype cluster becomes visible (high at top).
+    """
+    n = len(leaves)
+    order = sorted(range(n), key=lambda i: pos[id(leaves[i])]["y"])
+    disp: list[int] = []
+    i = 0
+    while i < n:
+        seq = alignment.get(leaves[order[i]].name)
+        j = i + 1
+        while seq and j < n and alignment.get(leaves[order[j]].name) == seq:
+            j += 1
+        run = order[i:j]
+        if seq and len(run) > 1:
             run = sorted(
                 run,
                 key=lambda k: -(actuation.get(leaves[k].name)
                                 if actuation.get(leaves[k].name) is not None
                                 else float("-inf")),
             )
-        _disp.extend(run)
-        _i = _j
-    leaves = [leaves[k] for k in _disp]
+        disp.extend(run)
+        i = j
+    return [leaves[k] for k in disp]
 
-    # Optional: append synthetic constructs (mutagenesis / plasmid) as pseudo-leaf
-    # rows in a BLOCK at the BOTTOM of the MSA. They carry an aligned sequence (so
-    # the MSA shows the edits) but NO tree branch and NO actuation — grey rows for
-    # validating the panel. They keep their anchor leaf's x (an unused tree pos);
-    # tree branches read the SAME pos[]["y"], so the tree stays in sync and just
-    # ends above the construct block.
-    construct_names: set[str] = set()
+
+def append_panel_rows(
+    leaves: list, pos: dict, panel: list[dict] | None,
+    alignment: dict, actuation: dict, coverage: dict,
+) -> tuple[list, dict, dict, dict, dict[str, str]]:
+    """Append synthetic constructs as pseudo-leaf rows at the bottom.
+
+    Constructs carry an aligned sequence (so the MSA shows the edits) but no
+    tree branch and no actuation. Each keeps its anchor leaf's x. Returns new
+    (leaves, alignment, actuation, coverage, construct_label); the input dicts
+    are not modified.
+    """
+    alignment, actuation, coverage = dict(alignment), dict(actuation), dict(coverage)
     construct_label: dict[str, str] = {}
-    if panel:
-        augmented: list = list(leaves)          # every real leaf first
-        anchor_x = {lf.name: pos[id(lf)]["x"] for lf in leaves}
-        for p in panel:
-            obj = _PanelRow(p["name"], p["label"])
-            pos[id(obj)] = {"x": anchor_x.get(p["anchor"], 0.0), "y": 0.0}
-            alignment[p["name"]] = p["seq"]
-            actuation[p["name"]] = None
-            coverage[p["name"]] = None
-            construct_names.add(p["name"])
-            construct_label[p["name"]] = p["label"]
-            augmented.append(obj)               # constructs grouped at the bottom
-        leaves = augmented
-    n = len(leaves)
+    if not panel:
+        return leaves, alignment, actuation, coverage, construct_label
+    augmented: list = list(leaves)
+    anchor_x = {lf.name: pos[id(lf)]["x"] for lf in leaves}
+    for p in panel:
+        obj = _PanelRow(p["name"], p["label"])
+        pos[id(obj)] = {"x": anchor_x.get(p["anchor"], 0.0), "y": 0.0}
+        alignment[p["name"]] = p["seq"]
+        actuation[p["name"]] = None
+        coverage[p["name"]] = None
+        construct_label[p["name"]] = p["label"]
+        augmented.append(obj)
+    return augmented, alignment, actuation, coverage, construct_label
 
-    for _row, _lf in enumerate(leaves):
-        pos[id(_lf)]["y"] = float(_row)
 
-    def _recompute_y(clade):
+def renumber_rows(tree, leaves: list, pos: dict) -> list[float]:
+    """Set leaf y to its row index (0..n-1, monotonic) and re-centre internal nodes.
+
+    The Heatmap/Bar traces need a monotonic y, so the display order defines it.
+    Returns the per-row y list.
+    """
+    for row, lf in enumerate(leaves):
+        pos[id(lf)]["y"] = float(row)
+
+    def recompute(clade):
         if clade.is_terminal():
             return pos[id(clade)]["y"]
-        cys = [_recompute_y(c) for c in clade.clades]
+        cys = [recompute(c) for c in clade.clades]
         pos[id(clade)]["y"] = (cys[0] + cys[-1]) / 2.0
         return pos[id(clade)]["y"]
-    _recompute_y(tree.root)
 
-    names  = [lf.name for lf in leaves]
-    ly     = [pos[id(lf)]["y"] for lf in leaves]   # 0 … n-1, monotonic
+    recompute(tree.root)
+    return [pos[id(lf)]["y"] for lf in leaves]
 
-    # Per-leaf metadata + colour assignment (paralog-aware).
-    metas = [parse_leaf_meta(nm) for nm in names]
-    paralog_color_map, leaf_text_colors, has_paralogs = assign_paralog_colors(metas)
-    if construct_names:
-        # constructs get a distinct label colour and are excluded from the
-        # real-haplotype unique-sequence stat.
-        leaf_text_colors = [
-            PANEL_LABEL_COLOR if nm in construct_names else c
-            for nm, c in zip(names, leaf_text_colors)
-        ]
-    n_unique_seqs = len({
-        alignment.get(nm, "")
-        for nm in names
-        if alignment.get(nm) and nm not in construct_names
-    })
 
-    # Actuation
-    acts   = [actuation.get(nm) for nm in names]
-    covs   = [coverage.get(nm) for nm in names]
+# ── Per-row cell data ─────────────────────────────────────────────────────────
+
+def actuation_cells(names: list[str], acts: list, covs: list) -> tuple[list[str], list[str]]:
+    """Per-row actuation bar colour and hover text."""
     colors = [
         ACT_COLORS[min(int(v * 10), 9)] if v is not None else ACT_MISSING
         for v in acts
     ]
-    act_hover = [
+    hover = [
         f"<b>{nm}</b><br>Actuation: {f'{v:.1%}' if v is not None else 'missing'}"
         f"<br>Coverage: {c if c is not None else 'missing'}"
         for nm, v, c in zip(names, acts, covs)
     ]
+    return colors, hover
 
-    # PCLAI ancestry stripe (only when --pclai-bed was supplied AND at least
-    # one leaf has a hit). Uses HPRC's pre-baked itemRgb so colors match
-    # the official PCLAI palette. Query happens here, after _R_-prefix
-    # stripping, so leaf names match the {sample}/h{hap} keys in BED col 4.
+
+def pclai_cells(
+    pclai_bed: Path | None, peak_id: str, names: list[str],
+) -> tuple[list[str], list[str], bool]:
+    """Per-row PCLAI stripe colour + hover, and whether any leaf matched."""
     pclai: dict[str, dict] = {}
+    n = len(names)
     if pclai_bed is not None:
         pclai = query_pclai(pclai_bed, peak_id, names)
         n_inherited = sum(1 for v in pclai.values() if v.get("distance_bp", 0) > 0)
@@ -543,97 +580,70 @@ def make_figure(
             file=sys.stderr,
         )
         if not pclai:
-            # The BED exists but no leaf matched — usually a coordinate-space or
-            # chrom-naming mismatch rather than a genuine absence of ancestry.
+            # Usually a coordinate-space or chrom-naming mismatch.
             print(
                 f"WARNING: PCLAI ({peak_id}): bed {pclai_bed} supplied but 0/{n} "
                 f"leaves matched; the ancestry stripe is blank. Check the peak's "
                 f"chrom exists in the BED and leaf names match {{sample}}/h{{hap}}.",
                 file=sys.stderr,
             )
-    pclai_rgbs: list[str] = []
-    pclai_hover: list[str] = []
+    rgbs: list[str] = []
+    hover: list[str] = []
     for nm in names:
         info = pclai.get(nm)
         if info is None:
-            pclai_rgbs.append(PCLAI_MISSING)
-            pclai_hover.append(f"<b>{nm}</b><br>PCLAI: missing")
+            rgbs.append(PCLAI_MISSING)
+            hover.append(f"<b>{nm}</b><br>PCLAI: missing")
         else:
-            pclai_rgbs.append(f"rgb({info['rgb']})")
+            rgbs.append(f"rgb({info['rgb']})")
             dist = info.get("distance_bp", 0)
             origin = (
                 "direct overlap"
                 if dist == 0
                 else f"<i>nearest window {dist/1000:.1f} kb away</i>"
             )
-            pclai_hover.append(
+            hover.append(
                 f"<b>{nm}</b><br>"
                 f"PCLAI centroid: {info['centroid']}<br>"
                 f"segment PC: ({info['pc1']:.3f}, {info['pc2']:.3f})<br>"
                 f"confidence: {info['confidence']}<br>"
                 f"source: {origin}"
             )
-    pclai_present = any(nm in pclai for nm in names)
+    return rgbs, hover, any(nm in pclai for nm in names)
 
-    # MSA — three-way encoding: variable ATGC | invariant | missing
-    aln_len = max((len(s) for s in alignment.values()), default=0)
-    raw_seqs = [alignment.get(nm, "-" * aln_len) for nm in names]
 
-    # MSA display window. The flanks only ever matter for (a) building the tree
-    # and (b) region-mode drivers that sit outside the RE. So unless attribution
-    # expanded to the whole region, clip the displayed MSA to the RE band — the
-    # tree is already built, and a 950-column flanked alignment collapses to a
-    # readable ~400-column view. The heatmap still holds every column; we just
-    # set the x-axis range (so variant positions keep their absolute coords).
-    _meta0 = (phylo_mm or {}).get("meta", {})
-    _re_lo_m, _re_hi_m = _meta0.get("re_first_col"), _meta0.get("re_last_col")
-    re_only_msa = (
-        str(_meta0.get("attribution_mode", "")).strip() != "region"
-        and isinstance(_re_lo_m, (int, float))
-        and isinstance(_re_hi_m, (int, float))
+def msa_window(meta: dict, aln_len: int) -> tuple[bool, int, int]:
+    """(re_only, x0, x1): the displayed MSA columns (0-based, inclusive).
+
+    Unless attribution ran on the whole region, the view is clipped to the RE
+    columns phylo_mm reports. The heatmap still holds every column; only the
+    x-axis range changes, so variant positions keep absolute coordinates.
+    """
+    lo, hi = meta.get("re_first_col"), meta.get("re_last_col")
+    re_only = (
+        str(meta.get("attribution_mode", "")).strip() != "region"
+        and isinstance(lo, (int, float))
+        and isinstance(hi, (int, float))
     )
-    if re_only_msa:
-        msa_x0, msa_x1 = int(_re_lo_m) - 1, int(_re_hi_m) - 1   # 0-based inclusive
-    else:
-        msa_x0, msa_x1 = 0, aln_len - 1
-    msa_disp_n = max(1, msa_x1 - msa_x0 + 1)
+    if re_only:
+        return True, int(lo) - 1, int(hi) - 1
+    return False, 0, aln_len - 1
 
-    # Contributing variants ("drivers") — counted early so the layout can
-    # reserve a per-driver carrier column (filled = the haplotype carries that
-    # driver's allele). This is the ONLY place set-nesting is visible: when an
-    # inner driver's carriers are a subset of an outer driver's, the inner
-    # column's filled cells line up inside the outer's — which the tree can't
-    # show because the carriers needn't be a clade.
-    drivers = driver_groups(phylo_mm)
-    n_drv = len(drivers)
 
-    # Regulatory-element band (only when the alignment carries flanks).
-    re_band = re_band_columns(alignment, names, flank, aln_len)
+def encode_msa(names: list[str], raw_seqs: list[str], aln_len: int):
+    """Encode the MSA for the heatmap.
 
-    def _site_label(s) -> str:
-        """Label a linked site by RE-relative position when flanks are present.
-
-        phylo_mm reports linked sites as 1-based alignment columns; subtracting
-        the RE's 0-based start column yields the 1-based position within the RE
-        (so `RE13` reads as "13 bp into the regulatory element", not an opaque
-        flanked-alignment column). Without flanks the column already is the RE
-        position, so it's shown as-is.
-        """
-        if re_band is None:
-            return str(s)
-        try:
-            return f"RE{int(s) - re_band[0]}"
-        except (TypeError, ValueError):
-            return str(s)
-
-    # raw base codes: A/T/G/C → 0-3; everything else (gap/N) → 5
+    Returns (raw_z, consensus, msa_z, msa_cell, msa_hover). raw_z codes A/T/G/C
+    as 0-3 and anything else as 5. consensus is the majority non-gap code per
+    column (-1 if all gaps). msa_z is 4 where a base matches consensus, 0-3
+    where it differs, 5 for gap/N; msa_cell carries the letter at variants only.
+    """
     raw_z = [
         [BASE_TO_CODE.get(c.upper(), 5) for c in seq]
         for seq in raw_seqs
     ]
 
-    # Per-column consensus: majority non-gap base (code 0-3), or -1 if all gaps
-    _code_to_char = ["A", "T", "G", "C"]
+    code_to_char = ["A", "T", "G", "C"]
     consensus: list[int] = []
     for col in range(aln_len):
         counts = [0, 0, 0, 0]
@@ -645,173 +655,186 @@ def make_figure(
         else:
             consensus.append(-1)
 
-    # Per-cell encoding: matches consensus → 4 (grey), differs → 0-3 (ATGC), gap → 5
     msa_z: list[list[int]] = []
-    msa_cell: list[list[str]] = []   # single letter at variant positions only
-    msa_hover: list[list[str]] = []  # rich hover tooltip
+    msa_cell: list[list[str]] = []
+    msa_hover: list[list[str]] = []
     for nm, seq, row_raw in zip(names, raw_seqs, raw_z):
         row_z, row_cell, row_hover = [], [], []
         for col_i, (c, code) in enumerate(zip(seq, row_raw)):
             cu = c.upper()
             cons = consensus[col_i]
-            if code == 5:                       # gap / N / unmapped
+            if code == 5:
                 row_z.append(5)
                 row_cell.append("")
                 row_hover.append(f"<b>{nm}</b><br>pos {col_i+1}: {cu} (missing)")
-            elif code == cons:                  # matches consensus — grey
+            elif code == cons:
                 row_z.append(4)
                 row_cell.append("")
                 row_hover.append(f"<b>{nm}</b><br>pos {col_i+1}: {cu} (consensus)")
-            else:                               # differs from consensus — ATGC colour
+            else:
                 row_z.append(code)
                 row_cell.append(cu)
-                cons_char = _code_to_char[cons] if cons >= 0 else "?"
+                cons_char = code_to_char[cons] if cons >= 0 else "?"
                 row_hover.append(
                     f"<b>{nm}</b><br>pos {col_i+1}: {cu} (variant, cons={cons_char})"
                 )
         msa_z.append(row_z)
         msa_cell.append(row_cell)
         msa_hover.append(row_hover)
+    return raw_z, consensus, msa_z, msa_cell, msa_hover
 
-    freqs = logo_freqs(raw_z, aln_len)
-    aln_positions = list(range(aln_len))
 
-    # ── Adaptive figure dimensions ────────────────────────────────────────────
-    # Cap total figure height so the aspect ratio stays sane for large peaks
-    # (paralog groups can have hundreds of leaves; without a cap a 276-leaf peak
-    # produces a 3500 px tall figure, which fit-to-width viewers compress to
-    # the point that 0.9 px tree lines are sub-pixel and disappear).
-    # Scale width with the alignment length so each MSA column keeps enough
-    # horizontal room to read its variant marks (the MSA panel is ~55% of the
-    # figure, so ~4.5 px/column total → ~2.5 px in the MSA). Floor at 1500 for
-    # short RE-only peaks, cap so very long flanked/paralog alignments don't
-    # produce an absurd canvas.
-    fig_width   = max(1500, min(5200, int(msa_disp_n * 4.5)))
+# ── Layout geometry ───────────────────────────────────────────────────────────
+
+@dataclass
+class Layout:
+    """Figure size and the paper-coordinate domain of every panel."""
+    fig_width: int
+    fig_height: int
+    label_fs: int
+    show_labels: bool
+    tree_x: list[float]
+    label_x: list[float]
+    par_x: list[float]
+    pcl_x: list[float]
+    act_x: list[float]
+    drv_x: list[float]
+    msa_x: list[float]
+    mark_x: list[float]
+    vio_x: list[float]
+    logo_y: list[float]
+    main_y: list[float]
+    vio_y: list[float]
+
+
+def compute_layout(
+    n: int, n_drv: int, msa_disp_n: int, names: list[str],
+    has_paralogs: bool, pclai_present: bool,
+) -> Layout:
+    """Adaptive figure size and panel domains.
+
+    Columns, left to right: TREE | LABEL | PAR | PCL | ACT | DRV | MSA | MARK |
+    VIO; PAR/PCL/DRV/MARK/VIO collapse to zero width when their data is absent.
+    Height is capped (~2200 px of rows) so big peaks keep a sane aspect ratio;
+    width scales with the displayed MSA columns (~4.5 px each, 1500-5200 px).
+    Labels are dropped when rows are too short to read, giving the tree the room.
+    """
+    fig_width = max(1500, min(5200, int(msa_disp_n * 4.5)))
     if n_drv:                       # room for the (narrow, stacked) violin panel
         fig_width = min(6000, fig_width + 300)
-    target_h    = 2200
-    row_h       = max(4, min(18, target_h // max(n, 1)))
-    label_fs    = max(7, min(12, row_h - 1))
+    target_h = 2200
+    row_h = max(4, min(18, target_h // max(n, 1)))
+    label_fs = max(7, min(12, row_h - 1))
     show_labels = label_fs >= 8 and row_h >= 9
-    fig_height  = max(480, n * row_h + (300 if n_drv else 160))   # +bottom legend
+    fig_height = max(480, n * row_h + (300 if n_drv else 160))   # +bottom legend
 
-    # ── Adaptive horizontal layout ────────────────────────────────────────────
-    # Horizontal columns:  tree | leaf labels | PCLAI stripe | actuation | MSA
-    # When the row is too short to fit readable label text, the label column
-    # collapses to zero so the tree gets the reclaimed width; identity is
-    # available via hover on the PCLAI / actuation / MSA columns.
     max_label_chars = max((len(nm) for nm in names), default=10)
     if show_labels:
-        label_px   = max_label_chars * label_fs * 0.55
+        label_px = max_label_chars * label_fs * 0.55
         label_frac = min(0.32, max(0.10, label_px / fig_width))
     else:
-        label_px   = 0.0
         label_frac = 0.0
-    act_frac        = 0.05
-    drv_frac        = min(0.06, 0.016 * n_drv)   # per-driver carrier columns (left)
-    par_frac        = 0.018 if has_paralogs else 0.0
-    pcl_frac        = 0.018 if pclai_present else 0.0
-    gap             = 0.005
-    # Right-of-MSA driver panels: a per-driver SHAPE column (which haps feed each
-    # violin) + the violins (carrier vs rest % actuation). Zero-width when there
-    # are no drivers.
-    mark_frac       = min(0.02, 0.008 * n_drv)   # tight: one symbol col per driver
-    vio_frac        = min(0.14, 240 / fig_width) if n_drv else 0.0   # ~2 inch wide
-    tree_frac       = 0.20
-    msa_frac        = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + drv_frac
-                             + mark_frac + vio_frac + tree_frac + gap * 9)
-    # Slide order: TREE | LABEL | PAR | PCL | ACT | DRV | MSA | MARK | VIO.
-    # PAR/PCL/DRV/MARK/VIO collapse to zero width when their data isn't present;
-    # traces stay in the figure to keep trace indices stable.
+    act_frac = 0.05
+    drv_frac = min(0.06, 0.016 * n_drv)   # per-driver carrier columns (left)
+    par_frac = 0.018 if has_paralogs else 0.0
+    pcl_frac = 0.018 if pclai_present else 0.0
+    gap = 0.005
+    mark_frac = min(0.02, 0.008 * n_drv)   # one symbol col per driver
+    vio_frac = min(0.14, 240 / fig_width) if n_drv else 0.0   # ~2 inch wide
+    tree_frac = 0.20
+    msa_frac = 1.0 - (label_frac + par_frac + pcl_frac + act_frac + drv_frac
+                      + mark_frac + vio_frac + tree_frac + gap * 9)
     cur = 0.0
-    TREE_X  = [cur, cur + tree_frac];   cur = TREE_X[1]  + gap
-    LABEL_X = [cur, cur + label_frac];  cur = LABEL_X[1] + gap
-    PAR_X   = [cur, cur + par_frac];    cur = PAR_X[1]   + gap
-    PCL_X   = [cur, cur + pcl_frac];    cur = PCL_X[1]   + gap
-    ACT_X   = [cur, cur + act_frac];    cur = ACT_X[1]   + gap
-    DRV_X   = [cur, cur + drv_frac];    cur = DRV_X[1]   + gap * 2
+    tree_x = [cur, cur + tree_frac]
+    cur = tree_x[1] + gap
+    label_x = [cur, cur + label_frac]
+    cur = label_x[1] + gap
+    par_x = [cur, cur + par_frac]
+    cur = par_x[1] + gap
+    pcl_x = [cur, cur + pcl_frac]
+    cur = pcl_x[1] + gap
+    act_x = [cur, cur + act_frac]
+    cur = act_x[1] + gap
+    drv_x = [cur, cur + drv_frac]
+    cur = drv_x[1] + gap * 2
     if n_drv:
-        MSA_X   = [cur, cur + msa_frac]; cur = MSA_X[1]  + gap * 2
-        MARK_X  = [cur, cur + mark_frac]; cur = MARK_X[1] + gap
-        VIO_X   = [cur, 1.00]
+        msa_x = [cur, cur + msa_frac]
+        cur = msa_x[1] + gap * 2
+        mark_x = [cur, cur + mark_frac]
+        cur = mark_x[1] + gap
+        vio_x = [cur, 1.00]
     else:
-        MSA_X   = [cur, 1.00]
-        MARK_X  = [0.998, 0.999]   # hidden — no drivers, no shape column/violins
-        VIO_X   = [0.999, 1.00]
+        msa_x = [cur, 1.00]
+        mark_x = [0.998, 0.999]   # hidden — no drivers, no shape column/violins
+        vio_x = [0.999, 1.00]
 
-    # Vertical layout: title strip (top, ~40 px) | freq chart (~50 px) | main.
-    # The title strip stays a fixed pixel height regardless of figure tallness,
-    # so the title + paralog chips never collide with the freq chart bars.
-    TITLE_STRIP_FRAC = min(0.10, 44.0 / fig_height)
-    LOGO_BAND_FRAC   = min(0.08, 50.0 / fig_height)
-    LOGO_Y           = [1.0 - TITLE_STRIP_FRAC - LOGO_BAND_FRAC, 1.0 - TITLE_STRIP_FRAC]
-    MAIN_Y           = [0.00, LOGO_Y[0] - 0.005]
-    # Violins are fixed ~2-inch boxes stacked from the top of the right column;
-    # they only shrink when n_drv would overflow the available height.
+    # Vertical: fixed-pixel title strip (~44 px) | logo (~50 px) | main panels.
+    title_strip = min(0.10, 44.0 / fig_height)
+    logo_band = min(0.08, 50.0 / fig_height)
+    logo_y = [1.0 - title_strip - logo_band, 1.0 - title_strip]
+    main_y = [0.00, logo_y[0] - 0.005]
+    # Violins are ~2-inch boxes stacked from the top; they shrink only on overflow.
     if n_drv:
-        _plot_h_px = max(400, fig_height - 20 - 170)            # minus t/b margins
-        _per_vio   = 200.0 / _plot_h_px                          # ~2 inch each
-        _vio_band  = min(MAIN_Y[1] - MAIN_Y[0], n_drv * _per_vio * 1.15)
-        VIO_Y3     = [MAIN_Y[1] - _vio_band, MAIN_Y[1]]
+        plot_h_px = max(400, fig_height - 20 - 170)            # minus t/b margins
+        per_vio = 200.0 / plot_h_px
+        vio_band = min(main_y[1] - main_y[0], n_drv * per_vio * 1.15)
+        vio_y = [main_y[1] - vio_band, main_y[1]]
     else:
-        VIO_Y3     = MAIN_Y
+        vio_y = main_y
+    return Layout(fig_width, fig_height, label_fs, show_labels, tree_x, label_x,
+                  par_x, pcl_x, act_x, drv_x, msa_x, mark_x, vio_x, logo_y,
+                  main_y, vio_y)
 
-    max_depth = max((pos[id(lf)]["x"] for lf in leaves), default=1.0)
 
-    # Shared y-range — explicit to eliminate auto-padding that breaks alignment
-    Y_RANGE = [n - 0.5, -0.5]   # reversed: leaf 0 at top
+# ── Tree panel ────────────────────────────────────────────────────────────────
 
-    fig = go.Figure()
+def driver_leaf_colors(drivers: list[dict]) -> dict[str, str]:
+    """sample_hap → driver colour; a leaf in several drivers takes the smallest."""
+    color: dict[str, str] = {}
+    size: dict[str, int] = {}
+    for d in sorted(drivers, key=lambda d: d["idx"]):
+        n_below = d["rec"].get("n_below") or 10**9
+        for tip in d["rec"].get("descendants", ()):
+            sh = _sample_hap(tip)
+            if sh not in size or n_below < size[sh]:
+                size[sh] = n_below
+                color[sh] = d["color"]
+    return color
 
-    # ── 0a. Leaf → driver colour for leader lines ────────────────────────────
-    # A leaf in several drivers takes the smallest one's colour.
-    leaf_clade_color: dict[str, str] = {}
-    leaf_clade_size: dict[str, int] = {}
-    for _d in sorted(drivers, key=lambda d: d["idx"]):
-        _color = _d["color"]
-        _n = _d["rec"].get("n_below") or 10**9
-        for _tip in _d["rec"].get("descendants", ()):
-            _sh = parse_leaf_meta(_tip)["sample_hap"]
-            if _sh not in leaf_clade_size or _n < leaf_clade_size[_sh]:
-                leaf_clade_size[_sh] = _n
-                leaf_clade_color[_sh] = _color
 
-    # ── 0b. Leaf-to-label leader lines ───────────────────────────────────────
-    # Light dotted horizontal connectors from each tree tip to the sample-name
-    # column, so the eye can trace each tip to its label. They stop at the names
-    # (LABEL_X[1]) rather than running on through the PCLAI / actuation / MSA
-    # panels. When labels are hidden (tiny rows) there are no names to land on,
-    # so the lines extend the full width as the only row guide.
-    # Leaves carrying a driver get a heavier line in its colour; others stay gray.
-    _leader_x1 = LABEL_X[1] if show_labels else 1.0
-    _tree_axis_min = -0.01 * max_depth
-    _tree_axis_max = max_depth * 1.05
-    _tree_axis_span = _tree_axis_max - _tree_axis_min
-    _main_span = MAIN_Y[1] - MAIN_Y[0]
-    for _i, _leaf in enumerate(leaves):
-        _tip_axis_x = pos[id(_leaf)]["x"]
-        _tip_paper_x = TREE_X[0] + (
-            (_tip_axis_x - _tree_axis_min) / _tree_axis_span
-            * (TREE_X[1] - TREE_X[0])
+def add_leader_lines(
+    fig, leaves: list, pos: dict, ly: list[float], lay: Layout,
+    max_depth: float, leaf_color: dict[str, str],
+) -> None:
+    """Dotted connectors from each tree tip to its label (or across the figure
+    when labels are hidden). Driver carriers get a heavier line in its colour."""
+    n = len(leaves)
+    x1 = lay.label_x[1] if lay.show_labels else 1.0
+    axis_min = -0.01 * max_depth
+    axis_max = max_depth * 1.05
+    axis_span = axis_max - axis_min
+    main_span = lay.main_y[1] - lay.main_y[0]
+    for i, leaf in enumerate(leaves):
+        tip_x = lay.tree_x[0] + (
+            (pos[id(leaf)]["x"] - axis_min) / axis_span
+            * (lay.tree_x[1] - lay.tree_x[0])
         )
         # Reversed yaxis: data y=-0.5 is at top, y=n-0.5 is at bottom.
-        _row_paper_y = MAIN_Y[1] - (ly[_i] + 0.5) / n * _main_span
-        _sample_hap = parse_leaf_meta(_leaf.name)["sample_hap"]
-        _clade_color = leaf_clade_color.get(_sample_hap)
-        _line_color = _clade_color if _clade_color else "#dddddd"
-        _line_width = 0.8 if _clade_color else 0.4
+        row_y = lay.main_y[1] - (ly[i] + 0.5) / n * main_span
+        c = leaf_color.get(_sample_hap(leaf.name))
         fig.add_shape(
             type="line",
-            x0=_tip_paper_x, x1=_leader_x1,
-            y0=_row_paper_y, y1=_row_paper_y,
+            x0=tip_x, x1=x1,
+            y0=row_y, y1=row_y,
             xref="paper", yref="paper",
-            line=dict(color=_line_color, width=_line_width, dash="dot"),
+            line=dict(color=c if c else "#dddddd", width=0.8 if c else 0.4, dash="dot"),
             layer="below",
         )
 
-    # ── 1. Tree branches ──────────────────────────────────────────────────────
-    # Internal segments stay grey; terminal segments are coloured by paralog so
-    # the tree carries the same colour signal as the leaf labels.
+
+def add_tree(fig, tree, pos: dict, leaves: list, leaf_text_colors: list[str]) -> None:
+    """Grey internal branches, plus terminal branches coloured like the labels
+    (one trace per colour)."""
     int_xs, int_ys, term_segs = branch_xy_split(tree.root, pos)
     fig.add_trace(go.Scatter(
         x=int_xs, y=int_ys,
@@ -821,7 +844,6 @@ def make_figure(
         showlegend=False,
         xaxis="x1", yaxis="y1",
     ))
-    # Group terminal branches by paralog so we emit at most ~10 traces.
     terminal_by_color: dict[str, tuple[list, list]] = {}
     for leaf, color in zip(leaves, leaf_text_colors):
         seg = term_segs.get(id(leaf))
@@ -840,316 +862,9 @@ def make_figure(
             xaxis="x1", yaxis="y1",
         ))
 
-    # phylo_mm output (parsed once here; consumed by the branch overlay
-    # below and by the header-summary block lower down).
-    pm = phylo_mm or {"meta": {}, "branches": []}
 
-    # ── 1c. Driver overlay (phylo_mm) ────────────────────────────────────────
-    # One annotation per driver (keyed by its carrier set), each in its own
-    # palette colour; its MSA columns are colour-matched (5b).
-    _all_tip_names = frozenset(
-        parse_leaf_meta(t.name)["sample_hap"] for t in tree.get_terminals()
-    )
-
-    def _find_branch_endpoints(rec: dict) -> tuple[float, float, float] | None:
-        """Resolve a phylo_mm row to (px, cx, py) endpoints.
-
-        The carrier set can match either half of a bipartition in the drawn
-        tree. Try a clade whose tips equal the want set; failing that, find
-        the clade equal to the complement and use its sibling's endpoints
-        (correct x AND y).
-
-        Using the sibling's actual `pos[id(...)]["y"]` matters: a geometric
-        centroid of the want tips disagrees with the recursive
-        `(first_child_y + last_child_y)/2` rule that `compute_positions`
-        uses, especially for ladder-shaped trees.
-        """
-        want = frozenset(
-            parse_leaf_meta(d)["sample_hap"] for d in rec.get("descendants", ())
-        )
-        if not want:
-            return None
-        want_complement = _all_tip_names - want
-
-        def _endpoints_for_clade(c, parent):
-            if parent is None:
-                return None
-            return (pos[id(parent)]["x"], pos[id(c)]["x"], pos[id(c)]["y"])
-
-        # Pass 1: direct match. Pass 2: complement match → resolve sibling.
-        for clade in tree.root.find_clades(order="level"):
-            if clade.is_terminal() or clade is tree.root:
-                continue
-            tip_names = frozenset(
-                parse_leaf_meta(t.name)["sample_hap"]
-                for t in clade.get_terminals()
-            )
-            parent = next(
-                (p for p in tree.root.find_clades() if clade in p.clades),
-                None,
-            )
-            if parent is None:
-                continue
-            if tip_names == want:
-                return _endpoints_for_clade(clade, parent)
-            if tip_names == want_complement:
-                # Find the sibling clade that holds the want tips directly.
-                for sibling in parent.clades:
-                    if sibling is clade:
-                        continue
-                    sib_tips = frozenset(
-                        parse_leaf_meta(t.name)["sample_hap"]
-                        for t in sibling.get_terminals()
-                    )
-                    if sib_tips == want:
-                        return _endpoints_for_clade(sibling, parent)
-                # Fall through — want spans multiple siblings (rare on
-                # binary trees). Use the matched clade with the centroid y
-                # as a best-effort fallback.
-                want_ys = [
-                    pos[id(t)]["y"] for t in tree.get_terminals()
-                    if parse_leaf_meta(t.name)["sample_hap"] in want
-                ]
-                cy = sum(want_ys) / len(want_ys) if want_ys else pos[id(clade)]["y"]
-                return (pos[id(parent)]["x"], pos[id(clade)]["x"], cy)
-        return None
-
-    # ── Per-driver carrier columns ────────────────────────────────────────────
-    # One column per contributing variant, ordered as the legend; a filled cell
-    # means that haplotype carries that driver's allele. SET-NESTING is visible
-    # here and nowhere else: if an inner driver's carriers are a subset of an
-    # outer driver's, the inner column's filled rows fall inside the outer's.
-    if drivers:
-        _sh_to_ly = {
-            parse_leaf_meta(names[i])["sample_hap"]: ly[i] for i in range(n)
-        }
-        for j, drv in enumerate(drivers):
-            cy = []
-            for d in drv["rec"].get("descendants", ()):
-                sh = parse_leaf_meta(d)["sample_hap"]
-                if sh in _sh_to_ly:
-                    cy.append(_sh_to_ly[sh])
-            if not cy:
-                continue
-            fig.add_trace(go.Bar(
-                x=[0.86] * len(cy), base=[j - 0.43] * len(cy), y=cy,
-                orientation="h", width=0.9,
-                marker=dict(color=drv["color"], line=dict(width=0)),
-                hoverinfo="skip", showlegend=False,
-                xaxis="x8", yaxis="y1",
-            ))
-
-    # ── Driver SHAPE column (right of MSA) + per-driver violins ────────────────
-    # A distinct marker symbol per driver ties two panels together: the symbol in
-    # the shape column marks which haplotypes CARRY that driver (= feed the
-    # carrier side of its violin), and the violin to the right plots those same
-    # haps' % actuation (LEFT half) against the rest (RIGHT half). Read a row's
-    # symbol, find its point in the matching violin. The Δ (mean_in − mean_out)
-    # and joint β are annotated above each violin.
-    def _hex_rgba(h: str, a: float) -> str:
-        h = h.lstrip("#")
-        if len(h) == 6:
-            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-            return f"rgba({r},{g},{b},{a})"
-        return h
-
-    vio_ticktext: list[str] = []
-    if drivers:
-        _sh_ly = {
-            parse_leaf_meta(names[i])["sample_hap"]: ly[i]
-            for i in range(n) if names[i] not in construct_names
-        }
-        _sh_act = {
-            parse_leaf_meta(names[i])["sample_hap"]: acts[i]
-            for i in range(n)
-            if names[i] not in construct_names and acts[i] is not None
-        }
-        all_sh = set(_sh_act)
-        driver_carriers = [
-            {parse_leaf_meta(d)["sample_hap"] for d in drv["rec"].get("descendants", ())}
-            for drv in drivers
-        ]
-        for j, drv in enumerate(drivers):
-            sym, col = drv["symbol"], drv["color"]
-            carrier_sh = driver_carriers[j]
-            # Comparison group = the LOCAL contrast, not the whole tree. If this
-            # driver is NESTED (its carriers ⊂ another driver's), compare against
-            # the smallest ENCLOSING driver's OTHER carriers (the sister context);
-            # otherwise against everything else. This matches the joint β — a
-            # nested reversing variant (opposite-sign β) then reads correctly in
-            # the violin instead of being washed out by the distant high/low clade.
-            parents = [k for k in range(len(driver_carriers))
-                       if k != j and driver_carriers[k] > carrier_sh]
-            if parents:
-                comp_sh = driver_carriers[
-                    min(parents, key=lambda k: len(driver_carriers[k]))
-                ] - carrier_sh
-            else:
-                comp_sh = all_sh - carrier_sh
-            # (a) shape column — carriers get the driver's filled symbol; the
-            #     local comparison group (what Δ/β is measured against) gets a
-            #     small grey open circle.
-            car_ly  = [_sh_ly[s] for s in carrier_sh if s in _sh_ly]
-            rest_ly = [_sh_ly[s] for s in comp_sh if s in _sh_ly]
-            if rest_ly:
-                fig.add_trace(go.Scatter(
-                    x=[j] * len(rest_ly), y=rest_ly, mode="markers",
-                    marker=dict(symbol="circle-open", color="#cccccc", size=3),
-                    hoverinfo="skip", showlegend=False, xaxis="x9", yaxis="y1",
-                ))
-            if car_ly:
-                fig.add_trace(go.Scatter(
-                    x=[j] * len(car_ly), y=car_ly, mode="markers",
-                    marker=dict(symbol=sym, color=col, size=7,
-                                line=dict(width=0.5, color="white")),
-                    hoverinfo="skip", showlegend=False, xaxis="x9", yaxis="y1",
-                ))
-            # (b) violin — HORIZONTAL, one driver per row (y = driver, stacked),
-            #     % actuation on x. Carriers below the row line, comparison above.
-            car_x  = [_sh_act[s] * 100 for s in carrier_sh if s in _sh_act]
-            rest_x = [_sh_act[s] * 100 for s in comp_sh if s in _sh_act]
-            if rest_x:
-                fig.add_trace(go.Violin(
-                    y=[j] * len(rest_x), x=rest_x, orientation="h",
-                    side="positive", width=0.9,
-                    line_color="#bbbbbb", fillcolor="rgba(180,180,180,0.22)",
-                    points="all", pointpos=0.4, jitter=0.3,
-                    marker=dict(symbol="circle-open", color="#999999", size=3),
-                    meanline_visible=True, scalemode="width", spanmode="hard",
-                    hoverinfo="x", showlegend=False, xaxis="x10", yaxis="y3",
-                ))
-            if car_x:
-                fig.add_trace(go.Violin(
-                    y=[j] * len(car_x), x=car_x, orientation="h",
-                    side="negative", width=0.9,
-                    line_color=col, fillcolor=_hex_rgba(col, 0.25),
-                    points="all", pointpos=-0.4, jitter=0.3,
-                    marker=dict(symbol=sym, color=col, size=5),
-                    meanline_visible=True, scalemode="width", spanmode="hard",
-                    hoverinfo="x", showlegend=False, xaxis="x10", yaxis="y3",
-                ))
-            _ls = drv["links"]
-            vio_ticktext.append(_site_label(min(_ls)) if _ls else f"d{j}")
-            _b = drv["rec"].get("beta")
-            _bits = []
-            # Δ is the LOCAL contrast (carriers − comparison group), so it agrees
-            # with the joint β; for a nested reversing driver both come out
-            # positive even though the marginal-vs-whole-tree Δ would be ~0.
-            if car_x and rest_x:
-                _bits.append(f"Δ={(sum(car_x) / len(car_x) - sum(rest_x) / len(rest_x)):+.0f}%")
-            if isinstance(_b, float):
-                _bits.append(f"β={_b:+.2f}")
-            if _bits:
-                fig.add_annotation(
-                    x=111, y=j, xref="x10", yref="y3", text="  ".join(_bits),
-                    showarrow=False, font=dict(size=8, color=col), xanchor="right",
-                )
-        # one-time legend keys: filled symbol = carrier, open ○ = compared-against
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode="markers",
-            marker=dict(symbol="circle", color="#555555", size=7),
-            name="violin: driver carriers", legendgroup="vio", showlegend=True,
-            legendrank=4000, xaxis="x9", yaxis="y1",
-        ))
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode="markers",
-            marker=dict(symbol="circle-open", color="#999999", size=6),
-            name="violin: compared against (rest)", legendgroup="vio", showlegend=True,
-            legendrank=4001, xaxis="x9", yaxis="y1",
-        ))
-
-    # Helper for compact p-value formatting (None → "NA").
-    def _fmt_p(p):
-        return f"{p:.2g}" if isinstance(p, float) else "NA"
-    def _fmt_beta(b):
-        return f"{b:+.2f}" if isinstance(b, float) else "NA"
-    def _marginal_delta(rec: dict) -> float | None:
-        """Marginal Δ = mean_in − mean_out: carriers vs all other haplotypes."""
-        mi, mo = rec.get("mean_in"), rec.get("mean_out")
-        if isinstance(mi, float) and isinstance(mo, float):
-            return mi - mo
-        return None
-
-    # Draw one branch per driver.
-    for _gi, drv in enumerate(drivers):
-        color = drv["color"]
-        rep = drv["rec"]
-
-        # Driver — thick horizontal branch line + annotation. (No
-        # vertical bracket: drawing one at the MRCA's x spanning the clade's
-        # full tip y-range put a vertical line near the root cutting across
-        # many rows, mis-reading as if it were a branch. The thick horizontal
-        # segment + the coloured leader lines already mark the clade.)
-        seg = _find_branch_endpoints(rep)
-        if seg is not None:
-            px, cx, py = seg
-            links = drv["links"]
-            sorted_sites = (
-                [_site_label(s) for s in sorted(links, key=int)] if links else []
-            )
-            linked_str_full = ", ".join(sorted_sites) if sorted_sites else "none"
-            if len(sorted_sites) <= 4:
-                linked_str_short = (
-                    ", ".join(sorted_sites) if sorted_sites else "no SNP"
-                )
-            else:
-                linked_str_short = (
-                    ", ".join(sorted_sites[:4])
-                    + f", +{len(sorted_sites) - 4} more"
-                )
-            beta = rep.get("beta")
-            ci_lo = rep.get("ci_lower"); ci_hi = rep.get("ci_upper")
-            ci_str = (
-                f" [{ci_lo:+.2f}, {ci_hi:+.2f}]"
-                if isinstance(ci_lo, float) and isinstance(ci_hi, float)
-                else ""
-            )
-            delta = _marginal_delta(rep)
-            mi, mo = rep.get("mean_in"), rep.get("mean_out")
-            means_str = (
-                f"actuation in: {mi:.2f}  vs out: {mo:.2f}<br>"
-                if isinstance(mi, float) and isinstance(mo, float)
-                else ""
-            )
-            # Headline = the JOINT (conditional) contribution β and its p from
-            # the forward-selection regression: "this variant changes actuation
-            # by β, after accounting for the others." A nested variant that
-            # switches actuation back off gets a negative β. The marginal
-            # carriers-vs-rest Δ is shown alongside in hover.
-            head_p = rep.get("p")
-            fig.add_trace(go.Scatter(
-                x=[px, cx], y=[py, py],
-                mode="lines",
-                line=dict(color=color, width=3.0),
-                hoverinfo="text",
-                hovertext=(
-                    f"<b>Variant at {linked_str_full}</b>  n_carriers={rep['n_below']}<br>"
-                    f"{means_str}"
-                    f"<b>β</b> (joint contribution){ci_str} = {_fmt_beta(beta)}<br>"
-                    f"<b>p</b> (joint) = {_fmt_p(head_p)}<br>"
-                    f"<i>marginal Δ (carriers − rest) = {_fmt_beta(delta)}, "
-                    f"BH p_fdr = {_fmt_p(rep.get('p_fdr'))}</i>"
-                ),
-                name=(
-                    f"β={_fmt_beta(beta)} p={_fmt_p(head_p)} "
-                    f"pos: {linked_str_short}"
-                ),
-                legendgroup=f"sig_group_{_gi}",
-                # Legend entry comes uniformly from §5c (one per contributing
-                # variant) so non-clade variants — whose carriers don't form a
-                # branch and so never reach this block — still appear.
-                showlegend=False,
-                xaxis="x1", yaxis="y1",
-            ))
-            # NB: the β/p label is NOT drawn on the tree branch — a variant's
-            # carriers are often NOT a single clade (homoplasy / recurrent
-            # allele), so a tree segment can't represent the strongest variant.
-            # The label is anchored to the variant's MSA column instead (§5b
-            # below), which always exists. The coloured branch segment here +
-            # the colour-matched leader lines just show WHICH haplotypes carry
-            # it when they do form a clade.
-
-    # ── 1b. Bootstrap support labels on internal nodes (≥70 only) ───────────
+def add_bootstrap(fig, tree, pos: dict) -> None:
+    """Bootstrap support labels (≥70) on internal nodes."""
     boot_x, boot_y, boot_text = [], [], []
     for clade in tree.root.find_clades(order="level"):
         if not clade.is_terminal() and clade.confidence is not None:
@@ -1170,90 +885,302 @@ def make_figure(
             xaxis="x1", yaxis="y1",
         ))
 
-    # ── 2. Leaf labels — coloured by paralog when available ──────────────────
-    # Each label is drawn separately so its colour can vary; this is a single
-    # Scatter trace with a per-point textfont colour array. Suppressed when
-    # row height is too small to fit readable text — identity is then
-    # available via hover on the PCLAI / actuation / MSA columns.
-    if show_labels:
-        # Display the bare sample-hap (last "__"-segment) — paralog/highlight
-        # identity is already conveyed by the colour + paralog stripe + chip
-        # legend, so the tag prefix would just clutter the label.
-        display_labels = [
-            construct_label.get(nm) or m["sample_hap"]
-            for nm, m in zip(names, metas)
+
+class CladeIndex:
+    """Parent and tip-set (sample_hap) lookups for every clade, built once."""
+
+    def __init__(self, tree):
+        self.tree = tree
+        self.tips: dict[int, frozenset] = {}
+        for c in tree.find_clades(order="postorder"):
+            if c.is_terminal():
+                self.tips[id(c)] = frozenset([_sample_hap(c.name)])
+            else:
+                self.tips[id(c)] = frozenset().union(*(self.tips[id(k)] for k in c.clades))
+        parent = {id(k): c for c in tree.find_clades() for k in c.clades}
+        # Non-root internal clades in level order, with their parent.
+        self.internal = [
+            (c, parent[id(c)])
+            for c in tree.root.find_clades(order="level")
+            if not c.is_terminal() and c is not tree.root
         ]
+        self.all_tips = frozenset(_sample_hap(t.name) for t in tree.get_terminals())
+
+
+def find_branch_endpoints(rec: dict, idx: CladeIndex, pos: dict) -> tuple[float, float, float] | None:
+    """Resolve a phylo_mm row to (parent_x, clade_x, clade_y), or None.
+
+    The carrier set can be either half of a bipartition in the drawn tree: take
+    the clade whose tips equal it, else the clade equal to its complement and
+    use the sibling holding the carriers. Uses the node's own y (the recursive
+    rule in compute_positions), not a centroid of the carrier tips.
+    """
+    want = frozenset(_sample_hap(d) for d in rec.get("descendants", ()))
+    if not want:
+        return None
+    want_complement = idx.all_tips - want
+    for clade, parent in idx.internal:
+        tips = idx.tips[id(clade)]
+        if tips == want:
+            return (pos[id(parent)]["x"], pos[id(clade)]["x"], pos[id(clade)]["y"])
+        if tips == want_complement:
+            for sibling in parent.clades:
+                if sibling is not clade and idx.tips[id(sibling)] == want:
+                    return (pos[id(parent)]["x"], pos[id(sibling)]["x"], pos[id(sibling)]["y"])
+            # Carriers span several siblings (rare on binary trees): use the
+            # matched clade with the carriers' centroid y.
+            want_ys = [
+                pos[id(t)]["y"] for t in idx.tree.get_terminals()
+                if _sample_hap(t.name) in want
+            ]
+            cy = sum(want_ys) / len(want_ys) if want_ys else pos[id(clade)]["y"]
+            return (pos[id(parent)]["x"], pos[id(clade)]["x"], cy)
+    return None
+
+
+def add_driver_branches(
+    fig, drivers: list[dict], idx: CladeIndex, pos: dict, re_band,
+) -> None:
+    """Thick coloured branch for each driver whose carriers form a clade.
+
+    The β/p headline is not drawn here (carriers are often not a clade); it sits
+    on the driver's MSA column (add_driver_labels), which also owns the legend.
+    """
+    for gi, drv in enumerate(drivers):
+        rep = drv["rec"]
+        seg = find_branch_endpoints(rep, idx, pos)
+        if seg is None:
+            continue
+        px, cx, py = seg
+        links = drv["links"]
+        sorted_sites = (
+            [_site_label(s, re_band) for s in sorted(links, key=int)] if links else []
+        )
+        linked_str_full = ", ".join(sorted_sites) if sorted_sites else "none"
+        if len(sorted_sites) <= 4:
+            linked_str_short = ", ".join(sorted_sites) if sorted_sites else "no SNP"
+        else:
+            linked_str_short = (
+                ", ".join(sorted_sites[:4]) + f", +{len(sorted_sites) - 4} more"
+            )
+        beta = rep.get("beta")
+        ci_lo, ci_hi = rep.get("ci_lower"), rep.get("ci_upper")
+        ci_str = (
+            f" [{ci_lo:+.2f}, {ci_hi:+.2f}]"
+            if isinstance(ci_lo, float) and isinstance(ci_hi, float)
+            else ""
+        )
+        mi, mo = rep.get("mean_in"), rep.get("mean_out")
+        means_str = (
+            f"actuation in: {mi:.2f}  vs out: {mo:.2f}<br>"
+            if isinstance(mi, float) and isinstance(mo, float)
+            else ""
+        )
+        # Headline = joint (conditional) β and p from the forward selection;
+        # the marginal carriers-vs-rest Δ goes alongside in hover.
+        head_p = rep.get("p")
         fig.add_trace(go.Scatter(
-            x=[0.0] * n, y=ly,
-            mode="text",
-            text=display_labels,
-            textposition="middle right",
-            textfont=dict(size=label_fs, color=leaf_text_colors),
-            hovertext=act_hover,
+            x=[px, cx], y=[py, py],
+            mode="lines",
+            line=dict(color=drv["color"], width=3.0),
             hoverinfo="text",
+            hovertext=(
+                f"<b>Variant at {linked_str_full}</b>  n_carriers={rep['n_below']}<br>"
+                f"{means_str}"
+                f"<b>β</b> (joint contribution){ci_str} = {_fmt_beta(beta)}<br>"
+                f"<b>p</b> (joint) = {_fmt_p(head_p)}<br>"
+                f"<i>marginal Δ (carriers − rest) = {_fmt_beta(_marginal_delta(rep))}, "
+                f"BH p_fdr = {_fmt_p(rep.get('p_fdr'))}</i>"
+            ),
+            name=f"β={_fmt_beta(beta)} p={_fmt_p(head_p)} pos: {linked_str_short}",
+            legendgroup=f"sig_group_{gi}",
             showlegend=False,
-            xaxis="x5", yaxis="y1",
+            xaxis="x1", yaxis="y1",
         ))
 
-    # ── 3a. Paralog stripe ────────────────────────────────────────────────────
-    # Solid colour bar per leaf in the paralog palette so paralog identity
-    # stays readable when row height is too small for label text. Only added
-    # when paralogs are actually present — a zero-width axis with a visible
-    # full-width Bar trace causes Plotly to fall back and paint the entire
-    # figure with the bar colour.
-    if has_paralogs:
-        paralog_hover = [
-            f"<b>{nm}</b><br>paralog: {m['paralog'] or '—'}"
-            for nm, m in zip(names, metas)
-        ]
+
+# ── Driver panels ─────────────────────────────────────────────────────────────
+
+def add_driver_columns(fig, drivers: list[dict], sh_ly: dict[str, float]) -> None:
+    """One column per driver; a filled cell = that haplotype carries it.
+
+    Set-nesting shows only here: an inner driver's filled rows fall inside the
+    outer driver's, even when the carriers are not a clade.
+    """
+    for j, drv in enumerate(drivers):
+        cy = []
+        for d in drv["rec"].get("descendants", ()):
+            sh = _sample_hap(d)
+            if sh in sh_ly:
+                cy.append(sh_ly[sh])
+        if not cy:
+            continue
         fig.add_trace(go.Bar(
-            x=[1] * n, y=ly,
-            orientation="h",
-            marker=dict(color=leaf_text_colors, line=dict(color="#aaaaaa", width=0.3)),
-            width=1.0,
-            hovertext=paralog_hover,
-            hoverinfo="text",
-            showlegend=False,
-            xaxis="x7", yaxis="y1",
+            x=[0.86] * len(cy), base=[j - 0.43] * len(cy), y=cy,
+            orientation="h", width=0.9,
+            marker=dict(color=drv["color"], line=dict(width=0)),
+            hoverinfo="skip", showlegend=False,
+            xaxis="x8", yaxis="y1",
         ))
 
-    # ── 3b. PCLAI ancestry stripe ─────────────────────────────────────────────
-    # Same gate as paralog stripe: only emit the trace when PCLAI hit at least
-    # one leaf. Otherwise the bars would render in PCLAI_MISSING grey across
-    # the entire figure via Plotly's zero-width-domain fallback.
-    if pclai_present:
-        fig.add_trace(go.Bar(
-            x=[1] * n, y=ly,
-            orientation="h",
-            marker=dict(color=pclai_rgbs, line=dict(color="#aaaaaa", width=0.3)),
-            width=1.0,
-            hovertext=pclai_hover,
-            hoverinfo="text",
-            showlegend=False,
-            xaxis="x6", yaxis="y1",
-        ))
 
-    # ── 3b. Actuation bars ────────────────────────────────────────────────────
+def add_driver_violins(
+    fig, drivers: list[dict], sh_ly: dict[str, float], sh_act: dict[str, float], re_band,
+) -> list[str]:
+    """Shape column (right of the MSA) + one horizontal split violin per driver.
+
+    A driver's symbol marks its carriers in the shape column and in its violin
+    (carriers below the line, comparison group above). The comparison group is
+    the local contrast: for a nested driver, the smallest enclosing driver's
+    other carriers; otherwise everyone else. This matches the joint β. Returns
+    the violin tick labels.
+    """
+    ticktext: list[str] = []
+    all_sh = set(sh_act)
+    driver_carriers = [
+        {_sample_hap(d) for d in drv["rec"].get("descendants", ())}
+        for drv in drivers
+    ]
+    for j, drv in enumerate(drivers):
+        sym, col = drv["symbol"], drv["color"]
+        carrier_sh = driver_carriers[j]
+        parents = [k for k in range(len(driver_carriers))
+                   if k != j and driver_carriers[k] > carrier_sh]
+        if parents:
+            comp_sh = driver_carriers[
+                min(parents, key=lambda k: len(driver_carriers[k]))
+            ] - carrier_sh
+        else:
+            comp_sh = all_sh - carrier_sh
+        car_ly = [sh_ly[s] for s in carrier_sh if s in sh_ly]
+        rest_ly = [sh_ly[s] for s in comp_sh if s in sh_ly]
+        if rest_ly:
+            fig.add_trace(go.Scatter(
+                x=[j] * len(rest_ly), y=rest_ly, mode="markers",
+                marker=dict(symbol="circle-open", color="#cccccc", size=3),
+                hoverinfo="skip", showlegend=False, xaxis="x9", yaxis="y1",
+            ))
+        if car_ly:
+            fig.add_trace(go.Scatter(
+                x=[j] * len(car_ly), y=car_ly, mode="markers",
+                marker=dict(symbol=sym, color=col, size=7,
+                            line=dict(width=0.5, color="white")),
+                hoverinfo="skip", showlegend=False, xaxis="x9", yaxis="y1",
+            ))
+        car_x = [sh_act[s] * 100 for s in carrier_sh if s in sh_act]
+        rest_x = [sh_act[s] * 100 for s in comp_sh if s in sh_act]
+        if rest_x:
+            fig.add_trace(go.Violin(
+                y=[j] * len(rest_x), x=rest_x, orientation="h",
+                side="positive", width=0.9,
+                line_color="#bbbbbb", fillcolor="rgba(180,180,180,0.22)",
+                points="all", pointpos=0.4, jitter=0.3,
+                marker=dict(symbol="circle-open", color="#999999", size=3),
+                meanline_visible=True, scalemode="width", spanmode="hard",
+                hoverinfo="x", showlegend=False, xaxis="x10", yaxis="y3",
+            ))
+        if car_x:
+            fig.add_trace(go.Violin(
+                y=[j] * len(car_x), x=car_x, orientation="h",
+                side="negative", width=0.9,
+                line_color=col, fillcolor=_hex_rgba(col, 0.25),
+                points="all", pointpos=-0.4, jitter=0.3,
+                marker=dict(symbol=sym, color=col, size=5),
+                meanline_visible=True, scalemode="width", spanmode="hard",
+                hoverinfo="x", showlegend=False, xaxis="x10", yaxis="y3",
+            ))
+        links = drv["links"]
+        ticktext.append(_site_label(min(links), re_band) if links else f"d{j}")
+        beta = drv["rec"].get("beta")
+        bits = []
+        # Δ is the local contrast (carriers − comparison), so it agrees with β.
+        if car_x and rest_x:
+            bits.append(f"Δ={(sum(car_x) / len(car_x) - sum(rest_x) / len(rest_x)):+.0f}%")
+        if isinstance(beta, float):
+            bits.append(f"β={beta:+.2f}")
+        if bits:
+            fig.add_annotation(
+                x=111, y=j, xref="x10", yref="y3", text="  ".join(bits),
+                showarrow=False, font=dict(size=8, color=col), xanchor="right",
+            )
+    # one-time legend keys: filled symbol = carrier, open ○ = compared-against
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        marker=dict(symbol="circle", color="#555555", size=7),
+        name="violin: driver carriers", legendgroup="vio", showlegend=True,
+        legendrank=4000, xaxis="x9", yaxis="y1",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        marker=dict(symbol="circle-open", color="#999999", size=6),
+        name="violin: compared against (rest)", legendgroup="vio", showlegend=True,
+        legendrank=4001, xaxis="x9", yaxis="y1",
+    ))
+    return ticktext
+
+
+# ── Row stripes ───────────────────────────────────────────────────────────────
+
+def add_leaf_labels(fig, names, metas, ly, construct_label, label_fs, colors, hover) -> None:
+    """Bare sample-hap labels (construct labels for panel rows), coloured by paralog."""
+    display_labels = [
+        construct_label.get(nm) or m["sample_hap"]
+        for nm, m in zip(names, metas)
+    ]
+    fig.add_trace(go.Scatter(
+        x=[0.0] * len(names), y=ly,
+        mode="text",
+        text=display_labels,
+        textposition="middle right",
+        textfont=dict(size=label_fs, color=colors),
+        hovertext=hover,
+        hoverinfo="text",
+        showlegend=False,
+        xaxis="x5", yaxis="y1",
+    ))
+
+
+def add_stripe(fig, ly, colors, hover, axis: str) -> None:
+    """Full-row colour stripe (paralog / PCLAI).
+
+    Only call when the stripe has data: a zero-width axis with a visible
+    full-width Bar makes Plotly paint the whole figure in the bar colour.
+    """
     fig.add_trace(go.Bar(
-        x=[1] * n,
+        x=[1] * len(ly), y=ly,
+        orientation="h",
+        marker=dict(color=colors, line=dict(color="#aaaaaa", width=0.3)),
+        width=1.0,
+        hovertext=hover,
+        hoverinfo="text",
+        showlegend=False,
+        xaxis=axis, yaxis="y1",
+    ))
+
+
+def add_actuation_bars(fig, ly, colors, hover) -> None:
+    fig.add_trace(go.Bar(
+        x=[1] * len(ly),
         y=ly,
         orientation="h",
         marker=dict(color=colors, line=dict(color="#aaaaaa", width=0.4)),
         width=0.82,
-        hovertext=act_hover,
+        hovertext=hover,
         hoverinfo="text",
         showlegend=False,
         xaxis="x2", yaxis="y1",
     ))
 
-    # ── 4. Legend dummy traces for actuation bins ─────────────────────────────
-    for _ri, (color, label) in enumerate(zip(ACT_COLORS, ACT_LABELS)):
+
+def add_legend_keys(fig) -> None:
+    """Legend-only traces: actuation bins, FIRE missing, and the two MSA greys."""
+    for ri, (color, label) in enumerate(zip(ACT_COLORS, ACT_LABELS)):
         fig.add_trace(go.Bar(
             x=[None], y=[None],
             orientation="h",
             marker=dict(color=color, line=dict(color="#aaaaaa", width=0.4)),
             name=label,
-            showlegend=True, legendrank=100 + _ri,
+            showlegend=True, legendrank=100 + ri,
         ))
     fig.add_trace(go.Bar(
         x=[None], y=[None],
@@ -1262,14 +1189,9 @@ def make_figure(
         name="FIRE missing",
         showlegend=True, legendrank=120,
     ))
-
-    # ── 4b. MSA cell legend chips ─────────────────────────────────────────────
-    # The two MSA greys (matches-consensus and gap/N) are easy to confuse, and
-    # easy to mistake for the FIRE-missing chip above them. Explicit labels
-    # remove ambiguity.
     for color, label in (
         (MSA_INVARIANT, "MSA consensus"),
-        (MSA_MISSING,   "MSA gap / N"),
+        (MSA_MISSING, "MSA gap / N"),
     ):
         fig.add_trace(go.Bar(
             x=[None], y=[None],
@@ -1280,11 +1202,14 @@ def make_figure(
             showlegend=True,
         ))
 
-    # ── 5. MSA heatmap ────────────────────────────────────────────────────────
+
+# ── MSA panel ─────────────────────────────────────────────────────────────────
+
+def add_msa_heatmap(fig, msa_z, ly, msa_cell, msa_hover, aln_len: int) -> None:
     fig.add_trace(go.Heatmap(
         z=msa_z,
         y=ly,
-        x=aln_positions,
+        x=list(range(aln_len)),
         text=msa_cell,
         texttemplate="%{text}",
         textfont=dict(size=6, color="black"),
@@ -1299,128 +1224,124 @@ def make_figure(
         xaxis="x3", yaxis="y1",
     ))
 
-    # ── 5a. Regulatory-element band markers ───────────────────────────────────
-    # Two vertical lines bracketing the RE columns, so it's obvious which part
-    # of the (flanked) alignment is the peak itself vs. added assembly context.
-    # Skipped when the view is already clipped to the RE (re_only_msa) — the
-    # whole panel is the RE, so the brackets would just sit on the edges.
-    if re_band is not None and not re_only_msa:
-        re_lo, re_hi = re_band
+
+def add_re_band(fig, re_band: tuple[int, int], y_range: list[float]) -> None:
+    """Dashed lines bracketing the RE columns of a flanked alignment."""
+    re_lo, re_hi = re_band
+    fig.add_trace(go.Scatter(
+        x=[re_lo - 0.5, re_lo - 0.5, None, re_hi + 0.5, re_hi + 0.5],
+        y=[y_range[1], y_range[0], None, y_range[1], y_range[0]],
+        mode="lines",
+        line=dict(color="#111111", width=1.2, dash="dash"),
+        hoverinfo="text",
+        hovertext=f"regulatory element: cols {re_lo+1}–{re_hi+1}",
+        name=f"RE (cols {re_lo+1}–{re_hi+1})",
+        legendgroup="re",
+        showlegend=True,
+        xaxis="x3", yaxis="y1",
+    ))
+
+
+def _contiguous_runs(cols: list[int]) -> list[tuple[int, int]]:
+    """Sorted columns → [(start, end)] runs of consecutive columns."""
+    cols_sorted = sorted(cols)
+    runs: list[tuple[int, int]] = []
+    run_start = run_end = cols_sorted[0]
+    for c0 in cols_sorted[1:]:
+        if c0 == run_end + 1:
+            run_end = c0
+        else:
+            runs.append((run_start, run_end))
+            run_start = run_end = c0
+    runs.append((run_start, run_end))
+    return runs
+
+
+def add_linked_columns(fig, drivers: list[dict], y_range: list[float]) -> None:
+    """Outline each driver's linked MSA columns in its colour.
+
+    A column linked to several drivers takes the first (lowest p_fdr) colour.
+    Contiguous runs (e.g. a 50-column indel) draw as one box, singletons as one
+    dashed line.
+    """
+    col_to_color: dict[int, str] = {}
+    for drv in drivers:
+        for s in drv["links"]:
+            try:
+                c = int(s) - 1
+            except (TypeError, ValueError):
+                continue
+            if c not in col_to_color:
+                col_to_color[c] = drv["color"]
+    cols_by_color: dict[str, list[int]] = {}
+    for c, color in col_to_color.items():
+        cols_by_color.setdefault(color, []).append(c)
+    for color, cols in cols_by_color.items():
+        link_xs: list = []
+        link_ys: list = []
+        for r_lo, r_hi in _contiguous_runs(cols):
+            if r_lo == r_hi:
+                link_xs += [r_lo, r_lo, None]
+                link_ys += [y_range[1], y_range[0], None]
+            else:
+                x_lo, x_hi = r_lo - 0.5, r_hi + 0.5
+                link_xs += [x_lo, x_hi, x_hi, x_lo, x_lo, None]
+                link_ys += [y_range[1], y_range[1], y_range[0], y_range[0], y_range[1], None]
+        txt = f"linked variants ({len(cols)}) for sig branch group"
         fig.add_trace(go.Scatter(
-            x=[re_lo - 0.5, re_lo - 0.5, None, re_hi + 0.5, re_hi + 0.5],
-            y=[Y_RANGE[1], Y_RANGE[0], None, Y_RANGE[1], Y_RANGE[0]],
+            x=link_xs, y=link_ys,
             mode="lines",
-            line=dict(color="#111111", width=1.2, dash="dash"),
+            line=dict(color=color, width=1.0, dash="dot"),
             hoverinfo="text",
-            hovertext=f"regulatory element: cols {re_lo+1}–{re_hi+1}",
-            name=f"RE (cols {re_lo+1}–{re_hi+1})",
-            legendgroup="re",
+            hovertext=[txt] * len(link_xs),
+            name=f"linked variants ({len(cols)})",
+            legendgroup="linked",
             showlegend=True,
             xaxis="x3", yaxis="y1",
         ))
 
-    # ── 5b. Driver columns (linked_sites) in the MSA, colour-matched ─────────
-    # A column linked to several drivers takes the first (lowest p_fdr) colour.
-    # Contiguous runs (e.g. a 50-column indel) draw as one outlined box instead
-    # of N parallel dashes; singleton columns draw as one dash.
-    col_to_color: dict[int, str] = {}
-    if drivers:
-        for drv in drivers:
-            color = drv["color"]
-            for s in drv["links"]:
-                try:
-                    c = int(s) - 1
-                except (TypeError, ValueError):
-                    continue
-                if c not in col_to_color:
-                    col_to_color[c] = color
-    if col_to_color:
-        cols_by_color: dict[str, list[int]] = {}
-        for c, color in col_to_color.items():
-            cols_by_color.setdefault(color, []).append(c)
-        for color, cols in cols_by_color.items():
-            cols_sorted = sorted(cols)
-            # Split into contiguous runs.
-            runs: list[tuple[int, int]] = []
-            run_start = cols_sorted[0]
-            run_end = cols_sorted[0]
-            for c0 in cols_sorted[1:]:
-                if c0 == run_end + 1:
-                    run_end = c0
-                else:
-                    runs.append((run_start, run_end))
-                    run_start = c0
-                    run_end = c0
-            runs.append((run_start, run_end))
-            link_xs: list = []
-            link_ys: list = []
-            for r_lo, r_hi in runs:
-                if r_lo == r_hi:
-                    # Singleton: one vertical dashed line.
-                    link_xs += [r_lo, r_lo, None]
-                    link_ys += [Y_RANGE[1], Y_RANGE[0], None]
-                else:
-                    # Multi-column run: dashed rectangle outline.
-                    x_lo, x_hi = r_lo - 0.5, r_hi + 0.5
-                    link_xs += [x_lo, x_hi, x_hi, x_lo, x_lo, None]
-                    link_ys += [Y_RANGE[1], Y_RANGE[1], Y_RANGE[0], Y_RANGE[0], Y_RANGE[1], None]
-            txt = f"linked variants ({len(cols)}) for sig branch group"
-            fig.add_trace(go.Scatter(
-                x=link_xs, y=link_ys,
-                mode="lines",
-                line=dict(color=color, width=1.0, dash="dot"),
-                hoverinfo="text",
-                hovertext=[txt] * len(link_xs),
-                name=f"linked variants ({len(cols)})",
-                legendgroup="linked",
-                showlegend=True,
-                xaxis="x3", yaxis="y1",
-            ))
 
-    # ── 5c. Per-variant β/p labels at the TOP of each MSA column ──────────────
-    # The headline for every contributing variant lives here (not on the tree):
-    # a variant's carriers may not be monophyletic, so the column — which always
-    # exists — is the reliable anchor. One label per contributing variant, in
-    # its colour, at its representative (left-most) linked column, staggered
-    # vertically so neighbouring columns don't collide.
-    if drivers:
-        _msa_top = Y_RANGE[1]   # data-y of the MSA top (reversed axis)
-        for _i, drv in enumerate(drivers):
-            rep = drv["rec"]
-            positions = sorted(drv["links"], key=int)
-            if not positions:
-                continue
-            c0 = int(positions[0]) - 1   # 0-based column → x3 coordinate
-            _beta = _fmt_beta(rep.get("beta"))
-            _p = _fmt_p(rep.get("p"))
-            # One short line only (β/p) so the box is ~1 row tall and the
-            # vertical stagger clears it; the position list lives in the legend
-            # and the driver column, so it isn't repeated here.
-            fig.add_annotation(
-                x=c0, y=_msa_top,
-                xref="x3", yref="y1",
-                yanchor="bottom",
-                yshift=4 + 14 * (_i % 4),
-                text=f"<b>β={_beta}</b> p={_p}",
-                showarrow=True, arrowhead=0, arrowwidth=0.8,
-                arrowcolor=drv["color"], ax=0, ay=-8,
-                font=dict(size=8, color=drv["color"]),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor=drv["color"], borderwidth=0.5,
-            )
-            # Uniform legend entry per contributing variant — so a variant whose
-            # carriers aren't a clade (no branch drawn) still appears.
-            _short = _site_label(min(drv["links"])) if drv["links"] else "driver"
-            fig.add_trace(go.Scatter(
-                x=[None], y=[None], mode="lines",
-                line=dict(color=drv["color"], width=3.0),
-                name=f"{_short} β={_beta}",
-                legendgroup=f"sig_group_{_i}",
-                showlegend=True, legendrank=3000 + _i,
-                xaxis="x3", yaxis="y1",
-            ))
+def add_driver_labels(fig, drivers: list[dict], y_range: list[float], re_band) -> None:
+    """β/p label above each driver's left-most linked column, plus its legend entry.
 
-    # ── 6. Sequence logo (stacked frequency bars) ─────────────────────────────
+    The column always exists, unlike a clade, so it carries the headline. Labels
+    are staggered vertically so neighbouring columns do not collide.
+    """
+    msa_top = y_range[1]   # data-y of the MSA top (reversed axis)
+    for i, drv in enumerate(drivers):
+        rep = drv["rec"]
+        positions = sorted(drv["links"], key=int)
+        if not positions:
+            continue
+        c0 = int(positions[0]) - 1   # 0-based column → x3 coordinate
+        beta = _fmt_beta(rep.get("beta"))
+        p = _fmt_p(rep.get("p"))
+        fig.add_annotation(
+            x=c0, y=msa_top,
+            xref="x3", yref="y1",
+            yanchor="bottom",
+            yshift=4 + 14 * (i % 4),
+            text=f"<b>β={beta}</b> p={p}",
+            showarrow=True, arrowhead=0, arrowwidth=0.8,
+            arrowcolor=drv["color"], ax=0, ay=-8,
+            font=dict(size=8, color=drv["color"]),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor=drv["color"], borderwidth=0.5,
+        )
+        short = _site_label(min(drv["links"]), re_band) if drv["links"] else "driver"
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="lines",
+            line=dict(color=drv["color"], width=3.0),
+            name=f"{short} β={beta}",
+            legendgroup=f"sig_group_{i}",
+            showlegend=True, legendrank=3000 + i,
+            xaxis="x3", yaxis="y1",
+        ))
+
+
+def add_logo(fig, freqs: dict[str, list[float]], aln_len: int) -> None:
+    """Stacked per-column base frequencies above the MSA."""
+    aln_positions = list(range(aln_len))
     logo_base = [0.0] * aln_len
     for nuc in "ATGC":
         f = freqs[nuc]
@@ -1437,11 +1358,19 @@ def make_figure(
         ))
         logo_base = [a + b for a, b in zip(logo_base, f)]
 
-    # ── Layout ────────────────────────────────────────────────────────────────
+
+# ── Layout and header ─────────────────────────────────────────────────────────
+
+def apply_layout(
+    fig, lay: Layout, n: int, n_drv: int, max_depth: float,
+    msa_x0: int, msa_x1: int, pclai_present: bool, has_paralogs: bool,
+    vio_ticktext: list[str],
+) -> None:
+    """Axes, legend and canvas settings, plus the A/T/G/C key beside the logo."""
     fig.update_layout(
         title=None,   # title is rendered as an annotation so it stays inside the header
-        height=fig_height,
-        width=fig_width,
+        height=lay.fig_height,
+        width=lay.fig_width,
         plot_bgcolor="white",
         paper_bgcolor="white",
         bargap=0,
@@ -1459,10 +1388,8 @@ def make_figure(
             tracegroupgap=14, entrywidth=0,
             font=dict(size=8),
         ),
-
-        # ── Axes ──────────────────────────────────────────────────────────────
         xaxis1=dict(
-            domain=TREE_X,
+            domain=lay.tree_x,
             anchor="y1",
             range=[-0.01 * max_depth, max_depth * 1.05],
             title=dict(text="branch length", font=dict(size=10)),
@@ -1470,27 +1397,27 @@ def make_figure(
             tickfont=dict(size=9),
         ),
         xaxis5=dict(
-            domain=LABEL_X,
+            domain=lay.label_x,
             anchor="y1",
             range=[0, 1],
             showticklabels=False, showgrid=False, zeroline=False,
         ),
         xaxis2=dict(
-            domain=ACT_X,
+            domain=lay.act_x,
             anchor="y1",
             title=dict(text="% FIRE", font=dict(size=10)),
             showticklabels=False, showgrid=False, zeroline=False,
             range=[0, 1.1],
         ),
         xaxis8=dict(
-            domain=DRV_X,
+            domain=lay.drv_x,
             anchor="y1",
             title=dict(text="drivers", font=dict(size=9)) if n_drv else None,
             showticklabels=False, showgrid=False, zeroline=False,
             range=[-0.5, max(0.5, n_drv - 0.5)],
         ),
         xaxis6=dict(
-            domain=PCL_X,
+            domain=lay.pcl_x,
             anchor="y1",
             title=dict(text="PCLAI", font=dict(size=9)) if pclai_present else None,
             showticklabels=False, showgrid=False, zeroline=False,
@@ -1498,7 +1425,7 @@ def make_figure(
             visible=pclai_present,
         ),
         xaxis7=dict(
-            domain=PAR_X,
+            domain=lay.par_x,
             anchor="y1",
             title=dict(text="paralog", font=dict(size=9)) if has_paralogs else None,
             showticklabels=False, showgrid=False, zeroline=False,
@@ -1506,7 +1433,7 @@ def make_figure(
             visible=has_paralogs,
         ),
         xaxis3=dict(
-            domain=MSA_X,
+            domain=lay.msa_x,
             anchor="y1",
             range=[msa_x0 - 0.5, msa_x1 + 0.5],   # RE-only window unless region mode
             title=dict(text="alignment position", font=dict(size=10)),
@@ -1514,19 +1441,19 @@ def make_figure(
             tickfont=dict(size=9),
         ),
         xaxis4=dict(
-            domain=MSA_X,
+            domain=lay.msa_x,
             anchor="y2",
             showticklabels=False,
             showgrid=False, zeroline=False,
             matches="x3",   # zoom/pan stays in sync with MSA x-axis
         ),
         yaxis1=dict(
-            domain=MAIN_Y,
-            range=Y_RANGE,
+            domain=lay.main_y,
+            range=[n - 0.5, -0.5],   # reversed: leaf 0 at top
             showticklabels=False, showgrid=False, zeroline=False,
         ),
         yaxis2=dict(
-            domain=LOGO_Y,
+            domain=lay.logo_y,
             anchor="x4",
             range=[0, 1.05],
             title=dict(text="freq.", font=dict(size=9)),
@@ -1534,21 +1461,21 @@ def make_figure(
         ),
         # Shape column (carrier markers, leaf-row axis) + violins (% actuation).
         xaxis9=dict(
-            domain=MARK_X, anchor="y1",
+            domain=lay.mark_x, anchor="y1",
             range=[-0.5, max(0.5, n_drv - 0.5)],
             title=dict(text="in violin", font=dict(size=8)) if n_drv else None,
             showticklabels=False, showgrid=False, zeroline=False,
             visible=bool(n_drv),
         ),
         xaxis10=dict(
-            domain=VIO_X, anchor="y3", range=[-5, 112],
+            domain=lay.vio_x, anchor="y3", range=[-5, 112],
             title=dict(text="% FIRE", font=dict(size=9)) if n_drv else None,
             tickvals=[0, 50, 100], tickfont=dict(size=8),
             showgrid=True, gridcolor="#eeeeee", zeroline=False,
             visible=bool(n_drv),
         ),
         yaxis3=dict(
-            domain=VIO_Y3, anchor="x10",
+            domain=lay.vio_y, anchor="x10",
             range=[max(0.7, n_drv - 0.3), -0.7],   # driver 0 at top, stacked down
             tickvals=list(range(len(vio_ticktext))), ticktext=vio_ticktext,
             tickfont=dict(size=8), showgrid=False, zeroline=False,
@@ -1556,25 +1483,71 @@ def make_figure(
         ),
     )
 
-    # DNA nucleotide legend — placed to the right of the logo panel
     for i, nuc in enumerate("ATGC"):
         fig.add_annotation(
             text=f"<b>{nuc}</b>",
             x=1.01,
-            y=LOGO_Y[1] - (i + 0.5) * (LOGO_Y[1] - LOGO_Y[0]) / 4,
+            y=lay.logo_y[1] - (i + 0.5) * (lay.logo_y[1] - lay.logo_y[0]) / 4,
             xref="paper", yref="paper",
             showarrow=False,
             font=dict(size=10, color=DNA_COLORS[nuc]),
             xanchor="left",
         )
 
-    # ── Header: peak title + summary stats (fills the void above tree/act) ──
-    valid_acts  = [v for v in acts if v is not None]
-    mean_act    = sum(valid_acts) / len(valid_acts) if valid_acts else None
-    tree_length = max_depth
-    var_sites   = sum(1 for col in range(aln_len) if any(
-        row[col] != consensus[col] and row[col] < 4 for row in raw_z
-    ))
+
+def _h2_summary(meta: dict) -> str | None:
+    """Header H²_p text, or None when phylo_mm reported no H² estimate.
+
+    Headline = alpha.V=1 posterior with its 95% HPD; a wide HPD is flagged as
+    unidentified, alpha.V=0.25 is shown when it is ≥0.05 lower, and [ESS low]
+    marks an unconverged chain. Mode `none` means neither the RE nor the region
+    test passed, so no drivers are attributed.
+    """
+    h2_main = meta.get("h2_alpha1_mean")
+    if not isinstance(h2_main, (int, float)):
+        return None
+    h2_low = meta.get("h2_alpha025_mean")
+    h2_lo = meta.get("h2_alpha1_lower")
+    h2_hi = meta.get("h2_alpha1_upper")
+    conv_flag = " [ESS low]" if str(meta.get("h2_converged", "")).upper() == "FALSE" else ""
+    hpd_str, wide_flag = "", ""
+    if isinstance(h2_lo, (int, float)) and isinstance(h2_hi, (int, float)):
+        hpd_str = f" [{h2_lo:.2f}–{h2_hi:.2f}]"
+        if (h2_hi - h2_lo) > 0.5:
+            wide_flag = " ⚠ unidentified"
+    prior_str = (
+        f" (α=0.25→{h2_low:.2f})"
+        if isinstance(h2_low, (int, float)) and (h2_main - h2_low) >= 0.05
+        else ""
+    )
+    mode = str(meta.get("attribution_mode", "")).strip()
+    if mode == "none":
+        def h2_str(prefix):
+            m = meta.get(f"{prefix}_mean")
+            lo, hi = meta.get(f"{prefix}_lower"), meta.get(f"{prefix}_upper")
+            if not isinstance(m, (int, float)):
+                return "NA"
+            hpd = (f" [{lo:.2f}–{hi:.2f}]"
+                   if isinstance(lo, (int, float)) and isinstance(hi, (int, float))
+                   else "")
+            return f"{m:.2f}{hpd} ⚠"
+        return (
+            f"<b>H²<sub>p</sub></b> not sequence-driven "
+            f"(RE {h2_str('h2_re')}, region {h2_str('h2_region')}){conv_flag}"
+        )
+    scope = "RE" if mode == "RE" else ("region" if mode == "region" else "")
+    lbl = f"H²<sub>p</sub>({scope})" if scope else "H²<sub>p</sub>"
+    return f"<b>{lbl}</b>≈{h2_main:.2f}{hpd_str}{prior_str}{wide_flag}{conv_flag}"
+
+
+def add_header(
+    fig, peak_id: str, fig_height: int, *, n: int, n_unique_seqs: int, acts: list,
+    tree_length: float, var_sites: int, aln_len: int, re_band, flank: int,
+    meta: dict, n_drv: int, paralog_color_map: dict[str, str], has_paralogs: bool,
+) -> None:
+    """Peak title, the one-line summary under it, and paralog chips (right)."""
+    valid_acts = [v for v in acts if v is not None]
+    mean_act = sum(valid_acts) / len(valid_acts) if valid_acts else None
     summary_bits = [
         f"<b>n</b>={n}",
         f"<b>unique</b>={n_unique_seqs}",
@@ -1586,64 +1559,10 @@ def make_figure(
         summary_bits.append(
             f"<b>RE</b>=cols {re_band[0]+1}–{re_band[1]+1} (+{flank}bp flank)"
         )
-    # H² headline = alpha.V=1 (half-Cauchy(0,1)); alpha.V=0.25 is shown when it
-    # differs by >0.05. alpha.V=1000 stays in the TSV only: on weakly identified
-    # peaks it inflates H² toward 1.
-    meta = pm.get("meta", {})
-    h2_main = meta.get("h2_alpha1_mean")
-    h2_low  = meta.get("h2_alpha025_mean")
-    h2_lo   = meta.get("h2_alpha1_lower")
-    h2_hi   = meta.get("h2_alpha1_upper")
-    # Convergence flag (alpha.V=1 posterior ESS < threshold in phylo_mm.R).
-    # When the MCMC chain didn't converge, the point estimate is unreliable.
-    conv_flag = " [ESS low]" if str(meta.get("h2_converged", "")).upper() == "FALSE" else ""
-    if isinstance(h2_main, (int, float)):
-        # Show the 95% HPD so a point estimate from a nearly-flat posterior
-        # isn't mistaken for real heritability. A wide HPD means the data don't
-        # identify H² (distinct from prior-sensitivity below): the point
-        # estimate is just the median of an uninformative posterior.
-        hpd_str, wide_flag = "", ""
-        if isinstance(h2_lo, (int, float)) and isinstance(h2_hi, (int, float)):
-            hpd_str = f" [{h2_lo:.2f}–{h2_hi:.2f}]"
-            if (h2_hi - h2_lo) > 0.5:
-                wide_flag = " ⚠ unidentified"
-        # Prior-sensitivity flag (α=1 vs α=0.25 disagree): a separate failure mode.
-        prior_str = (
-            f" (α=0.25→{h2_low:.2f})"
-            if isinstance(h2_low, (int, float)) and (h2_main - h2_low) >= 0.05
-            else ""
-        )
-        # Attribution mode: which heritability test (RE-only first, then the
-        # whole region) was stable+significant and so gated the variant
-        # attribution. `none` = neither, so actuation isn't a heritable function
-        # of sequence here and no drivers are reported (the headline H² shown is
-        # the unidentified one).
-        mode = str(meta.get("attribution_mode", "")).strip()
-        if mode == "none":
-            def _h2_str(prefix):
-                m = meta.get(f"{prefix}_mean")
-                lo, hi = meta.get(f"{prefix}_lower"), meta.get(f"{prefix}_upper")
-                if not isinstance(m, (int, float)):
-                    return "NA"
-                hpd = (f" [{lo:.2f}–{hi:.2f}]"
-                       if isinstance(lo, (int, float)) and isinstance(hi, (int, float))
-                       else "")
-                return f"{m:.2f}{hpd} ⚠"
-            summary_bits.append(
-                f"<b>H²<sub>p</sub></b> not sequence-driven "
-                f"(RE {_h2_str('h2_re')}, region {_h2_str('h2_region')}){conv_flag}"
-            )
-        else:
-            scope = "RE" if mode == "RE" else ("region" if mode == "region" else "")
-            lbl = f"H²<sub>p</sub>({scope})" if scope else "H²<sub>p</sub>"
-            summary_bits.append(
-                f"<b>{lbl}</b>≈{h2_main:.2f}{hpd_str}{prior_str}{wide_flag}{conv_flag}"
-            )
-    # Headline count = the variants the forward regression flagged as
-    # contributing (drawn on the tree).
+    h2 = _h2_summary(meta)
+    if h2 is not None:
+        summary_bits.append(h2)
     summary_bits.append(f"<b>contributing variants</b>={n_drv}")
-    summary_text = "  ·  ".join(summary_bits)
-    # Title left-aligned, summary stats just under it.
     fig.add_annotation(
         text=f"<b>{peak_id}</b>",
         x=0.0, y=1.0, xref="paper", yref="paper",
@@ -1652,27 +1571,22 @@ def make_figure(
         font=dict(size=14, family="Arial", color="#111111"),
     )
     fig.add_annotation(
-        text=summary_text,
+        text="  ·  ".join(summary_bits),
         x=0.0, y=1.0 - (24.0 / fig_height),
         xref="paper", yref="paper",
         xanchor="left", yanchor="top",
         showarrow=False,
         font=dict(size=11, family="Arial", color="#444444"),
     )
-
-    # ── Paralog legend (only if leaves carry a parsable paralog field) ──────
-    # Right-anchored at the MSA right edge so chips never truncate when there
-    # are many paralogs or long names; line-break every 4 chips to keep the
-    # header tidy.
+    # Paralog chips, right-anchored, 4 per line.
     if has_paralogs:
         items = [
             f"<span style='color:{c}'><b>■</b> {p}</span>"
             for p, c in paralog_color_map.items()
         ]
         rows = ["  ".join(items[i : i + 4]) for i in range(0, len(items), 4)]
-        chips = "<br>".join(rows)
         fig.add_annotation(
-            text=chips,
+            text="<br>".join(rows),
             x=1.0, y=1.0,
             xref="paper", yref="paper",
             xanchor="right", yanchor="top",
@@ -1681,6 +1595,117 @@ def make_figure(
             align="right",
         )
 
+
+# ── Main figure builder ───────────────────────────────────────────────────────
+
+def make_figure(
+    tree,
+    actuation: dict[str, float | None],
+    coverage: dict[str, int | None],
+    alignment: dict[str, str],
+    peak_id: str,
+    pclai_bed: Path | None = None,
+    phylo_mm: dict | None = None,
+    flank: int = 0,
+    panel: list[dict] | None = None,
+) -> go.Figure:
+    """Build the tree | labels | stripes | actuation | MSA | violins figure.
+
+    The tree is ladderized and its ``_R_`` leaf prefixes stripped in place; the
+    actuation / coverage / alignment dicts are not modified.
+    """
+    prepare_tree(tree)
+    pos = compute_positions(tree.root)
+    leaves = order_display_leaves(list(tree.get_terminals()), pos, alignment, actuation)
+    leaves, alignment, actuation, coverage, construct_label = append_panel_rows(
+        leaves, pos, panel, alignment, actuation, coverage,
+    )
+    n = len(leaves)
+    ly = renumber_rows(tree, leaves, pos)
+    names = [lf.name for lf in leaves]
+
+    # Per-row metadata; constructs get their own label colour and are left out
+    # of the unique-sequence count.
+    metas = [parse_leaf_meta(nm) for nm in names]
+    paralog_color_map, leaf_text_colors, has_paralogs = assign_paralog_colors(metas)
+    if construct_label:
+        leaf_text_colors = [
+            PANEL_LABEL_COLOR if nm in construct_label else c
+            for nm, c in zip(names, leaf_text_colors)
+        ]
+    n_unique_seqs = len({
+        alignment.get(nm, "")
+        for nm in names
+        if alignment.get(nm) and nm not in construct_label
+    })
+    acts = [actuation.get(nm) for nm in names]
+    act_colors, act_hover = actuation_cells(names, acts, [coverage.get(nm) for nm in names])
+    pclai_rgbs, pclai_hover, pclai_present = pclai_cells(pclai_bed, peak_id, names)
+
+    aln_len = max((len(s) for s in alignment.values()), default=0)
+    raw_seqs = [alignment.get(nm, "-" * aln_len) for nm in names]
+    meta = (phylo_mm or {}).get("meta", {})
+    re_only_msa, msa_x0, msa_x1 = msa_window(meta, aln_len)
+    drivers = driver_groups(phylo_mm)
+    n_drv = len(drivers)
+    re_band = re_band_columns(alignment, names, flank, aln_len)
+    raw_z, consensus, msa_z, msa_cell, msa_hover = encode_msa(names, raw_seqs, aln_len)
+
+    lay = compute_layout(n, n_drv, max(1, msa_x1 - msa_x0 + 1), names,
+                         has_paralogs, pclai_present)
+    max_depth = max((pos[id(lf)]["x"] for lf in leaves), default=1.0)
+    y_range = [n - 0.5, -0.5]   # reversed: leaf 0 at top
+
+    # Trace order is fixed: later traces draw on top.
+    fig = go.Figure()
+    add_leader_lines(fig, leaves, pos, ly, lay, max_depth, driver_leaf_colors(drivers))
+    add_tree(fig, tree, pos, leaves, leaf_text_colors)
+    vio_ticktext: list[str] = []
+    if drivers:
+        sh_ly = {
+            _sample_hap(names[i]): ly[i]
+            for i in range(n) if names[i] not in construct_label
+        }
+        sh_act = {
+            _sample_hap(names[i]): acts[i]
+            for i in range(n)
+            if names[i] not in construct_label and acts[i] is not None
+        }
+        add_driver_columns(fig, drivers, sh_ly)
+        vio_ticktext = add_driver_violins(fig, drivers, sh_ly, sh_act, re_band)
+    add_driver_branches(fig, drivers, CladeIndex(tree), pos, re_band)
+    add_bootstrap(fig, tree, pos)
+    if lay.show_labels:
+        add_leaf_labels(fig, names, metas, ly, construct_label, lay.label_fs,
+                        leaf_text_colors, act_hover)
+    if has_paralogs:
+        paralog_hover = [
+            f"<b>{nm}</b><br>paralog: {m['paralog'] or '—'}"
+            for nm, m in zip(names, metas)
+        ]
+        add_stripe(fig, ly, leaf_text_colors, paralog_hover, "x7")
+    if pclai_present:
+        add_stripe(fig, ly, pclai_rgbs, pclai_hover, "x6")
+    add_actuation_bars(fig, ly, act_colors, act_hover)
+    add_legend_keys(fig)
+    add_msa_heatmap(fig, msa_z, ly, msa_cell, msa_hover, aln_len)
+    # RE brackets only when the view is not already clipped to the RE.
+    if re_band is not None and not re_only_msa:
+        add_re_band(fig, re_band, y_range)
+    add_linked_columns(fig, drivers, y_range)
+    add_driver_labels(fig, drivers, y_range, re_band)
+    add_logo(fig, logo_freqs(raw_z, aln_len), aln_len)
+    apply_layout(fig, lay, n, n_drv, max_depth, msa_x0, msa_x1,
+                 pclai_present, has_paralogs, vio_ticktext)
+    var_sites = sum(1 for col in range(aln_len) if any(
+        row[col] != consensus[col] and row[col] < 4 for row in raw_z
+    ))
+    add_header(
+        fig, peak_id, lay.fig_height, n=n, n_unique_seqs=n_unique_seqs, acts=acts,
+        tree_length=max_depth, var_sites=var_sites, aln_len=aln_len,
+        re_band=re_band, flank=flank, meta=meta, n_drv=n_drv,
+        paralog_color_map=paralog_color_map, has_paralogs=has_paralogs,
+    )
     return fig
 
 

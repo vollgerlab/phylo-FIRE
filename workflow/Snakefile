@@ -14,10 +14,7 @@ wildcard_constraints:
     peak_id=r"[^/]+",
 
 
-# All outputs are namespaced under a run name so separate runs (test,
-# hap-selective-30, the cluster run, …) get their own results/ + temp/ subtree
-# and never clobber or orphan each other. Each pixi task sets `run_name=<task>`;
-# the default lands under results/default/.
+# Namespace outputs per run (results/{run}, temp/{run}) so runs never clobber each other.
 RUN = config.get("run_name", "default")
 RESULTS = f"results/{RUN}"
 TEMP = f"temp/{RUN}"
@@ -44,21 +41,9 @@ def _sanitize_peak(p: str) -> str:
 
 
 def _run_peak_ids():
-    """The peak set for this run, resolved at PARSE time so the per-peak DAG is
-    fully static — no ``extract_fastas`` checkpoint, whose re-evaluation on
-    resume hangs at "Updating checkpoint dependencies" once the peak count is in
-    the 100Ks. Resolution priority:
-
-      1. ``preextracted_dir`` → the source dir's ``*.fa`` (exists before the run).
-      2. the extract_fastas survivor manifest ``results/{run}/fastas/peak_ids.txt``
-         — EXACT (every listed peak has a FASTA). This is the resume case.
-      3. ``config["peak_ids"]`` — the pre-built request list, used on a fresh run
-         before extraction has written the manifest. A requested peak that
-         extraction later drops (all-NA / below ``min_seqs``) fails its own
-         ``fasta_ready`` job in isolation; re-running the pipeline then reads the
-         (now-written) survivor manifest and the DAG is clean.
-      4. last resort: glob the fastas dir.
-    """
+    """Peak set resolved at parse time (a checkpoint's re-evaluation hangs at 100K+ peaks).
+    Priority: preextracted_dir *.fa, the survivor manifest fastas/peak_ids.txt (resume),
+    config peak_ids (fresh run), then a glob of fastas/."""
     pre = config.get("preextracted_dir")
     if pre:
         src = Path(pre)
@@ -81,14 +66,7 @@ def _run_peak_ids():
 
 
 def _stage1_targets():
-    """Stage 1 (this Snakefile) = the persisted per-peak artifacts that Stage 2
-    consumes: the flanked MSA, the ancestral-proxy-rooted ML tree, the phylo_mm
-    stats, and the consolidated haplotypes.parquet (actuation + coords + RE seq),
-    plus the same MSAs / trees / phylo_mm combined into tables/*.parquet
-    (``stage1_tables``) so Stage 2 can run from tables/ alone.
-    Trees + MCMCglmm are the expensive, rarely-rerun work; ALL downstream analysis
-    (re_variants, aggregate, hg38/rs, plasmid, plots) lives in
-    ``workflow/analysis.smk`` as single-pass jobs and never re-enters this DAG."""
+    """Persisted Stage-1 outputs that analysis.smk consumes; Stage 2 never re-enters this DAG."""
     peaks = _run_peak_ids()
     return (
         expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=peaks)
@@ -128,13 +106,8 @@ rule all:
 
 
 def _ingest_preextracted(src_dir: Path, dst_dir: Path) -> int:
-    """Symlink {peak_id}.fa / {peak_id}.tsv from src_dir into dst_dir.
-
-    Used when an upstream pipeline (e.g. PARE) has already produced per-group
-    FASTA + actuation TSV files in this directory layout. Returns the number
-    of FASTA pairs linked. Also writes ``peak_ids.txt`` (the run manifest
-    that ``aggregate_outputs`` reads).
-    """
+    """Symlink {peak}.fa/.tsv pairs (e.g. from PARE) into dst_dir and write peak_ids.txt.
+    Returns the number of pairs linked."""
     src_dir = Path(src_dir).resolve()
     dst_dir.mkdir(parents=True, exist_ok=True)
     linked: list[str] = []
@@ -228,51 +201,28 @@ def _extract_fastas_input(wildcards):
 
 
 def _peak_ids_input(wildcards):
-    """Track the peak_ids file as a checkpoint input when supplied.
-
-    Without this, switching between two `peak_ids` files on the *same*
-    input_table wouldn't re-trigger extraction and the manifest would not
-    refresh.
-    """
+    """Track the peak_ids file so switching it re-runs extraction."""
     pi = config.get("peak_ids")
     return [pi] if pi else []
 
 
 def _highlight_input(wildcards):
-    """Same idea as _peak_ids_input but for the highlight TSV."""
+    """Track the highlight TSV so changing it re-runs extraction."""
     hf = config.get("highlight_file")
     return [hf] if hf else []
 
 
 rule extract_fastas:
-    """One-pass extraction of per-peak FASTA + actuation TSV from the union-peaks table.
-
-If `preextracted_dir` is set, this becomes a noop wrapper that symlinks
-pre-extracted FASTA/TSV pairs into `results/fastas/` (e.g. per-paralog-group
-files emitted by PARE's `extract_paralog_msas` rule).
-
-NOT a checkpoint: the peak set is read statically from the survivor manifest
-(`peak_ids.txt`, this rule's output) by `_run_peak_ids`, so the per-peak DAG is
-built once instead of re-expanded on every resume. `rule fasta_ready` exposes
-the per-peak FASTAs (written here as a side effect) as individual targets.
-"""
+    """Stream the union BED into per-peak FASTA/TSV, haplotypes.parquet and the survivor
+manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkpoint."""
     input:
         src=_extract_fastas_input,
         peak_ids=_peak_ids_input,
         highlight=_highlight_input,
     output:
-        # Declare every requested peak's FASTA/TSV (peak set read at parse from
-        # the peak-ids file — cheap even at 100K+ lines) so this rule is their
-        # producer: that's what lets ONE `snakemake` build the whole per-peak DAG
-        # with no checkpoint. A peak that yields nothing (all-NA, or below
-        # min_seqs) would leave a missing declared output; extract_fastas.py
-        # catches that and exits with the offending ids so you drop them from the
-        # list. At min_seqs=1 (the cluster default) only a truly empty peak — one
-        # with zero non-NA primary sequences — can fail this way, which the HSCA
-        # set shouldn't contain.
-        # Per-peak fastas are Stage-1-internal now (mafft consumes the .fa,
-        # phylo_mm the .tsv) -> temp(). The consolidated haplotypes.parquet is
-        # the persisted Stage-2 source of actuation + coords + RE sequence.
+        # Every requested peak is declared so the DAG is static. A peak that yields
+        # nothing leaves a declared output missing; extract_fastas.py exits listing
+        # those ids. fastas/ is temp; haplotypes.parquet is the persisted copy.
         fa=temp(expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=_run_peak_ids())),
         tsv=temp(expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=_run_peak_ids())),
         manifest=RESULTS + "/fastas/peak_ids.txt",
@@ -283,9 +233,7 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
         runtime=480,
     params:
         script=workflow.source_path("scripts/extract_fastas.py"),
-        # Expose the scalar config the run block depends on as params so
-        # snakemake reruns the checkpoint when any of them change (a `run:`
-        # block doesn't track raw config reads — same gap as external scripts).
+        # run: blocks don't track config reads; params make config changes re-run this rule.
         preextracted=config.get("preextracted_dir"),
         min_seqs=config.get("min_seqs", 2),
         primary_only=config.get("primary_only", True),
@@ -296,10 +244,8 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
             _haplotypes_parquet(Path(RESULTS + "/fastas"), Path(output.haplotypes))
             print(f"linked {n} pre-extracted FASTA/TSV pairs from {input.src}")
         else:
-            # Sort by consensus_peak_id (col 5) so each peak's rows are
-            # consecutive for the streaming extractor — the production union BED
-            # is asm-coord-sorted, not peak-sorted. `sed -u 1q` passes the
-            # header through first, then `sort` orders the data rows.
+            # The union BED is asm-coord-sorted; group rows by consensus_peak_id
+            # (col 5) for the streaming extractor. `sed -u 1q` keeps the header first.
             parts = [
                 f"bgzip -cd -@ {threads} {shlex.quote(str(input.src))}",
                 "| (sed -u 1q; sort -t$'\\t' -k5,5 -S 50%)",
@@ -324,13 +270,8 @@ the per-peak FASTAs (written here as a side effect) as individual targets.
 
 
 rule add_flanks:
-    """Add `config["flank"]` bp of assembly context each side of the peak.
-
-Pulls the flanked sequence per haplotype from the AGC archive keyed by the
-PanSN asm_chr in the per-peak TSV. Only instantiated when `flank > 0` (the
-`_mafft_input` switch routes mafft straight to the RE-only FASTA otherwise),
-so the checkpoint's peak manifest stays independent of flank.
-"""
+    """Add `config["flank"]` bp of AGC context per haplotype (PanSN asm_chr from the TSV).
+Only used when flank > 0; otherwise `_mafft_input` sends the RE-only FASTA to mafft."""
     input:
         fa=RESULTS + "/fastas/{peak_id}.fa",
         tsv=RESULTS + "/fastas/{peak_id}.tsv",
@@ -370,9 +311,7 @@ rule mafft:
     input:
         fa=_mafft_input,
     output:
-        # PERSISTED (not temp): the flanked MSA is the Stage-2 sequence source for
-        # re_variants / plasmid / plots (workflow/analysis.smk), so Stage 2 never
-        # rebuilds an alignment.
+        # Persisted: Stage 2's sequence source (re_variants, plasmid, plots).
         fa=RESULTS + "/aligned/{peak_id}.fa",
     group:
         "peak_chain"
@@ -390,16 +329,8 @@ rule mafft:
 
 
 rule encode_indels:
-    """Simmons-Ochoterena (2000) simple indel coding for the MAFFT alignment.
-
-Each distinct contiguous gap interval becomes a binary character (state 1
-if the taxon carries exactly that gap, 0 if it has continuous sequence
-there, ? if the taxon carries a larger gap that strictly contains the
-interval). Singleton gaps are dropped. The resulting partition pairs
-GTR+I+G on DNA with GTR2 on indels in IQ-TREE — without it, IQ-TREE
-treats gaps as missing data and indel-only splits collapse to zero-length
-branches.
-"""
+    """Simmons-Ochoterena indel coding so IQ-TREE models gaps (GTR2+ASC) instead of
+treating them as missing; coding rules are in scripts/encode_indels.py."""
     input:
         fa=RESULTS + "/aligned/{peak_id}.fa",
     output:
@@ -426,15 +357,8 @@ branches.
 
 
 rule iqtree:
-    """Infer a maximum-likelihood tree from a partitioned (DNA + indel) matrix.
-
-Reads the partition Nexus + PHYLIPs produced by `encode_indels`. The models
-are pinned by the charpartition (`GTR+I+G` on the DNA partition, `GTR2+ASC`
-on the binary indel partition), so IQ-TREE estimates model parameters and
-branch lengths but does NOT run model selection. (If the alignment is later
-widened with flanking sequence, switch the DNA partition to ModelFinder by
-dropping its model from the charpartition.)
-"""
+    """ML tree from the DNA + indel partition. Models are fixed by the .nex charpartition
+(GTR+I+G on DNA, GTR2+ASC on indels), so IQ-TREE runs no model selection."""
     input:
         nex=TEMP + "/coded/{peak_id}/{peak_id}.nex",
         nuc=TEMP + "/coded/{peak_id}/{peak_id}_nucleic.phy",
@@ -458,15 +382,9 @@ dropping its model from the charpartition.)
             "-B 1000" if count_unique_seqs_phylip(str(input.nuc)) >= 4 else ""
         ),
     shell:
-        # IQ-TREE needs the .phy files to live alongside the .nex (the nex
-        # references them by relative basename), so cd into coded/{peak}.
-        # `--prefix` takes an absolute path so the tree lands in results/trees/.
-        # We can't use `shadow: minimal` here — it conflicts with the
-        # absolute-path prefix. Instead, IQ-TREE writes a few auxiliary
-        # files (.log/.iqtree/.bionj/.mldist/.model.gz/.ckp.gz) next to
-        # the treefile; we delete them after the run.
-        # --redo: overwrite prior partial runs. Models are fixed by the .nex
-        # charpartition (GTR+I+G on DNA, GTR2+ASC on indels), so no -m needed.
+        # iqtree runs beside the .nex (relative .phy refs) with an absolute --prefix
+        # into TEMP/trees; shadow: conflicts with that prefix, so aux files are deleted
+        # after. --redo overwrites partial runs.
         """
         (cd $(dirname {input.nex}) && iqtree -p {params.peak_id}.nex \
             --prefix {params.prefix} -T AUTO --threads-max {threads} {params.bootstrap} --redo)
@@ -479,18 +397,8 @@ dropping its model from the charpartition.)
 
 
 rule root_tree:
-    """Root the ML tree ONCE into a canonical rooted Newick.
-
-Both phylo_mm and plot read THIS rooted tree and neither re-roots, so the
-clade each branch represents is identical everywhere — fixing the scattered
-leader lines / detached annotations / mirror branches that came from
-phylo_mm and the plot rooting independently. Rooted on the ANCESTRAL PROXY:
-the haplotype(s) closest to the MSA consensus (the modal allele ≈ ancestral
-in young intraspecific variation), falling back to midpoint when that set
-isn't monophyletic. This polarizes the tree ancestral→derived without a
-molecular-clock assumption, so the reference allele sits at the base on
-every peak. Needs the alignment to compute the consensus.
-"""
+    """Root once at the ancestral proxy (haps closest to the MSA consensus; midpoint if
+that set is not monophyletic). phylo_mm and the plots never re-root, so clades match."""
     input:
         treefile=TEMP + "/trees/{peak_id}.treefile",
         alignment=RESULTS + "/aligned/{peak_id}.fa",
@@ -511,11 +419,9 @@ every peak. Needs the alignment to compute the consensus.
         "Rscript {params.script} {input.treefile} {input.alignment} {output.rooted}"
 
 
-# ── RE-only tree (for the RE-only heritability test) ─────────────────────────
-# Same mafft alignment, sliced to the RE band, then run through the identical
-# encode → iqtree → root pipeline, so H²ₚ(RE) and H²ₚ(region) differ only in
-# scope. Only built when flank > 0 (with no flank, the RE *is* the whole
-# alignment and the main tree already serves — see `_re_tree`/`_re_alignment`).
+# ── RE-only tree ─────────────────────────────────────────────────────────────
+# The MSA trimmed to the RE, through the same encode → iqtree → root chain, so
+# H²ₚ(RE) and H²ₚ(region) differ only in scope. Built only when flank > 0.
 
 
 rule re_trim:
@@ -565,14 +471,8 @@ rule re_encode_indels:
 
 
 rule re_iqtree:
-    """ML tree from the RE-only partitioned matrix (mirrors rule iqtree).
-
-The RE band can be (near-)monomorphic (epigenetic peaks), where IQ-TREE has
-<2 distinct sequences and errors. We fall back to the whole-region treefile
-then — phylo_mm sees the RE has <2 unique sequences and reports H²ₚ(RE) as
-unavailable regardless of the tree's topology, so the fallback only needs
-the right tip set.
-"""
+    """RE-only ML tree (mirrors rule iqtree). A monomorphic RE makes IQ-TREE fail; the main
+tree is copied instead, which only needs the right tips since H²ₚ(RE) is then NA."""
     input:
         nex=TEMP + "/re/coded/{peak_id}/{peak_id}.nex",
         nuc=TEMP + "/re/coded/{peak_id}/{peak_id}_nucleic.phy",
@@ -646,18 +546,9 @@ def _re_alignment(wildcards):
 
 
 rule phylo_mm:
-    """Per-peak phylogenetic analysis via workflow/scripts/phylo_mm.R.
-
-TSV header carries the 3-prior phylogenetic heritability sensitivity
-(h2_alpha{1000,1,025}), the alpha.V=1 posterior ESS + a convergence flag,
-and the variant-attribution summary. Data rows are per candidate variant:
-forward-selection joint WLS beta/CI/p for the selected drivers (`is_split`;
-joint p is the headline), plus marginal carriers-vs-rest p_raw/p_fdr
-(descriptive only). No per-peak
-diagnostic PDF is emitted (it was redundant with the TSV header + the main
-category plot, and would be 180K files at scale); pass --pdf to phylo_mm.R
-by hand for ad-hoc debugging.
-"""
+    """MCMCglmm H²ₚ (3 priors) in the TSV header + one row per candidate variant with
+forward-selection joint WLS stats (`is_split` = driver). Schema in phylo_mm.R;
+pass --pdf to phylo_mm.R by hand for a diagnostic plot."""
     input:
         tree=RESULTS + "/trees/{peak_id}.rooted.nwk",
         actuation=RESULTS + "/fastas/{peak_id}.tsv",

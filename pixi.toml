@@ -211,6 +211,8 @@ hsca-hapsel-tables = { cmd = [
     "results/hsca_hapsel",
     "--peaks",
     "results/hsca_hapsel/fastas/peak_ids.txt",
+    "--threads",
+    "32",
 ] }
 # Rebuild ONLY aligned/ for a pre-split hsca_hapsel run whose mafft output was
 # temp() and got deleted. Standalone single-pass (rebuild_aligned.py): reads the

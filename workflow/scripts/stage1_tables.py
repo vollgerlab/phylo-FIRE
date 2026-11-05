@@ -21,8 +21,10 @@ parquet tables into a temp dir. Callers keep passing paths, unchanged.
 from __future__ import annotations
 
 import argparse
+import sys
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import polars as pl
@@ -49,27 +51,43 @@ def _read_fasta(path: Path) -> list[tuple[str, str]]:
     return recs
 
 
-def build(results: Path, peaks: list[str]) -> None:
-    """Write the three Stage-1 summary tables to ``results/tables/``."""
+def _read_peak(results: Path, peak: str) -> tuple[list, str | None, str | None]:
+    """One peak's (aligned records, rooted newick, phylo_mm text); None if absent."""
+    fa = results / "aligned" / f"{peak}.fa"
+    nwk = results / "trees" / f"{peak}.rooted.nwk"
+    tsv = results / "phylo_mm" / f"{peak}.tsv"
+    return (
+        _read_fasta(fa) if fa.exists() else [],
+        nwk.read_text().strip() if nwk.exists() else None,
+        tsv.read_text() if tsv.exists() else None,
+    )
+
+
+def build(results: Path, peaks: list[str], threads: int = 16) -> None:
+    """Write the three Stage-1 summary tables to ``results/tables/``.
+
+    Files are read in parallel: on a network filesystem (Lustre) the cost is
+    per-file open latency, which threads hide. Peak order is preserved."""
     aln_rows: dict[str, list] = {"peak_id": [], "idx": [], "name": [], "seq": []}
     trees: dict[str, list] = {"peak_id": [], "newick": []}
     pmm: dict[str, list] = {"peak_id": [], "text": []}
-    for peak in peaks:
-        fa = results / "aligned" / f"{peak}.fa"
-        if fa.exists():
-            for i, (name, seq) in enumerate(_read_fasta(fa)):
+    step = max(1, len(peaks) // 20)
+    with ThreadPoolExecutor(max_workers=threads) as ex:
+        results_iter = ex.map(lambda pk: _read_peak(results, pk), peaks)
+        for n, (peak, (recs, newick, text)) in enumerate(zip(peaks, results_iter), 1):
+            for i, (name, seq) in enumerate(recs):
                 aln_rows["peak_id"].append(peak)
                 aln_rows["idx"].append(i)
                 aln_rows["name"].append(name)
                 aln_rows["seq"].append(seq)
-        nwk = results / "trees" / f"{peak}.rooted.nwk"
-        if nwk.exists():
-            trees["peak_id"].append(peak)
-            trees["newick"].append(nwk.read_text().strip())
-        tsv = results / "phylo_mm" / f"{peak}.tsv"
-        if tsv.exists():
-            pmm["peak_id"].append(peak)
-            pmm["text"].append(tsv.read_text())
+            if newick is not None:
+                trees["peak_id"].append(peak)
+                trees["newick"].append(newick)
+            if text is not None:
+                pmm["peak_id"].append(peak)
+                pmm["text"].append(text)
+            if n % step == 0 or n == len(peaks):
+                print(f"[stage1_tables] read {n}/{len(peaks)} peaks", file=sys.stderr, flush=True)
     out = results / "tables"
     out.mkdir(parents=True, exist_ok=True)
     for key, data in (("aligned", aln_rows), ("trees", trees), ("phylo_mm", pmm)):
@@ -142,9 +160,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--results", required=True, type=Path, help="results/<run>")
     ap.add_argument("--peaks", required=True, type=Path, help="peak id list")
+    ap.add_argument("--threads", type=int, default=16, help="parallel file readers")
     args = ap.parse_args()
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
-    build(args.results, peaks)
+    build(args.results, peaks, args.threads)
 
 
 if __name__ == "__main__":

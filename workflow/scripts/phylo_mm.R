@@ -1,43 +1,19 @@
 #!/usr/bin/env Rscript
-# Per-peak phylogenetic analysis: heritability sensitivity + joint LASSO
-# branch selection + per-branch diagnostic scan.
+# Per-peak phylogenetic heritability (MCMCglmm) + variant attribution.
 #
-# Three outputs are produced per peak, all summarized in a single TSV +
-# diagnostic PDF:
+# 1. H²ₚ: intercept-only MCMCglmm on the RE-only tree and on the flanked region
+#    tree, each under alpha.V = 1000 / 1 / 0.25. alpha.V=1 is the headline; if
+#    the priors disagree, H²ₚ is prior-dominated (Hadfield 2015).
+# 2. Attribution runs only if an H² gate passes (RE first, then region). Forward
+#    selection over variable-site blocks adds the block with the largest
+#    coverage-weighted R² gain and stops when the gain is < R2_MIN (5%) or its
+#    p >= 0.05. The joint fit gives beta/se/ci/p; `is_split` marks those rows.
+# 3. Per-site carriers-vs-rest WLS (mean_in/out, t_stat, p_raw, BH p_fdr) is
+#    descriptive only. selected_by_lasso/lasso_coef are legacy column names.
 #
-# 1. **Phylogenetic heritability H²_p — multi-prior sensitivity.**
-#    The intercept-only MCMCglmm is fit three times, each with a different
-#    parameter-expansion scale on the phylogenetic random effect:
-#      - alpha.V = 1000  (very wide, current default)
-#      - alpha.V = 1     (Half-Cauchy(0,1), moderate)
-#      - alpha.V = 0.25  (tight, says "V_phylo is probably small")
-#    All three posteriors are reported. If they agree, H²_p is data-driven
-#    and trustworthy; if they disagree, H²_p is prior-dominated for this
-#    peak (typical of nearly-clonal short-haplotype trees — see
-#    Hadfield 2015 MEE for the underlying identifiability issue).
-#
-# 2. **Variant attribution — forward-selection joint WLS (headline).**
-#    Only for heritable peaks (H² gate). Candidates are the variable sites
-#    (0/1 minor-allele indicators; identical partitions merged into one
-#    block). Forward selection adds the block that explains the most
-#    additional coverage-weighted R² of actuation, stopping when the gain is
-#    < R2_MIN (5%) or its p >= 0.05. A final joint fit over the selected
-#    blocks gives the reported `beta`/`se`/`ci_*`/`p` (`is_split` flags them).
-#
-# 3. **Marginal carriers-vs-rest contrast — descriptive only.**
-#    Per-site WLS of carriers vs all other haplotypes gives `mean_in`/
-#    `mean_out`/`t_stat`/`p_raw`, with `p_fdr` = BH over the peak's candidate
-#    sites. These do NOT drive selection; they are used only for ordering and
-#    plot hover text.
-#
-# Usage:
-#   Rscript phylo_mm.R \
-#       --tree      tree.treefile \
-#       --actuation peak.tsv \
-#       --alignment aligned.fa \
-#       --tsv       out.tsv \
-#       --pdf       out.pdf \
-#       --peak-id   peak_id
+# Usage: Rscript phylo_mm.R --tree T --actuation A --alignment F --tsv OUT
+#   [--re-tree --re-alignment --peak-id --flank --min-cov --min-carriers
+#    --h2-width-max --h2-lower-min --nitt --burnin --thin --pdf]
 
 suppressPackageStartupMessages({
     library(MCMCglmm)
@@ -58,9 +34,7 @@ opt <- parse_args(commandArgs(trailingOnly = TRUE))
 stopifnot(!is.null(opt$tree), !is.null(opt$actuation),
           !is.null(opt$alignment),
           !is.null(opt$tsv))
-# --pdf is optional: the per-peak diagnostic PDF is no longer produced in the
-# pipeline (everything it showed is in the TSV header + the main category plot,
-# which only renders for the plotted subset). Pass --pdf for ad-hoc debugging.
+# --pdf: ad-hoc diagnostic plot; the pipeline never passes it.
 peak_id <- if (is.null(opt[["peak-id"]])) tools::file_path_sans_ext(basename(opt$tree)) else opt[["peak-id"]]
 
 # Reproducibility: MCMCglmm is stochastic. Seed from the peak_id so each peak is
@@ -71,22 +45,14 @@ set.seed(sum(utf8ToInt(peak_id)) %% .Machine$integer.max)
 # be called converged. Reported in the TSV header as h2_converged.
 ESS_MIN <- 200
 
-# Minimum per-leaf coverage (fibers) for a leaf to enter the per-branch
-# clade-vs-rest test. Actuation from very few fibers is a noisy proportion;
-# the H2_p model already downweights it via `mev`, but the branch scan needs
-# an explicit floor. Leaves are also coverage-WEIGHTED within the test (WLS).
+# Leaves with < MIN_COV fibers are dropped from the (coverage-weighted) attribution WLS.
 MIN_COV <- as.numeric(if (is.null(opt[["min-cov"]])) 4 else opt[["min-cov"]])
 
-# bp of flank that add_flanks padded each side of the RE (0 = no flank). When
-# >0, site-based association (linked variants, LASSO anchoring) is restricted to
-# the regulatory-element columns; the flanks only contribute to the tree.
+# bp of flank add_flanks padded each side of the RE (0 = none); locates the RE columns.
 FLANK <- as.integer(if (is.null(opt$flank)) 0 else opt$flank)
 
-# Heritability gate for variant attribution (see config h2_hpd_*). A H²ₚ fit is
-# "stable + significant" — i.e. actuation is a heritable function of sequence —
-# when its 95% HPD is no wider than H2_WIDTH_MAX (identified) AND its lower bound
-# is at least H2_LOWER_MIN (confidently > 0). RE-only H² is tried first; if it
-# fails, the whole-region H² is used (and attribution widens to flank variants).
+# Attribution gate: alpha.V=1 HPD width <= H2_WIDTH_MAX and lower >= H2_LOWER_MIN.
+# RE-only H² is tried first, then the whole region (candidates widen to flank sites).
 H2_WIDTH_MAX <- as.numeric(if (is.null(opt[["h2-width-max"]])) 0.5 else opt[["h2-width-max"]])
 H2_LOWER_MIN <- as.numeric(if (is.null(opt[["h2-lower-min"]])) 0.1 else opt[["h2-lower-min"]])
 # RE-only tree + alignment (for the RE-only H²). Default to the whole-region
@@ -94,9 +60,8 @@ H2_LOWER_MIN <- as.numeric(if (is.null(opt[["h2-lower-min"]])) 0.1 else opt[["h2
 RE_TREE_PATH <- if (is.null(opt[["re-tree"]])) opt$tree else opt[["re-tree"]]
 RE_ALN_PATH  <- if (is.null(opt[["re-alignment"]])) opt$alignment else opt[["re-alignment"]]
 
-# A variant must be carried by >= MIN_CARRIERS haplotypes on each side to be a
-# candidate. A singleton (1 carrier, e.g. a private insertion) trivially
-# "explains" that one haplotype's actuation — overfitting, not a driver.
+# Each allele needs >= MIN_CARRIERS haplotypes: a singleton trivially "explains" its
+# own actuation.
 MIN_CARRIERS <- as.integer(if (is.null(opt[["min-carriers"]])) 2 else opt[["min-carriers"]])
 
 NITT   <- as.integer(if (is.null(opt$nitt))   50000 else opt$nitt)
@@ -104,10 +69,7 @@ BURNIN <- as.integer(if (is.null(opt$burnin)) 10000 else opt$burnin)
 THIN   <- as.integer(if (is.null(opt$thin))      25 else opt$thin)
 
 # ── load tree + actuation TSV ─────────────────────────────────────────────────
-# The tree arrives pre-midpoint-rooted (rule root_tree, via Bio.Phylo) so
-# phylo_mm and the plot share ONE rooting — the clade each branch represents is
-# then identical everywhere. `midpoint_root` is kept only as a fallback if an
-# unrooted tree ever slips in.
+# root_tree.R already rooted this tree (ancestral proxy); midpoint_root is a fallback.
 midpoint_root <- function(tr) {
     if (length(tr$tip.label) < 3L) return(tr)
     D  <- cophenetic(tr)
@@ -232,10 +194,8 @@ seq_mat <- if (length(aln) >= 4) {
 }
 if (!is.null(seq_mat)) rownames(seq_mat) <- names(aln)
 
-# Regulatory-element column band [re_lo, re_hi] (1-based alignment columns).
-# When the alignment carries flanks, the RE is the interior: skip `FLANK`
-# non-gap characters from each end of every row, union the interior spans.
-# flank=0 (or no alignment) -> whole alignment is the RE.
+# RE column band [re_lo, re_hi] (1-based): skip FLANK non-gap chars at each row's ends
+# and union the interior spans. NULL (whole alignment) when flank=0.
 re_band <- function(seqs, flank) {
     if (flank <= 0L || length(seqs) == 0L) return(NULL)
     lo <- Inf; hi <- -Inf
@@ -252,35 +212,21 @@ re_cols <- re_band(toupper(unlist(aln)), FLANK)
 re_lo <- if (is.null(re_cols)) 1L else re_cols[1]
 re_hi <- if (is.null(re_cols)) (if (is.null(seq_mat)) 0L else ncol(seq_mat)) else re_cols[2]
 
-# Variable column: ≥2 distinct characters at this position, treating gap
-# and N as their own allele states (so a few-bp deletion that segregates
-# cleanly between clades can anchor a branch, not just A/T/G/C substitutions).
-# BUT skip gap/N-DOMINATED columns (>50% of sequences missing a real base):
-# those are an indel/extraction-window edge, not a callable variant, and they
-# produce spurious weak associations anchored on a near-empty column.
-# Restricted to the RE band so neutral flank variation never drives the
-# site-based association — the flanks resolve the tree, the RE drives the test.
+# Variable column: >=2 states (gap/N count as alleles so segregating indels qualify)
+# and >=50% real bases (skips indel / extraction-window edge columns).
 var_cols_all <- if (is.null(seq_mat)) integer(0) else which(apply(seq_mat, 2, function(col) {
     real <- col %in% c("A", "C", "G", "T")
     length(unique(col)) >= 2L && mean(real) >= 0.5
 }))
 var_cols_re <- var_cols_all[var_cols_all >= re_lo & var_cols_all <= re_hi]
-# `var_cols` (the candidates for attribution) is set AFTER the heritability gate
-# below: RE-band variants if the RE-only H² is heritable, the whole-alignment
-# variants if we expand to the region, none otherwise.
+# var_cols (attribution candidates) is set after the H² gate: RE sites, all sites, or none.
 cat(sprintf("[phylo_mm] %s RE band: cols %d-%d (flank=%d); %d variable RE sites (of %d total)\n",
             peak_id, re_lo, re_hi, FLANK, length(var_cols_re), length(var_cols_all)),
     file = stderr())
 
 # ── 1. Heritability — RE-only first, expand to whole region ───────────────────
-# H²ₚ is fit TWICE: on the RE-only tree/alignment (does actuation track the RE
-# sequence?) and on the whole flanked tree (does it track the broader region?).
-# Variant attribution is gated on these: RE-only first, expand to region only if
-# the RE fails but the region works, else no drivers. Recipe per fit (Halliwell/
-# de Villemereuil/Hadfield): logit-transform the [0,1] trait with a
-# coverage-derived offset; pass per-obs measurement-error variance `mev`
-# (binomial SE on the logit scale = 1/(n·p·(1-p))); fit on an ultrametric tree
-# (chronos). The shared trait prep:
+# Recipe (de Villemereuil/Hadfield): logit trait with a coverage offset, binomial
+# mev = 1/(n·p·(1-p)), ultrametric (chronos) tree. Shared trait prep:
 cov_used <- cov_vec[common]
 if (any(is.na(cov_used))) cov_used[is.na(cov_used)] <- median(cov_used, na.rm = TRUE)
 trait_eps  <- max(1e-4, 0.5 / max(cov_vec[common], na.rm = TRUE))
@@ -299,24 +245,18 @@ summarise_h2 <- function(fit) {
          ess = unname(effectiveSize(h2)), sigma_p = median(s_p), sigma_r = median(s_r))
 }
 
-# Fit the H² sensitivity (3 alphas + tight-R) on a (tree, alignment) pair. The
-# alignment defines the identical-sequence CLUSTERS (within-cluster spread → the
-# residual σ²_R that, when large, makes H² unidentified); the tree gives the
-# phylogenetic covariance. `ok` = the alpha.V=1 headline is identified (HPD width
-# <= H2_WIDTH_MAX) AND significant (HPD lower >= H2_LOWER_MIN).
+# H² sensitivity (3 alpha.V priors + tight-R) on one (tree, alignment) scope. Identical
+# sequences collapse to one tip; within-cluster spread is the residual. `ok` = the
+# alpha.V=1 HPD width <= H2_WIDTH_MAX and lower >= H2_LOWER_MIN.
 compute_h2 <- function(tree_in, aln_in) {
-    # Drop IQ-TREE's bootstrap internal-node labels: they repeat (e.g. two nodes
-    # labelled "100"), and inverseA rejects non-unique tip/node labels. (Local
-    # copy — the plot's tree keeps its support labels.)
+    # Drop IQ-TREE support labels: inverseA rejects duplicates (e.g. two "100" nodes).
     tree_in$node.label <- NULL
     NA3 <- list(median = NA_real_, lo = NA_real_, hi = NA_real_, ess = NA_real_,
                 sigma_p = NA_real_, sigma_r = NA_real_)
     fail <- list(n_unique = NA_integer_, ok = FALSE,
                  a1000 = NA3, a1 = NA3, a025 = NA3, tightR = NA3, fits = list())
-    # Restrict to tips present in BOTH this scope's tree and alignment. The
-    # RE-scoped alignment/tree can be missing tips the main scope has; without
-    # this, aln_in[common] re-introduces NULLs and vapply() errors hard (which
-    # would fail the whole peak instead of degrading to ok=FALSE).
+    # Intersect tips per scope (the RE scope can lack some); otherwise vapply() errors
+    # and fails the whole peak instead of returning ok=FALSE.
     common_h <- intersect(intersect(common, tree_in$tip.label), names(aln_in))
     if (length(common_h) < 4L) return(fail)
     strings <- vapply(aln_in[common_h], function(s) s, character(1))
@@ -399,7 +339,7 @@ cat(sprintf(
     h2_region$a1$median, h2_region$a1$lo, h2_region$a1$hi,
     attribution_mode), file = stderr())
 
-# ── 2. Per-branch coverage-weighted clade-vs-rest test (headline) ─────────────
+# ── 2. Coverage filter + site indicators ──────────────────────────────────────
 nTips <- length(tree$tip.label)
 root_node <- nTips + 1L
 internal_nodes <- setdiff((nTips + 1L):(nTips + tree$Nnode), root_node)
@@ -412,10 +352,8 @@ cat(sprintf("[phylo_mm] %s coverage filter: %d/%d tips have coverage >= %g\n",
             peak_id, sum(cov_ok), length(cov_ok), MIN_COV), file = stderr())
 
 indicator_for_site <- function(col_idx) {
-    # Treat every character (A/T/G/C/gap/N) as a valid allele state. The
-    # indicator marks the second-most-common state — so a gap polymorphism
-    # against a majority base produces a proper 0/1 indicator vector with
-    # no missing entries.
+    # Every character (A/C/G/T/gap/N) is an allele state; the indicator marks the
+    # second-most-common one, so gap polymorphisms give a complete 0/1 vector.
     col <- seq_mat[, col_idx]
     if (length(unique(col)) < 2L) return(NULL)
     counts <- sort(table(col), decreasing = TRUE)
@@ -425,14 +363,9 @@ indicator_for_site <- function(col_idx) {
 site_indicators <- lapply(var_cols, indicator_for_site)
 names(site_indicators) <- as.character(var_cols)
 
-# ── Variant candidates: one block per polymorphic site (correlated sites merged)
-# The goal is variant attribution — "which sequence variants contribute to this
-# heritable trait" — so the candidates are the VARIABLE SITES themselves (RE-
-# scoped via var_cols), not tree bipartitions. Each site is a 0/1 minor-allele
-# indicator over the tips. Sites carrying the SAME partition (perfectly
-# correlated / complementary) are statistically indistinguishable, so we merge
-# them into one block and report all member positions together — "multiple
-# variants on a single branch".
+# ── Variant candidates ────────────────────────────────────────────────────────
+# Variable sites as 0/1 minor-allele indicators; identical or complementary
+# partitions are indistinguishable, so they merge into one block.
 tip_order <- match(tree$tip.label, rownames(seq_mat))
 canon_key <- function(col) {
     if (length(col) && !is.na(col[1]) && col[1] == 1L) col <- 1L - col
@@ -455,25 +388,13 @@ for (cc in names(site_indicators)) {
         block_of[[k]] <- length(blocks)
     }
 }
-# NB: `blocks` may be empty when flanks resolve the tree but the RE itself is
-# monomorphic (epigenetic peaks). We do NOT bail here — H² was already fit on
-# the flanked tree above and must be reported; the variant table just comes out
-# empty (0 contributing variants), handled downstream.
+# `blocks` may be empty (monomorphic RE with flanks); H² is still reported.
 
-# ── Forward-selection joint regression: which variants jointly contribute ─────
-# Coverage-weighted WLS of actuation on the variant indicators. Start empty; at
-# each step add the candidate that explains the most ADDITIONAL variance
-# (largest gain in weighted R²), and stop when the best gain falls below
-# `R2_MIN` or stops being significant. We select on variance explained, NOT on
-# p-value: at N≈78 even a β≈0.08 variant that adds <2% of the variance clears
-# p<0.05, so a significance gate over-selects weak passengers (the chr19 case:
-# pos 77 alone explains 85%, two others add ~1% each yet are "significant").
-# The JOINT (conditional) coefficient is the variant's contribution after
-# accounting for those already in — so a passenger that merely tracks a stronger
-# variant adds ~0 R² and is dropped, while a NESTED variant that switches
-# actuation back off among a stronger site's carriers explains real additional
-# variance and is kept (with a negative β). Few candidates (2-10 site-blocks),
-# so this is exact and stable — no LASSO / selectiveInference needed.
+# ── Forward-selection joint regression ────────────────────────────────────────
+# Coverage-weighted WLS: add the block with the largest R² gain until the gain is
+# < R2_MIN or p >= 0.05. Select on R² gain, not p: at N~78 a variant adding <2% of
+# the variance still has p<0.05. The joint fit drops passengers that track a
+# stronger site and keeps nested opposite-sign variants (negative beta).
 R2_MIN <- 0.05    # a variant must explain >=5% additional actuation variance
 if (length(blocks) > 0L) {
     V <- do.call(cbind, lapply(blocks, function(b) b$ind))
@@ -486,13 +407,8 @@ if (length(blocks) > 0L) {
 ss_tot <- if (sum(ok) >= 4L) {
     sum(w_cov[ok] * (y[ok] - weighted.mean(y[ok], w_cov[ok]))^2)
 } else 0
-# Heritability gate: only attribute variants to a HERITABLE trait. When H²ₚ is
-# near zero, actuation does not track sequence at all, so any "contributing
-# variant" is a spurious weak association (and often anchored on a gap/N column)
-# — the premise "which variants drive this heritable trait" doesn't hold. Below
-# H2_MIN we leave the candidate variants in the TSV with their marginal stats
-# but select NONE (n_variants_selected=0, nothing drawn). H² itself is still
-# reported so the reader sees WHY nothing was attributed.
+# Below H2_MIN nothing is selected (candidates and H² are still reported). This only
+# binds if H2_LOWER_MIN is set below H2_MIN; the H² gate above already implies it.
 H2_MIN <- 0.1
 h2_point <- if (is.na(h2_1$median)) 0 else h2_1$median
 selected  <- integer(0)
@@ -545,13 +461,9 @@ cat(sprintf("[phylo_mm] %s variant attribution: %d candidate site-block(s), %d s
             peak_id, length(blocks), length(selected)),
     file = stderr())
 
-# ── Per-variant rows: marginal carriers-vs-REST contrast + joint contribution.
-# mean_in/mean_out are the raw "haplotypes WITH this allele vs the rest"
-# (marginal); `beta` is the JOINT (conditional) contribution from the forward
-# model — the headline effect, since a nested site's marginal effect can be
-# muddied by the stronger site it sits under. `is_split` flags the selected
-# (contributing) variants; the plot draws those. `descendants` = the allele
-# carriers (so the plot highlights them); `linked_sites` = the position(s).
+# ── Per-variant rows ──────────────────────────────────────────────────────────
+# mean_in/mean_out = marginal carriers vs rest; beta = joint (conditional) effect,
+# the headline. descendants = carriers; linked_sites = alignment columns.
 rows <- list()
 for (j in seq_along(blocks)) {
     b   <- blocks[[j]]

@@ -1,4 +1,5 @@
 """Tests for project_variants' column bridge + driver flagging."""
+import project_variants
 from project_variants import (
     _col_bridge,
     _col_carriers,
@@ -62,11 +63,13 @@ def test_indel_only_driver_is_unmatched():
     assert len(unmatched) == 1, unmatched
 
 
-def test_driver_allele_is_clade_not_minor(tmp_path):
+def test_driver_allele_is_clade_not_minor(tmp_path, monkeypatch):
     # A biallelic driver whose clade carries the MAJORITY allele (G, 3 haps) while
     # the count-minor allele is C (2 haps). major/minor must stay FREQUENCY labels
     # (major=G, minor=C); driver_allele must be the clade's allele (G), and
     # carriers must be the clade -- so beta and carriers describe the same haps.
+    # No archive here: stub the AGC pull so agc on PATH is never invoked.
+    monkeypatch.setattr(project_variants, "pull_agc", lambda *a, **k: None)
     aln = {"h1": "G", "h2": "G", "h3": "G", "h4": "C", "h5": "C"}
     pm = tmp_path / "pm.tsv"
     pm.write_text("# attribution_mode=RE\n# re_first_col=1\n# re_last_col=1\n"

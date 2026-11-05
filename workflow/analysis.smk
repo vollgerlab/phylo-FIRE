@@ -23,30 +23,28 @@ include: "rules/common.smk"
 
 def _targets(_wildcards):
     out = [
-        RESULTS + "/tables/re_variants.parquet",
-        RESULTS + "/tables/re_variants.tsv.gz",
-        RESULTS + "/plots/.done",
+        rules.re_variants_all.output.parquet,
+        rules.re_variants_all.output.tsv,
+        rules.plot_all.output.done,
     ]
     if _hg38_ok():
+        p = rules.project_all.output
         out += [
-            RESULTS + "/tables/variants.hg38.tsv.gz",
-            RESULTS + "/tables/variants.hg38.vcf.gz",
-            RESULTS + "/tables/variants.hg38.bed.gz",
-            RESULTS + "/tables/variants.chm13.bed.gz",
-            RESULTS + "/tables/elements.hg38.bed.gz",
-            RESULTS + "/tables/drivers.unlifted.tsv",
+            p.variants,
+            p.vcf,
+            p.variants_bed,
+            p.variants_chm13_bed,
+            p.elements_bed,
+            p.unlifted,
         ]
         if config.get("dbsnp"):
-            out.append(RESULTS + "/tables/variants.hg38.rsid.vcf.gz")
+            out.append(rules.annotate_rsids.output.vcf)
     if PLASMID:
-        out += [
-            RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
-            RESULTS + "/plasmid_fiberseq/plasmid_constructs.fa",
-        ]
+        out += [rules.plasmid_all.output.constructs, rules.plasmid_all.output.fa]
     if config.get("significant_loci") and config.get("dbsnp") and _hg38_ok():
         out += [
-            RESULTS + "/phewas/significant_driver_rsids.tsv",
-            RESULTS + "/phewas/significant_driver_rsids.txt",
+            rules.significant_driver_rsids.output.tsv,
+            rules.significant_driver_rsids.output.txt,
         ]
     return out
 

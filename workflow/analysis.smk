@@ -99,7 +99,6 @@ rule peak_coords:
         runtime=120,
     params:
         script=os.path.join(workflow.basedir, "scripts/build_peak_coords.py"),
-        peak_ids=config.get("peak_ids", ""),
         peak_ids_arg=lambda wc: (
             f"--peak-ids {config['peak_ids']}" if config.get("peak_ids") else ""
         ),

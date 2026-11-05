@@ -74,7 +74,9 @@ def build_peak(aligned, act, phylo_mm, peak_id):
     coverage)}. Returns (rows, panel). rows == [] when the peak is excluded (no
     driver, >1 distinct driver effect, or a rep group is empty).
     """
-    aln = read_fasta(aligned, strip_r=False)
+    # Strip MAFFT's `_R_` so names match the actuation keys and phylo_mm carriers.
+    # Reversed haps stay in MSA orientation, like every construct sequence.
+    aln = read_fasta(aligned, strip_r=True)
     pm = read_phylo_mm(phylo_mm)
     header, drivers = pm.header, selected_drivers(pm)
     aln_len = len(next(iter(aln.values()))) if aln else 0

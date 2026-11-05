@@ -15,8 +15,9 @@ def parse_fasta(text: str, strip_r: bool = False) -> dict[str, str]:
     """FASTA text -> {name: seq}; the name is the header up to the first space.
 
     ``strip_r`` drops the ``_R_`` prefix MAFFT ``--adjustdirection`` puts on
-    reverse-complemented records. Callers pass it explicitly: some readers have
-    always stripped it and some have not, and changing either changes outputs.
+    reverse-complemented records, so names match the actuation/asm tables and the
+    phylo_mm carriers (phylo_mm.R strips it from tree tips). Use
+    ``read_alignment`` when the caller also needs to know which were reversed.
     """
     out: dict[str, str] = {}
     name, parts = None, []
@@ -37,6 +38,17 @@ def parse_fasta(text: str, strip_r: bool = False) -> dict[str, str]:
 def read_fasta(path, strip_r: bool = False) -> dict[str, str]:
     """FASTA file -> {name: seq}; see ``parse_fasta`` for ``strip_r``."""
     return parse_fasta(Path(path).read_text(), strip_r=strip_r)
+
+
+def read_alignment(path) -> tuple[dict[str, str], frozenset[str]]:
+    """Stage-1 haplotype MSA -> ({name: gapped seq}, names MAFFT reversed).
+
+    Names have the ``_R_`` prefix stripped; the second value lists the stripped
+    names of the records MAFFT ``--adjustdirection`` reverse-complemented, whose
+    aligned sequence is on the opposite strand of the haplotype's assembly."""
+    raw = read_fasta(path)
+    seqs = {(n[3:] if n.startswith("_R_") else n): s for n, s in raw.items()}
+    return seqs, frozenset(n[3:] for n in raw if n.startswith("_R_"))
 
 
 def split_peak_id(peak_id: str) -> tuple[str, str, str]:

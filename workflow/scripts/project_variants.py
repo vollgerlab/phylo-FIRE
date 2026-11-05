@@ -225,13 +225,20 @@ def _load_drivers(pm: PhyloMM) -> dict[frozenset, tuple]:
     return {d.carriers: (d.beta_str, list(d.cols)) for d in selected_drivers(pm)}
 
 
-def _left_flank(aln_hap_gapped: str, re_seq: str) -> int | None:
+def _left_flank(aln_hap_gapped: str, re_seq: str, reverse: bool = False) -> int | None:
     """Length of assembly context before the RE within a hap's flanked sequence
     (0 for RE-only fallback haps), so an alignment column maps to an assembly
-    offset. None if the RE can't be located (asm coord then reported NA)."""
+    offset. None if the RE can't be located (asm coord then reported NA).
+
+    ``reverse``: MAFFT reverse-complemented this hap (``_R_``), so its aligned
+    sequence is revcomp(assembly-strand flanked seq). The RE is then found as its
+    reverse complement and the flank is still counted on the assembly strand."""
     if not re_seq:
         return None
     ung = aln_hap_gapped.replace("-", "").upper()
+    if reverse:
+        i = ung.find(revcomp(re_seq).upper())
+        return len(ung) - i - len(re_seq) if i >= 0 else None
     i = ung.find(re_seq.upper())
     return i if i >= 0 else None
 
@@ -317,26 +324,33 @@ def _driver_allele(aln_haps, col, clade, out_is_rev):
     return (revcomp(drv) if out_is_rev else drv), carriers
 
 
-def _asm_hits(carriers, asm, left_flank, offsets, col) -> str:
-    """``sample=chr:pos`` assembly coordinates of ``col`` for each carrier."""
+def _asm_hits(carriers, asm, left_flank, offsets, col, reversed_haps=frozenset()) -> str:
+    """``sample=chr:pos`` assembly coordinates of ``col`` for each carrier.
+    A hap in ``reversed_haps`` is reverse-complemented in the MSA, so its k-th
+    aligned base is base (n - 1 - k) of its assembly-strand sequence."""
     hits = []
     for nm in sorted(carriers):
         a = asm.get(nm)
         lf = left_flank.get(nm)
         if a and lf is not None and str(a["start"]).isdigit():
-            hits.append(f"{nm}={a['chr']}:{int(a['start']) + offsets[nm][col] - lf}")
+            k = offsets[nm][col]
+            if nm in reversed_haps:
+                k = offsets[nm][-1] - 1 - k
+            hits.append(f"{nm}={a['chr']}:{int(a['start']) + k - lf}")
     return ";".join(hits) if hits else "NA"
 
 
 def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start, cons_end,
                  hg38_chr="NA", hg38_start="NA", hg38_end="NA", agc="",
-                 flank=0, threads=2, pad=25, min_carriers=2):
+                 flank=0, threads=2, pad=25, min_carriers=2, reversed_haps=frozenset()):
     """Project a peak's variable sites (from its Stage-1 flanked alignment) to
     CHM13 + hg38 + assembly, flagging drivers by their phylo_mm column identity.
 
     ``aln_haps``: {sample -> gapped aligned seq} (aligned/{peak}.fa);
     ``re_seqs``: {sample -> RE-only seq} (for the assembly-offset lookup);
-    ``asm``: {sample -> {chr,start,end}}; ``flank``: bp of context each side.
+    ``asm``: {sample -> {chr,start,end}}; ``flank``: bp of context each side;
+    ``reversed_haps``: samples MAFFT reverse-complemented (``_R_``, already
+    stripped from the ``aln_haps`` keys), for the assembly-coordinate math.
     Returns ``(rows, unlifted)``. ``rows`` is the variable-site schema (``_COLS``);
     ``unlifted`` is indel-only drivers that can't be a single-base SNV."""
     if len(aln_haps) < 2:
@@ -361,7 +375,8 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
                        hg38_chr, hg38_start, hg38_end)
     bridge, cons, hg38 = _ref_maps(aln_haps, pulls, threads)
     out_is_rev = _out_is_rev(cons, hg38)
-    left_flank = {n: _left_flank(aln_haps[n], re_seqs.get(n, "")) for n in hap_names}
+    left_flank = {n: _left_flank(aln_haps[n], re_seqs.get(n, ""), n in reversed_haps)
+                  for n in hap_names}
     offsets = {n: _ungapped_offsets(s) for n, s in aln_haps.items()}
 
     rows = []
@@ -404,7 +419,7 @@ def project_peak(peak_id, aln_haps, re_seqs, asm, phylo_mm, cons_chr, cons_start
             "is_driver": "TRUE" if is_driver else "FALSE",
             "beta": col_beta.get(col, "NA"),
             "carriers": ",".join(sorted(carriers)),
-            "asm_coords": _asm_hits(carriers, asm, left_flank, offsets, col),
+            "asm_coords": _asm_hits(carriers, asm, left_flank, offsets, col, reversed_haps),
             "divergent": "TRUE" if is_driver and divergent.get(col_desc.get(col)) else "FALSE",
         })
 

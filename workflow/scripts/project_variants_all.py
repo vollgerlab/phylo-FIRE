@@ -28,7 +28,7 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from aggregate_hg38 import aggregate  # noqa: E402
-from common_io import read_fasta  # noqa: E402
+from common_io import read_alignment  # noqa: E402
 from stage1_tables import Stage1Store  # noqa: E402
 from project_variants import (  # noqa: E402
     project_peak, _COLS, _header, _unlifted_header, _UNLIFTED_COLS,
@@ -89,13 +89,16 @@ def project_peaks(peaks: list[str], parts: dict, coords: dict, store: Stage1Stor
             out.write_text(_header())
             return
         re_seqs = dict(zip(sub["sample"].to_list(), sub["seq"].to_list()))
-        aln_haps = read_fasta(aln_fa, strip_r=False)
+        # `_R_` (MAFFT-reversed) names stripped so they match haplotypes.parquet
+        # and the phylo_mm carriers; their orientation goes to the asm math.
+        aln_haps, reversed_haps = read_alignment(aln_fa)
         hg38 = _hg38_coords(crow)
         rows, unlifted = project_peak(
             peak, aln_haps, re_seqs, _asm_coords(sub), store.phylo_mm(peak),
             crow["cons_chr"], int(crow["cons_start"]), int(crow["cons_end"]),
             hg38[0], hg38[1], hg38[2], args.agc,
             flank=args.flank, threads=1, pad=args.pad, min_carriers=args.min_carriers,
+            reversed_haps=reversed_haps,
         )
         with out.open("w") as fh:
             fh.write(_header())

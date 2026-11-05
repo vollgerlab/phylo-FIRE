@@ -87,6 +87,26 @@ def test_driver_allele_is_clade_not_minor():
     assert set(r["carriers"].split(",")) == {"h1", "h2", "h3"}, r
 
 
+def test_asm_coords_reversed_hap():
+    # Assembly-strand flanked seq AAC|GTTCA|GGA starts at contig pos 1000, so the
+    # RE (asm start) is at 1003. Hap "f" is aligned as-is; MAFFT reverse-
+    # complemented hap "r" (`_R_`), so its MSA row is revcomp of the same seq.
+    from project_variants import _asm_hits, _left_flank, _ungapped_offsets
+    aln = {"f": "AAC-GTTCAGGA", "r": "TCC-TGAACGTT"}
+    re_seq = "GTTCA"
+    asm = {n: {"chr": "c", "start": "1003"} for n in aln}
+    lf = {n: _left_flank(aln[n], re_seq, n == "r") for n in aln}
+    assert lf == {"f": 3, "r": 3}, lf
+    off = {n: _ungapped_offsets(s) for n, s in aln.items()}
+    rev = frozenset({"r"})
+    # col 0: f -> first base (1000); r -> last asm base (1010).
+    assert _asm_hits({"f", "r"}, asm, lf, off, 0, rev) == "f=c:1000;r=c:1010"
+    # col 11: f -> last base (1010); r -> first asm base (1000).
+    assert _asm_hits({"f", "r"}, asm, lf, off, 11, rev) == "f=c:1010;r=c:1000"
+    # Without the orientation, the reversed RE is not found -> no coordinate.
+    assert _left_flank(aln["r"], re_seq) is None
+
+
 if __name__ == "__main__":
     test_cons_agc_contig()
     test_col_bridge()
@@ -94,4 +114,5 @@ if __name__ == "__main__":
     test_driver_flag_by_linked_site()
     test_indel_only_driver_is_unmatched()
     test_driver_allele_is_clade_not_minor()
+    test_asm_coords_reversed_hap()
     print("project_variants self-checks passed")

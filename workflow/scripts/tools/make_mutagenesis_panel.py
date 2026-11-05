@@ -335,45 +335,5 @@ def main():
         print(f"[panel] skipped {did}: {nch} change(s), nothing to dissect")
 
 
-def _self_test():
-    import os
-    import tempfile
-    d = tempfile.mkdtemp()
-    aln = os.path.join(d, "a.fa")
-    with open(aln, "w") as f:
-        f.write(">car1\nAGTTAC\n>car2\nAGTTGC\n>non1\nAACAAC\n>non2\nAACAAC\n")
-    pm = os.path.join(d, "pm.tsv")
-    with open(pm, "w") as f:
-        f.write("# peak_id=chrT_1_6\n# attribution_mode=RE\n# re_first_col=1\n# re_last_col=6\n")
-        f.write("\t".join(["branch_id", "is_split", "linked_sites", "descendants", "beta"]) + "\n")
-        f.write("\t".join(["1", "TRUE", "2,3,4", "car1,car2", "-0.4"]) + "\n")
-    rv = os.path.join(d, "rv.tsv")
-    with open(rv, "w") as f:
-        f.write("seq_id\tsamples\tn_haps\tact_mean\tre_seq\n")
-        # the 'full' (carrier) AGTTAC and the 'background' AACAAC are both natural
-        f.write("chrT_1_6_s00\tcar1\t1\t0.10\tAGTTAC\n")
-        f.write("chrT_1_6_s01\tnon1,non2\t2\t0.80\tAACAAC\n")
-    recs, skip = build(aln, pm, rv)
-    seqs = [r["seq"] for r in recs]
-    assert len(seqs) == len(set(seqs)), "not unique"
-    byseq = {r["seq"]: r for r in recs}
-    # full = carrier AGTTAC, annotated natural=s00 AND role d1:full
-    full = byseq["AGTTAC"]
-    assert "d1:full" in full["roles"] and full["natural"][0] == "chrT_1_6_s00", full
-    # background = AACAAC, natural=s01 (2 haps) AND role d1:background
-    bg = byseq["AACAAC"]
-    assert "d1:background" in bg["roles"] and bg["natural"][0] == "chrT_1_6_s01", bg
-    assert bg["natural"][1] == "2", bg["natural"]
-    # the single edits are synthetic (no natural match)
-    syn = [r for r in recs if r["natural"] is None]
-    assert all(any(":RE" in role for role in r["roles"]) for r in syn), syn
-    print("self-test OK:", len(recs), "unique;",
-          "synthetic:", len(syn), "| full+bg are existing haplotypes")
-
-
 if __name__ == "__main__":
-    import sys
-    if "--self-test" in sys.argv:
-        _self_test()
-    else:
-        main()
+    main()

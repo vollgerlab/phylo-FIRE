@@ -49,7 +49,8 @@ rule all:
 
 rule re_variants_all:
     """Every peak's re_variants (MSAs + phylo_mm from the Stage-1 summary tables,
-actuation from haplotypes.parquet) -> unified parquet + tsv.gz + the plot manifests."""
+actuation from haplotypes.parquet) -> unified parquet + tsv.gz + the plot manifests.
+"""
     input:
         haplotypes=HAP,
         alignments=ALIGNMENTS,
@@ -157,11 +158,10 @@ Opt-in: set config['dbsnp'] to a tabix-indexed dbSNP VCF."""
         "--out-vcf {output.vcf} --threads {threads}"
 
 
-
 rule significant_driver_rsids:
     """Map significant plasmid Fiber-seq loci to their driver variants' rs IDs
-    (the PheWAS lookup list). Opt-in: set config['significant_loci'] to the
-    plasmid significance table (locus, driver_id, beta, ...); needs config['dbsnp']."""
+(the PheWAS lookup list). Opt-in: set config['significant_loci'] to the
+plasmid significance table (locus, driver_id, beta, ...); needs config['dbsnp']."""
     input:
         sig=config.get("significant_loci") or "significant_loci_not_set",
         tsv=RESULTS + "/tables/variants.hg38.tsv.gz",
@@ -176,6 +176,7 @@ rule significant_driver_rsids:
         "python {params.script} --sig {input.sig} --variants {input.tsv} "
         "--rsid-vcf {input.vcf} --unlifted {input.unlifted} "
         "--out-tsv {output.tsv} --out-rsids {output.txt}"
+
 
 rule plasmid_all:
     """Plasmid construct panel for every single-driver peak (single pass)."""

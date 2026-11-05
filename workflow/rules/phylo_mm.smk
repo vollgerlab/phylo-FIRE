@@ -42,8 +42,8 @@ pass --pdf to phylo_mm.R by hand for a diagnostic plot."""
 
 rule stage1_tables:
     """Combine every peak's MSA, rooted tree and phylo_mm TSV into three parquet
-    tables (single pass), so Stage 2 can run from ``tables/`` alone, e.g. locally
-    after downloading it. See workflow/scripts/stage1_tables.py."""
+tables (single pass), so Stage 2 can run from ``tables/`` alone, e.g. locally
+after downloading it. See workflow/scripts/stage1_tables.py."""
     input:
         aligned=expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=PEAK_IDS),
         trees=expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=PEAK_IDS),

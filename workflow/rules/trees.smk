@@ -68,7 +68,8 @@ rule iqtree:
 
 rule root_tree:
     """Root once at the ancestral proxy (haps closest to the MSA consensus; midpoint if
-that set is not monophyletic). phylo_mm and the plots never re-root, so clades match."""
+that set is not monophyletic). phylo_mm and the plots never re-root, so clades match.
+"""
     input:
         treefile=TEMP + "/trees/{peak_id}.treefile",
         alignment=RESULTS + "/aligned/{peak_id}.fa",

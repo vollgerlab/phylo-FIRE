@@ -90,7 +90,8 @@ def _haplotypes_parquet(fastas_dir: Path, out: Path) -> None:
 
 rule extract_fastas:
     """Stream the union BED into per-peak FASTA/TSV, haplotypes.parquet and the survivor
-manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkpoint."""
+manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkpoint.
+"""
     input:
         src=_extract_fastas_input,
         peak_ids=optional_file("peak_ids"),

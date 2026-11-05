@@ -1,6 +1,7 @@
 rule add_flanks:
     """Add `config["flank"]` bp of AGC context per haplotype (PanSN asm_chr from the TSV).
-Only used when flank > 0; otherwise `_mafft_input` sends the RE-only FASTA to mafft."""
+Only used when flank > 0; otherwise `_mafft_input` sends the RE-only FASTA to mafft.
+"""
     input:
         fa=RESULTS + "/fastas/{peak_id}.fa",
         tsv=RESULTS + "/fastas/{peak_id}.tsv",

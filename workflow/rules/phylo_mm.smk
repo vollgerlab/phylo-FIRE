@@ -10,6 +10,8 @@ forward-selection joint WLS stats (`is_split` = driver). Schema in phylo_mm.R.""
         re_alignment=_re_alignment,
     output:
         tsv="<results>/phylo_mm/{peak_id}.tsv",
+    log:
+        "<results>/logs/phylo_mm/{peak_id}.log",
     group:
         "peak_chain"
     threads: 1
@@ -36,7 +38,7 @@ forward-selection joint WLS stats (`is_split` = driver). Schema in phylo_mm.R.""
             --min-cov   {params.min_cov} \
             --flank     {params.flank} \
             --h2-width-max {params.h2_width_max} \
-            --h2-lower-min {params.h2_lower_min}
+            --h2-lower-min {params.h2_lower_min} > {log} 2>&1
         """
 
 
@@ -53,9 +55,11 @@ after downloading it. See workflow/scripts/stage1_tables.py."""
         alignments=ALIGNMENTS,
         trees=TREES,
         phylo_mm=PHYLO_MM,
+    log:
+        "<results>/logs/stage1_tables.log",
     params:
         script=os.path.join(workflow.basedir, "scripts/stage1_tables.py"),
         # results/{run}: the script reads aligned/ trees/ phylo_mm/ and writes tables/.
         results=lambda wc, output: os.path.dirname(os.path.dirname(output.alignments)),
     shell:
-        "python {params.script} --results {params.results} --peaks {input.peaks}"
+        "python {params.script} --results {params.results} --peaks {input.peaks} > {log} 2>&1"

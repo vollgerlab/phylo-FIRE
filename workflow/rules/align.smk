@@ -7,6 +7,8 @@ Only used when flank > 0; otherwise `_mafft_input` sends the RE-only FASTA to ma
         tsv="<results>/fastas/{peak_id}.tsv",
     output:
         fa=temp("<temp>/flanked/{peak_id}.fa"),
+    log:
+        "<results>/logs/add_flanks/{peak_id}.log",
     group:
         "peak_chain"
     threads: 4
@@ -25,7 +27,7 @@ Only used when flank > 0; otherwise `_mafft_input` sends the RE-only FASTA to ma
             --agc     {params.agc} \
             --flank   {params.flank} \
             --threads {threads} \
-            --out     {output.fa}
+            --out     {output.fa} > {log} 2>&1
         """
 
 
@@ -36,6 +38,8 @@ rule mafft:
     output:
         # Persisted: Stage 2's sequence source (re_variants, plasmid, plots).
         fa="<results>/aligned/{peak_id}.fa",
+    log:
+        "<results>/logs/mafft/{peak_id}.log",
     group:
         "peak_chain"
     threads: 4
@@ -47,5 +51,5 @@ rule mafft:
     shell:
         """
         mafft --maxiterate {params.maxiterate} --reorder --auto --adjustdirection \
-            --thread {threads} {input.fa} > {output.fa}
+            --thread {threads} {input.fa} > {output.fa} 2> {log}
         """

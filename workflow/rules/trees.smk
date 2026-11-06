@@ -11,6 +11,8 @@ treating them as missing; coding rules are in scripts/encode_indels.py."""
         nex=temp("<temp>/coded/{peak_id}/{peak_id}.nex"),
         nuc=temp("<temp>/coded/{peak_id}/{peak_id}_nucleic.phy"),
         indel=temp("<temp>/coded/{peak_id}/{peak_id}_indel.phy"),
+    log:
+        "<results>/logs/encode_indels/{peak_id}.log",
     group:
         "peak_chain"
     threads: 1
@@ -26,7 +28,7 @@ treating them as missing; coding rules are in scripts/encode_indels.py."""
         python {params.script} \
             --aligned {input.fa} \
             --peak-id {params.peak_id} \
-            --out-dir {params.out_dir}
+            --out-dir {params.out_dir} > {log} 2>&1
         """
 
 
@@ -41,6 +43,8 @@ rule iqtree:
         # unrooted ML tree — temp: superseded by the rooted .nwk (root_tree keeps
         # branch lengths + bootstrap); only root_tree + re_iqtree-fallback read it.
         treefile=temp("<temp>/trees/{peak_id}.treefile"),
+    log:
+        "<results>/logs/iqtree/{peak_id}.log",
     group:
         "peak_chain"
     threads: 4
@@ -59,12 +63,12 @@ rule iqtree:
         # after. --redo overwrites partial runs.
         """
         (cd $(dirname {input.nex}) && iqtree -p {params.peak_id}.nex \
-            --prefix {params.prefix} -T AUTO --threads-max {threads} {params.bootstrap} --redo)
+            --prefix {params.prefix} -T AUTO --threads-max {threads} {params.bootstrap} --redo) > {log} 2>&1
         # Delete every IQ-TREE aux file sharing the prefix except the treefile,
         # so new aux extensions across IQ-TREE versions don't leak.
         find "$(dirname {params.prefix})" -maxdepth 1 \
             -name "$(basename {params.prefix}).*" \
-            ! -name "$(basename {params.prefix}).treefile" -delete
+            ! -name "$(basename {params.prefix}).treefile" -delete 2>> {log}
         """
 
 
@@ -77,6 +81,8 @@ that set is not monophyletic). phylo_mm and the plots never re-root, so clades m
         alignment=rules.mafft.output.fa,
     output:
         rooted="<results>/trees/{peak_id}.rooted.nwk",
+    log:
+        "<results>/logs/root_tree/{peak_id}.log",
     group:
         "peak_chain"
     threads: 1
@@ -87,7 +93,7 @@ that set is not monophyletic). phylo_mm and the plots never re-root, so clades m
         script=script_path("root_tree.R"),
     shell:
         BLAS_CAP
-        + "Rscript {params.script} {input.treefile} {input.alignment} {output.rooted}"
+        + "Rscript {params.script} {input.treefile} {input.alignment} {output.rooted} > {log} 2>&1"
 
 
 # ── RE-only tree ─────────────────────────────────────────────────────────────
@@ -101,6 +107,8 @@ rule re_trim:
         fa=rules.mafft.output.fa,
     output:
         fa=temp("<temp>/re/aligned/{peak_id}.fa"),
+    log:
+        "<results>/logs/re_trim/{peak_id}.log",
     group:
         "peak_chain"
     threads: 1
@@ -111,7 +119,7 @@ rule re_trim:
         script=script_path("trim_to_re.py"),
         flank=config.get("flank", 0),
     shell:
-        "python {params.script} --aln {input.fa} --flank {params.flank} --out {output.fa}"
+        "python {params.script} --aln {input.fa} --flank {params.flank} --out {output.fa} > {log} 2>&1"
 
 
 use rule encode_indels as re_encode_indels with:
@@ -122,6 +130,8 @@ use rule encode_indels as re_encode_indels with:
         nex=temp("<temp>/re/coded/{peak_id}/{peak_id}.nex"),
         nuc=temp("<temp>/re/coded/{peak_id}/{peak_id}_nucleic.phy"),
         indel=temp("<temp>/re/coded/{peak_id}/{peak_id}_indel.phy"),
+    log:
+        "<results>/logs/re_encode_indels/{peak_id}.log",
 
 
 rule re_iqtree:
@@ -135,6 +145,8 @@ tree is copied instead, which only needs the right tips since H²ₚ(RE) is then
     output:
         # internal: only re_root_tree → phylo_mm read it, nothing downstream.
         treefile=temp("<temp>/re/trees/{peak_id}.treefile"),
+    log:
+        "<results>/logs/re_iqtree/{peak_id}.log",
     group:
         "peak_chain"
     threads: 4
@@ -150,13 +162,13 @@ tree is copied instead, which only needs the right tips since H²ₚ(RE) is then
     shell:
         """
         if (cd $(dirname {input.nex}) && iqtree -p {params.peak_id}.nex \
-                --prefix {params.prefix} -T AUTO --threads-max {threads} {params.bootstrap} --redo); then
+                --prefix {params.prefix} -T AUTO --threads-max {threads} {params.bootstrap} --redo) > {log} 2>&1; then
             find "$(dirname {params.prefix})" -maxdepth 1 \
                 -name "$(basename {params.prefix}).*" \
-                ! -name "$(basename {params.prefix}).treefile" -delete
+                ! -name "$(basename {params.prefix}).treefile" -delete 2>> {log}
         else
-            echo "[re_iqtree] {params.peak_id}: IQ-TREE failed (monomorphic RE?); using main tree" >&2
-            cp {input.main_tree} {output.treefile}
+            echo "[re_iqtree] {params.peak_id}: IQ-TREE failed (monomorphic RE?); using main tree" >> {log}
+            cp {input.main_tree} {output.treefile} 2>> {log}
         fi
         """
 
@@ -169,3 +181,5 @@ use rule root_tree as re_root_tree with:
     output:
         # internal: only phylo_mm (H²_re scope) reads this, then it's done.
         rooted=temp("<temp>/re/trees/{peak_id}.rooted.nwk"),
+    log:
+        "<results>/logs/re_root_tree/{peak_id}.log",

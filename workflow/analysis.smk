@@ -62,6 +62,8 @@ actuation from haplotypes.parquet) -> unified parquet + tsv.gz + the plot manife
         drivers="<results>/tables/plot_drivers.txt",
         heritable="<results>/tables/plot_heritable_no_driver.txt",
         random="<results>/tables/plot_random.txt",
+    log:
+        "<results>/logs/re_variants_all.log",
     threads: config.get("stage2_threads", 16)
     resources:
         mem_mb=32768,
@@ -78,7 +80,7 @@ actuation from haplotypes.parquet) -> unified parquet + tsv.gz + the plot manife
         "--peaks {input.peaks} "
         "--out-parquet {output.parquet} --out-tsv {output.tsv} "
         "--manifest-dir {params.manifest_dir} --random-n {params.random_n} "
-        "--seed {params.seed} --threads {threads}"
+        "--seed {params.seed} --threads {threads} > {log} 2>&1"
 
 
 rule peak_coords:
@@ -87,6 +89,8 @@ rule peak_coords:
         src=config.get("input_table", ""),
     output:
         tsv="<results>/tables/peak_coords.tsv",
+    log:
+        "<results>/logs/peak_coords.log",
     threads: config.get("bgzip_threads", 8)
     resources:
         mem_mb=4096,
@@ -97,8 +101,8 @@ rule peak_coords:
             f"--peak-ids {config['peak_ids']}" if config.get("peak_ids") else ""
         ),
     shell:
-        "bgzip -cd -@ {threads} {input.src} | "
-        "python {params.script} --out {output.tsv} {params.peak_ids_arg}"
+        "(bgzip -cd -@ {threads} {input.src} | "
+        "python {params.script} --out {output.tsv} {params.peak_ids_arg}) > {log} 2>&1"
 
 
 rule project_all:
@@ -120,6 +124,8 @@ rule project_all:
         elements_bed="<results>/tables/elements.hg38.bed.gz",
         elements_bed_tbi="<results>/tables/elements.hg38.bed.gz.tbi",
         unlifted="<results>/tables/drivers.unlifted.tsv",
+    log:
+        "<results>/logs/project_all.log",
     # Own knob: concurrent agc getctg calls SIGABRT under contention; keep it modest.
     threads: config.get("project_threads", 32)
     resources:
@@ -136,7 +142,7 @@ rule project_all:
         "--tables-dir {params.tables} "
         "--coords {input.coords} "
         "--peaks {input.peaks} --agc {params.agc} --flank {params.flank} "
-        "--outdir {params.outdir} --threads {threads}"
+        "--outdir {params.outdir} --threads {threads} > {log} 2>&1"
 
 
 rule annotate_rsids:
@@ -146,6 +152,8 @@ Opt-in: set config['dbsnp'] to a tabix-indexed dbSNP VCF."""
         vcf=rules.project_all.output.vcf,
     output:
         vcf="<results>/tables/variants.hg38.rsid.vcf.gz",
+    log:
+        "<results>/logs/annotate_rsids.log",
     threads: config.get("bgzip_threads", 8)
     resources:
         mem_mb=8192,
@@ -155,7 +163,7 @@ Opt-in: set config['dbsnp'] to a tabix-indexed dbSNP VCF."""
         dbsnp=config.get("dbsnp", ""),
     shell:
         "python {params.script} --vcf {input.vcf} --dbsnp {params.dbsnp} "
-        "--out-vcf {output.vcf} --threads {threads}"
+        "--out-vcf {output.vcf} --threads {threads} > {log} 2>&1"
 
 
 rule significant_driver_rsids:
@@ -170,12 +178,14 @@ plasmid significance table (locus, driver_id, beta, ...); needs config['dbsnp'].
     output:
         tsv="<results>/phewas/significant_driver_rsids.tsv",
         txt="<results>/phewas/significant_driver_rsids.txt",
+    log:
+        "<results>/logs/significant_driver_rsids.log",
     params:
         script=os.path.join(workflow.basedir, "scripts/significant_driver_rsids.py"),
     shell:
         "python {params.script} --sig {input.sig} --variants {input.tsv} "
         "--rsid-vcf {input.vcf} --unlifted {input.unlifted} "
-        "--out-tsv {output.tsv} --out-rsids {output.txt}"
+        "--out-tsv {output.tsv} --out-rsids {output.txt} > {log} 2>&1"
 
 
 rule plasmid_all:
@@ -188,6 +198,8 @@ rule plasmid_all:
     output:
         constructs="<results>/plasmid_fiberseq/plasmid_constructs.tsv",
         fa="<results>/plasmid_fiberseq/plasmid_constructs.fa",
+    log:
+        "<results>/logs/plasmid_all.log",
     resources:
         mem_mb=16384,
         runtime=120,
@@ -198,7 +210,7 @@ rule plasmid_all:
         "python {params.script} --tables-dir {params.tables} "
         "--haplotypes {input.haplotypes} "
         "--peaks {input.drivers} --out-constructs {output.constructs} "
-        "--out-fa {output.fa}"
+        "--out-fa {output.fa} > {log} 2>&1"
 
 
 rule plot_all:
@@ -214,6 +226,8 @@ manifests -- one job over the subset, not per-peak."""
         random=rules.re_variants_all.output.random,
     output:
         done=touch("<results>/plots/.done"),
+    log:
+        "<results>/logs/plot_all.log",
     threads: config.get("stage2_threads", 16)
     resources:
         mem_mb=16384,
@@ -233,4 +247,4 @@ manifests -- one job over the subset, not per-peak."""
         "--tables-dir {params.tables} "
         "--manifest-dir {params.manifest_dir} "
         "--outdir {params.outdir} --flank {params.flank} --threads {threads} "
-        "{params.pclai_arg} {params.plasmid_arg} {params.html_arg}"
+        "{params.pclai_arg} {params.plasmid_arg} {params.html_arg} > {log} 2>&1"

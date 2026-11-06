@@ -14,6 +14,8 @@ manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkp
         tsv=temp(expand("<results>/fastas/{peak_id}.tsv", peak_id=PEAK_IDS)),
         manifest=PEAKS,
         haplotypes=HAP,
+    log:
+        "<results>/logs/extract_fastas.log",
     threads: config.get("bgzip_threads", 16)
     resources:
         mem_mb=32768,
@@ -33,12 +35,12 @@ manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkp
         if [ -n "{params.preextracted}" ]; then
             python {params.ingest:q} --link-from {input.src:q} \
                 --fastas-dir {params.outdir:q} --out {output.haplotypes:q} \
-                --threads {threads}
+                --threads {threads} > {log:q} 2>&1
         else
-            bgzip -cd -@ {threads} {input.src:q} \
+            ( bgzip -cd -@ {threads} {input.src:q} \
                 | (IFS= read -r hdr; printf '%s\\n' "$hdr"; sort -t$'\\t' -k5,5 -S 50%) \
                 | python {params.script:q} --outdir {params.outdir:q} \
                     --min-seqs {params.min_seqs} \
-                    --haplotypes-parquet {output.haplotypes:q} {params.opt_args}
+                    --haplotypes-parquet {output.haplotypes:q} {params.opt_args} ) > {log:q} 2>&1
         fi
         """

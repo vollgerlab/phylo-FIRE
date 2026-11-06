@@ -12,34 +12,7 @@ configfile: "config/config.yaml"
 
 
 include: "rules/common.smk"
-
-
-def _targets(_wildcards):
-    out = [
-        rules.re_variants_all.output.parquet,
-        rules.re_variants_all.output.tsv,
-        rules.plot_all.output.done,
-    ]
-    if _hg38_ok():
-        p = rules.project_all.output
-        out += [
-            p.variants,
-            p.vcf,
-            p.variants_bed,
-            p.variants_chm13_bed,
-            p.elements_bed,
-            p.unlifted,
-        ]
-        if config.get("dbsnp"):
-            out.append(rules.annotate_rsids.output.vcf)
-    if PLASMID:
-        out += [rules.plasmid_all.output.constructs, rules.plasmid_all.output.fa]
-    if config.get("significant_loci") and config.get("dbsnp") and _hg38_ok():
-        out += [
-            rules.significant_driver_rsids.output.tsv,
-            rules.significant_driver_rsids.output.txt,
-        ]
-    return out
+include: "rules/stage2_common.smk"
 
 
 rule all:

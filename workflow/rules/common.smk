@@ -20,9 +20,6 @@ def cfg_bool(key: str, default: bool) -> bool:
     return str(config.get(key, default)).lower() in ("true", "1", "yes")
 
 
-PLOT_HTML = cfg_bool("plot_html", False)
-PROJECT_HG38 = cfg_bool("project_hg38", True)
-PLASMID = cfg_bool("plasmid", False)
 FLANKED = int(config.get("flank", 0)) > 0
 
 # Stage-1 outputs that Stage 2 reads: the contract between the two entry points.
@@ -32,19 +29,3 @@ PEAKS = "<results>/fastas/peak_ids.txt"
 ALIGNMENTS = "<results>/tables/alignments.parquet"
 TREES = "<results>/tables/trees.parquet"
 PHYLO_MM = "<results>/tables/phylo_mm.parquet"
-
-
-def _hg38_ok() -> bool:
-    """hg38 projection runnable? (union-BED mode + an AGC on disk)."""
-    agc = config.get("agc")
-    return bool(
-        PROJECT_HG38
-        and not config.get("preextracted_dir")
-        and agc
-        and Path(agc).exists()
-    )
-
-
-def _pclai_arg(_wildcards):
-    p = config.get("pclai_bed")
-    return f"--pclai-bed {p}" if p and Path(p).exists() else ""

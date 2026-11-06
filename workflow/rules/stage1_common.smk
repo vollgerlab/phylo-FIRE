@@ -101,20 +101,19 @@ def iqtree_bootstrap(wildcards, input) -> str:
 def _mafft_input(wildcards):
     """RE-only FASTA, or the flanked FASTA when flanking is enabled."""
     if FLANKED:
-        return f"<temp>/flanked/{wildcards.peak_id}.fa"
+        return expand(rules.add_flanks.output.fa, peak_id=wildcards.peak_id)
+    # extract_fastas declares the expanded list, so there is no pattern to reference.
     return f"<results>/fastas/{wildcards.peak_id}.fa"
 
 
 def _re_tree(wildcards):
     """RE-only rooted tree: the trimmed-then-rebuilt tree when flank>0, else
     the main tree (with no flank the RE *is* the whole alignment)."""
-    if FLANKED:
-        return f"<temp>/re/trees/{wildcards.peak_id}.rooted.nwk"
-    return f"<results>/trees/{wildcards.peak_id}.rooted.nwk"
+    out = rules.re_root_tree.output if FLANKED else rules.root_tree.output
+    return expand(out.rooted, peak_id=wildcards.peak_id)
 
 
 def _re_alignment(wildcards):
     """RE-only alignment paired with `_re_tree`."""
-    if FLANKED:
-        return f"<temp>/re/aligned/{wildcards.peak_id}.fa"
-    return f"<results>/aligned/{wildcards.peak_id}.fa"
+    out = rules.re_trim.output if FLANKED else rules.mafft.output
+    return expand(out.fa, peak_id=wildcards.peak_id)

@@ -2,9 +2,10 @@ rule phylo_mm:
     """MCMCglmm H²ₚ (3 priors) in the TSV header + one row per candidate variant with
 forward-selection joint WLS stats (`is_split` = driver). Schema in phylo_mm.R."""
     input:
-        tree="<results>/trees/{peak_id}.rooted.nwk",
+        tree=rules.root_tree.output.rooted,
+        # extract_fastas declares the expanded list, so there is no pattern to reference.
         actuation="<results>/fastas/{peak_id}.tsv",
-        alignment="<results>/aligned/{peak_id}.fa",
+        alignment=rules.mafft.output.fa,
         re_tree=_re_tree,
         re_alignment=_re_alignment,
     output:
@@ -44,10 +45,10 @@ rule stage1_tables:
 tables (single pass), so Stage 2 can run from ``tables/`` alone, e.g. locally
 after downloading it. See workflow/scripts/stage1_tables.py."""
     input:
-        aligned=expand("<results>/aligned/{peak_id}.fa", peak_id=PEAK_IDS),
-        trees=expand("<results>/trees/{peak_id}.rooted.nwk", peak_id=PEAK_IDS),
-        phylo_mm=expand("<results>/phylo_mm/{peak_id}.tsv", peak_id=PEAK_IDS),
-        peaks=PEAKS,
+        aligned=expand(rules.mafft.output.fa, peak_id=PEAK_IDS),
+        trees=expand(rules.root_tree.output.rooted, peak_id=PEAK_IDS),
+        phylo_mm=expand(rules.phylo_mm.output.tsv, peak_id=PEAK_IDS),
+        peaks=rules.extract_fastas.output.manifest,
     output:
         alignments=ALIGNMENTS,
         trees=TREES,

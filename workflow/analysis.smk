@@ -86,7 +86,7 @@ rule peak_coords:
     input:
         src=config.get("input_table", ""),
     output:
-        "<results>/tables/peak_coords.tsv",
+        tsv="<results>/tables/peak_coords.tsv",
     threads: config.get("bgzip_threads", 8)
     resources:
         mem_mb=4096,
@@ -98,7 +98,7 @@ rule peak_coords:
         ),
     shell:
         "bgzip -cd -@ {threads} {input.src} | "
-        "python {params.script} --out {output} {params.peak_ids_arg}"
+        "python {params.script} --out {output.tsv} {params.peak_ids_arg}"
 
 
 rule project_all:
@@ -108,7 +108,7 @@ rule project_all:
         alignments=ALIGNMENTS,
         phylo_mm=PHYLO_MM,
         peaks=PEAKS,
-        coords="<results>/tables/peak_coords.tsv",
+        coords=rules.peak_coords.output.tsv,
     output:
         variants="<results>/tables/variants.hg38.tsv.gz",
         vcf="<results>/tables/variants.hg38.vcf.gz",
@@ -143,7 +143,7 @@ rule annotate_rsids:
     """Add dbSNP rs IDs to the hg38 VCF (bcftools annotate -c ID; allele-aware).
 Opt-in: set config['dbsnp'] to a tabix-indexed dbSNP VCF."""
     input:
-        vcf="<results>/tables/variants.hg38.vcf.gz",
+        vcf=rules.project_all.output.vcf,
     output:
         vcf="<results>/tables/variants.hg38.rsid.vcf.gz",
     threads: config.get("bgzip_threads", 8)
@@ -164,9 +164,9 @@ rule significant_driver_rsids:
 plasmid significance table (locus, driver_id, beta, ...); needs config['dbsnp']."""
     input:
         sig=config.get("significant_loci") or "significant_loci_not_set",
-        tsv="<results>/tables/variants.hg38.tsv.gz",
-        vcf="<results>/tables/variants.hg38.rsid.vcf.gz",
-        unlifted="<results>/tables/drivers.unlifted.tsv",
+        tsv=rules.project_all.output.variants,
+        vcf=rules.annotate_rsids.output.vcf,
+        unlifted=rules.project_all.output.unlifted,
     output:
         tsv="<results>/phewas/significant_driver_rsids.tsv",
         txt="<results>/phewas/significant_driver_rsids.txt",
@@ -184,7 +184,7 @@ rule plasmid_all:
         haplotypes=HAP,
         alignments=ALIGNMENTS,
         phylo_mm=PHYLO_MM,
-        drivers="<results>/tables/plot_drivers.txt",
+        drivers=rules.re_variants_all.output.drivers,
     output:
         constructs="<results>/plasmid_fiberseq/plasmid_constructs.tsv",
         fa="<results>/plasmid_fiberseq/plasmid_constructs.fa",
@@ -209,9 +209,9 @@ manifests -- one job over the subset, not per-peak."""
         alignments=ALIGNMENTS,
         phylo_mm=PHYLO_MM,
         trees=TREES,
-        drivers="<results>/tables/plot_drivers.txt",
-        heritable="<results>/tables/plot_heritable_no_driver.txt",
-        random="<results>/tables/plot_random.txt",
+        drivers=rules.re_variants_all.output.drivers,
+        heritable=rules.re_variants_all.output.heritable,
+        random=rules.re_variants_all.output.random,
     output:
         done=touch("<results>/plots/.done"),
     threads: config.get("stage2_threads", 16)

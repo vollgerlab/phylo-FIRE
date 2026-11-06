@@ -6,7 +6,7 @@ rule encode_indels:
     """Simmons-Ochoterena indel coding so IQ-TREE models gaps (GTR2+ASC) instead of
 treating them as missing; coding rules are in scripts/encode_indels.py."""
     input:
-        fa="<results>/aligned/{peak_id}.fa",
+        fa=rules.mafft.output.fa,
     output:
         nex=temp("<temp>/coded/{peak_id}/{peak_id}.nex"),
         nuc=temp("<temp>/coded/{peak_id}/{peak_id}_nucleic.phy"),
@@ -34,9 +34,9 @@ rule iqtree:
     """ML tree from the DNA + indel partition. Models are fixed by the .nex charpartition
 (GTR+I+G on DNA, GTR2+ASC on indels), so IQ-TREE runs no model selection."""
     input:
-        nex="<temp>/coded/{peak_id}/{peak_id}.nex",
-        nuc="<temp>/coded/{peak_id}/{peak_id}_nucleic.phy",
-        indel="<temp>/coded/{peak_id}/{peak_id}_indel.phy",
+        nex=rules.encode_indels.output.nex,
+        nuc=rules.encode_indels.output.nuc,
+        indel=rules.encode_indels.output.indel,
     output:
         # unrooted ML tree — temp: superseded by the rooted .nwk (root_tree keeps
         # branch lengths + bootstrap); only root_tree + re_iqtree-fallback read it.
@@ -73,8 +73,8 @@ rule root_tree:
 that set is not monophyletic). phylo_mm and the plots never re-root, so clades match.
 """
     input:
-        treefile="<temp>/trees/{peak_id}.treefile",
-        alignment="<results>/aligned/{peak_id}.fa",
+        treefile=rules.iqtree.output.treefile,
+        alignment=rules.mafft.output.fa,
     output:
         rooted="<results>/trees/{peak_id}.rooted.nwk",
     group:
@@ -98,7 +98,7 @@ that set is not monophyletic). phylo_mm and the plots never re-root, so clades m
 rule re_trim:
     """Slice the flanked MSA down to the RE columns."""
     input:
-        fa="<results>/aligned/{peak_id}.fa",
+        fa=rules.mafft.output.fa,
     output:
         fa=temp("<temp>/re/aligned/{peak_id}.fa"),
     group:
@@ -117,7 +117,7 @@ rule re_trim:
 use rule encode_indels as re_encode_indels with:
     """encode_indels on the RE-only alignment (mirrors rule encode_indels)."""
     input:
-        fa="<temp>/re/aligned/{peak_id}.fa",
+        fa=rules.re_trim.output.fa,
     output:
         nex=temp("<temp>/re/coded/{peak_id}/{peak_id}.nex"),
         nuc=temp("<temp>/re/coded/{peak_id}/{peak_id}_nucleic.phy"),
@@ -128,10 +128,10 @@ rule re_iqtree:
     """RE-only ML tree (mirrors rule iqtree). A monomorphic RE makes IQ-TREE fail; the main
 tree is copied instead, which only needs the right tips since H²ₚ(RE) is then NA."""
     input:
-        nex="<temp>/re/coded/{peak_id}/{peak_id}.nex",
-        nuc="<temp>/re/coded/{peak_id}/{peak_id}_nucleic.phy",
-        indel="<temp>/re/coded/{peak_id}/{peak_id}_indel.phy",
-        main_tree="<temp>/trees/{peak_id}.treefile",
+        nex=rules.re_encode_indels.output.nex,
+        nuc=rules.re_encode_indels.output.nuc,
+        indel=rules.re_encode_indels.output.indel,
+        main_tree=rules.iqtree.output.treefile,
     output:
         # internal: only re_root_tree → phylo_mm read it, nothing downstream.
         treefile=temp("<temp>/re/trees/{peak_id}.treefile"),
@@ -164,8 +164,8 @@ tree is copied instead, which only needs the right tips since H²ₚ(RE) is then
 use rule root_tree as re_root_tree with:
     """Ancestral-proxy root the RE-only tree (mirrors rule root_tree)."""
     input:
-        treefile="<temp>/re/trees/{peak_id}.treefile",
-        alignment="<temp>/re/aligned/{peak_id}.fa",
+        treefile=rules.re_iqtree.output.treefile,
+        alignment=rules.re_trim.output.fa,
     output:
         # internal: only phylo_mm (H²_re scope) reads this, then it's done.
         rooted=temp("<temp>/re/trees/{peak_id}.rooted.nwk"),

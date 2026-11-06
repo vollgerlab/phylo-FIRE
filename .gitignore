@@ -25,3 +25,6 @@ config/hsca_*peak_ids.txt
 resources/dbsnp.*
 /downloads/
 /GCF_000001405.40.gz.tbi
+
+# Manuscript figure work (kept locally, not tracked)
+docs/figures/

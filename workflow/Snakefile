@@ -8,8 +8,6 @@ configfile: "config/config.yaml"
 
 include: "rules/common.smk"
 include: "rules/stage1_common.smk"
-
-
 include: "rules/extract.smk"
 include: "rules/align.smk"
 include: "rules/trees.smk"

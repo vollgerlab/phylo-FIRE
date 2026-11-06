@@ -57,7 +57,10 @@ def _run_peak_ids():
             for ln in Path(pi).read_text().splitlines()
             if ln.strip()
         ]
-    return sorted(_sanitize_peak(fa.stem) for fa in Path(workflow.pathvars.apply("<results>/fastas")).glob("*.fa"))
+    return sorted(
+        _sanitize_peak(fa.stem)
+        for fa in Path(workflow.pathvars.apply("<results>/fastas")).glob("*.fa")
+    )
 
 
 PEAK_IDS = _run_peak_ids()

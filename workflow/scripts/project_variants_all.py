@@ -11,7 +11,8 @@ pool (each worker just waits on its subprocess).
 
     pixi run python workflow/scripts/project_variants_all.py \
         --haplotypes results/<run>/tables/haplotypes.parquet \
-        --tables-dir results/<run>/tables \
+        --alignments results/<run>/tables/alignments.parquet \
+        --phylo-mm results/<run>/tables/phylo_mm.parquet \
         --coords results/<run>/tables/peak_coords.tsv \
         --peaks results/<run>/fastas/peak_ids.txt \
         --agc resources/HPRC_r2_assemblies_0.6.1.agc \
@@ -151,8 +152,10 @@ def write_unlifted(path: Path, rows: list[dict]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--haplotypes", required=True, type=Path)
-    ap.add_argument("--tables-dir", required=True, type=Path,
-                    help="results/<run>/tables (Stage-1 summary parquets)")
+    ap.add_argument("--alignments", required=True, type=Path,
+                    help="Stage-1 alignments.parquet")
+    ap.add_argument("--phylo-mm", required=True, type=Path,
+                    help="Stage-1 phylo_mm.parquet")
     ap.add_argument("--coords", required=True, type=Path, help="peak_coords.tsv")
     ap.add_argument("--peaks", required=True, type=Path, help="run manifest")
     ap.add_argument("--agc", required=True)
@@ -166,7 +169,7 @@ def main() -> None:
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
     coords = _load_coords(args.coords)
     parts = pl.read_parquet(args.haplotypes).partition_by("peak_id", as_dict=True)
-    store = Stage1Store(args.tables_dir)
+    store = Stage1Store(alignments=args.alignments, phylo_mm=args.phylo_mm)
     out = args.outdir
     with tempfile.TemporaryDirectory(prefix="proj_all_") as tmpdir:
         hg38_dir = Path(tmpdir) / "hg38"

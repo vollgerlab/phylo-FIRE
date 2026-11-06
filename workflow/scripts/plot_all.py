@@ -10,8 +10,9 @@ build_plasmid_constructs) so the constructs draw under the MSA.
 
     pixi run python workflow/scripts/plot_all.py \
         --haplotypes results/<run>/tables/haplotypes.parquet \
-        --aligned-dir results/<run>/aligned --trees-dir results/<run>/trees \
-        --phylo-mm-dir results/<run>/phylo_mm --manifest-dir results/<run>/tables \
+        --alignments results/<run>/tables/alignments.parquet \
+        --phylo-mm results/<run>/tables/phylo_mm.parquet \
+        --trees results/<run>/tables/trees.parquet --manifest-dir results/<run>/tables \
         --outdir results/<run>/plots --flank <F> [--pclai-bed BED] [--plasmid] [--html]
 """
 import argparse
@@ -44,8 +45,12 @@ def _write_actuation(parts, peak, path):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--haplotypes", required=True, type=Path)
-    ap.add_argument("--tables-dir", required=True, type=Path,
-                    help="results/<run>/tables (Stage-1 summary parquets)")
+    ap.add_argument("--alignments", required=True, type=Path,
+                    help="Stage-1 alignments.parquet")
+    ap.add_argument("--phylo-mm", required=True, type=Path,
+                    help="Stage-1 phylo_mm.parquet")
+    ap.add_argument("--trees", required=True, type=Path,
+                    help="Stage-1 trees.parquet")
     ap.add_argument("--manifest-dir", required=True, type=Path)
     ap.add_argument("--outdir", required=True, type=Path)
     ap.add_argument("--flank", type=int, default=0)
@@ -71,7 +76,7 @@ def main() -> None:
                 jobs.append((cat, peak))
 
         failed: list[str] = []
-        store = Stage1Store(args.tables_dir)
+        store = Stage1Store(alignments=args.alignments, phylo_mm=args.phylo_mm, trees=args.trees)
 
         def render(job) -> None:
             cat, peak = job

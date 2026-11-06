@@ -3,13 +3,13 @@
 
 Loops the driver peaks, builds the 4-construct design for each single-driver
 peak, and writes ONE plasmid_constructs.tsv + .fa. Reads only persisted files
-(the mafft alignment, actuation TSV, phylo_mm TSV) -- so it's an additive
-post-hoc step on a finished run, exactly like aggregate_hg38.
+(the Stage-1 alignment + phylo_mm tables, haplotypes.parquet) -- so it's an
+additive post-hoc step on a finished run, exactly like aggregate_hg38.
 
     pixi run python workflow/scripts/build_plasmid_table.py \
-        --aligned-dir  results/<run>/aligned \
+        --alignments   results/<run>/tables/alignments.parquet \
+        --phylo-mm     results/<run>/tables/phylo_mm.parquet \
         --haplotypes   results/<run>/tables/haplotypes.parquet \
-        --phylo-mm-dir results/<run>/phylo_mm \
         --peaks        results/<run>/tables/plot_drivers.txt \
         --out-constructs results/<run>/plasmid_fiberseq/plasmid_constructs.tsv \
         --out-fa         results/<run>/plasmid_fiberseq/plasmid_constructs.fa
@@ -28,8 +28,10 @@ from stage1_tables import Stage1Store
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tables-dir", required=True, type=Path,
-                    help="results/<run>/tables (Stage-1 summary parquets)")
+    ap.add_argument("--alignments", required=True, type=Path,
+                    help="Stage-1 alignments.parquet")
+    ap.add_argument("--phylo-mm", required=True, type=Path,
+                    help="Stage-1 phylo_mm.parquet")
     ap.add_argument("--haplotypes", required=True, type=Path,
                     help="haplotypes.parquet (actuation source)")
     ap.add_argument("--peaks", required=True, type=Path, help="driver peak list (one id/line)")
@@ -40,7 +42,7 @@ def main() -> None:
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
     parts = load_parts(args.haplotypes)
     all_rows, missing = [], []
-    store = Stage1Store(args.tables_dir)
+    store = Stage1Store(alignments=args.alignments, phylo_mm=args.phylo_mm)
     for peak in peaks:
         aln = store.aligned(peak)
         if aln is None:

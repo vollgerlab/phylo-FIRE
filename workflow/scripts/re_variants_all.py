@@ -9,7 +9,8 @@ tsv.gz + the three plot manifests.
 
     pixi run python workflow/scripts/re_variants_all.py \
         --haplotypes results/<run>/tables/haplotypes.parquet \
-        --tables-dir results/<run>/tables \
+        --alignments results/<run>/tables/alignments.parquet \
+        --phylo-mm results/<run>/tables/phylo_mm.parquet \
         --peaks results/<run>/fastas/peak_ids.txt \
         --out-parquet results/<run>/tables/re_variants.parquet \
         --out-tsv results/<run>/tables/re_variants.tsv.gz \
@@ -58,8 +59,10 @@ def write_peak_tables(peaks: list[str], parts: dict, store: Stage1Store,
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--haplotypes", required=True, type=Path)
-    ap.add_argument("--tables-dir", required=True, type=Path,
-                    help="results/<run>/tables (Stage-1 summary parquets)")
+    ap.add_argument("--alignments", required=True, type=Path,
+                    help="Stage-1 alignments.parquet")
+    ap.add_argument("--phylo-mm", required=True, type=Path,
+                    help="Stage-1 phylo_mm.parquet")
     ap.add_argument("--peaks", required=True, type=Path)
     ap.add_argument("--out-parquet", required=True, type=Path)
     ap.add_argument("--out-tsv", required=True, type=Path)
@@ -71,7 +74,7 @@ def main() -> None:
 
     peaks = [p.strip() for p in args.peaks.read_text().splitlines() if p.strip()]
     parts = load_parts(args.haplotypes)
-    store = Stage1Store(args.tables_dir)
+    store = Stage1Store(alignments=args.alignments, phylo_mm=args.phylo_mm)
     with tempfile.TemporaryDirectory(prefix="re_variants_all_") as tmpdir:
         tmp = Path(tmpdir)
         skipped = write_peak_tables(peaks, parts, store, tmp, args.threads)

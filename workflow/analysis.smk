@@ -42,14 +42,14 @@ actuation from haplotypes.parquet) -> unified parquet + tsv.gz + the plot manife
         mem_mb=32768,
         runtime=240,
     params:
-        tables=lambda wc, input: os.path.dirname(input.alignments),
         script=os.path.join(workflow.basedir, "scripts/re_variants_all.py"),
         manifest_dir=lambda wc, output: os.path.dirname(output.drivers),
         random_n=config.get("random_n", 100),
         seed=config.get("random_seed", 42),
     shell:
         "POLARS_MAX_THREADS={threads} python {params.script} "
-        "--haplotypes {input.haplotypes} --tables-dir {params.tables} "
+        "--haplotypes {input.haplotypes} --alignments {input.alignments} "
+        "--phylo-mm {input.phylo_mm} "
         "--peaks {input.peaks} "
         "--out-parquet {output.parquet} --out-tsv {output.tsv} "
         "--manifest-dir {params.manifest_dir} --random-n {params.random_n} "
@@ -105,14 +105,13 @@ rule project_all:
         mem_mb=32768,
         runtime=480,
     params:
-        tables=lambda wc, input: os.path.dirname(input.alignments),
         script=os.path.join(workflow.basedir, "scripts/project_variants_all.py"),
         outdir=lambda wc, output: os.path.dirname(output.variants),
         agc=config.get("agc", ""),
         flank=config.get("flank", 0),
     shell:
         "python {params.script} --haplotypes {input.haplotypes} "
-        "--tables-dir {params.tables} "
+        "--alignments {input.alignments} --phylo-mm {input.phylo_mm} "
         "--coords {input.coords} "
         "--peaks {input.peaks} --agc {params.agc} --flank {params.flank} "
         "--outdir {params.outdir} --threads {threads} > {log} 2>&1"
@@ -177,10 +176,10 @@ rule plasmid_all:
         mem_mb=16384,
         runtime=120,
     params:
-        tables=lambda wc, input: os.path.dirname(input.alignments),
         script=os.path.join(workflow.basedir, "scripts/build_plasmid_table.py"),
     shell:
-        "python {params.script} --tables-dir {params.tables} "
+        "python {params.script} --alignments {input.alignments} "
+        "--phylo-mm {input.phylo_mm} "
         "--haplotypes {input.haplotypes} "
         "--peaks {input.drivers} --out-constructs {output.constructs} "
         "--out-fa {output.fa} > {log} 2>&1"
@@ -206,7 +205,6 @@ manifests -- one job over the subset, not per-peak."""
         mem_mb=16384,
         runtime=480,
     params:
-        tables=lambda wc, input: os.path.dirname(input.alignments),
         script=os.path.join(workflow.basedir, "scripts/plot_all.py"),
         manifest_dir=lambda wc, input: os.path.dirname(input.drivers),
         outdir=lambda wc, output: os.path.dirname(output.done),
@@ -217,7 +215,8 @@ manifests -- one job over the subset, not per-peak."""
     shell:
         'LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${{LD_LIBRARY_PATH:-}}" '
         "python {params.script} --haplotypes {input.haplotypes} "
-        "--tables-dir {params.tables} "
+        "--alignments {input.alignments} --phylo-mm {input.phylo_mm} "
+        "--trees {input.trees} "
         "--manifest-dir {params.manifest_dir} "
         "--outdir {params.outdir} --flank {params.flank} --threads {threads} "
         "{params.pclai_arg} {params.plasmid_arg} {params.html_arg} > {log} 2>&1"

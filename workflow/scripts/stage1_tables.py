@@ -13,8 +13,8 @@ Build (end of Stage 1)::
 
     python stage1_tables.py --results results/<run> --peaks <peak_ids.txt>
 
-Read (Stage 2): ``Stage1Store(tables_dir)`` hands back a per-peak file path
-materialized from the parquet tables into a temp dir. Stage 2 reads only the
+Read (Stage 2): ``Stage1Store(alignments=..., phylo_mm=..., trees=...)`` hands
+back a per-peak file path materialized from the parquet tables into a temp dir. Stage 2 reads only the
 tables, never the per-peak directories.
 """
 
@@ -102,10 +102,14 @@ class Stage1Store:
 
     ``aligned(peak)``, ``tree(peak)`` and ``phylo_mm(peak)`` return a Path to the
     peak's file (written to a temp dir on first use), or None if the peak is
-    not in that table."""
+    not in that table. ``trees`` is optional; ``tree()`` needs it."""
 
-    def __init__(self, tables_dir: Path):
-        self.tables_dir = Path(tables_dir)
+    def __init__(self, alignments: Path, phylo_mm: Path, trees: Path | None = None):
+        self.paths: dict[str, Path | None] = {
+            "aligned": Path(alignments),
+            "phylo_mm": Path(phylo_mm),
+            "trees": Path(trees) if trees is not None else None,
+        }
         self._tables: dict[str, dict[str, object]] = {}
         self._tmp = Path(tempfile.mkdtemp(prefix="stage1_store_"))
         self._lock = threading.Lock()
@@ -114,7 +118,9 @@ class Stage1Store:
         """peak_id -> content for one summary table (loaded once, lazily)."""
         with self._lock:
             if key not in self._tables:
-                path = self.tables_dir / TABLES[key]
+                path = self.paths[key]
+                if path is None:
+                    raise ValueError(f"Stage1Store has no {key} table; pass it to the constructor")
                 if key == "aligned":
                     df = pl.read_parquet(path).sort(["peak_id", "idx"])
                     self._tables[key] = {

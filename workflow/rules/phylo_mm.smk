@@ -2,13 +2,13 @@ rule phylo_mm:
     """MCMCglmm H²ₚ (3 priors) in the TSV header + one row per candidate variant with
 forward-selection joint WLS stats (`is_split` = driver). Schema in phylo_mm.R."""
     input:
-        tree=RESULTS + "/trees/{peak_id}.rooted.nwk",
-        actuation=RESULTS + "/fastas/{peak_id}.tsv",
-        alignment=RESULTS + "/aligned/{peak_id}.fa",
+        tree="<results>/trees/{peak_id}.rooted.nwk",
+        actuation="<results>/fastas/{peak_id}.tsv",
+        alignment="<results>/aligned/{peak_id}.fa",
         re_tree=_re_tree,
         re_alignment=_re_alignment,
     output:
-        tsv=RESULTS + "/phylo_mm/{peak_id}.tsv",
+        tsv="<results>/phylo_mm/{peak_id}.tsv",
     group:
         "peak_chain"
     threads: 1
@@ -44,9 +44,9 @@ rule stage1_tables:
 tables (single pass), so Stage 2 can run from ``tables/`` alone, e.g. locally
 after downloading it. See workflow/scripts/stage1_tables.py."""
     input:
-        aligned=expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=PEAK_IDS),
-        trees=expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=PEAK_IDS),
-        phylo_mm=expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=PEAK_IDS),
+        aligned=expand("<results>/aligned/{peak_id}.fa", peak_id=PEAK_IDS),
+        trees=expand("<results>/trees/{peak_id}.rooted.nwk", peak_id=PEAK_IDS),
+        phylo_mm=expand("<results>/phylo_mm/{peak_id}.tsv", peak_id=PEAK_IDS),
         peaks=PEAKS,
     output:
         alignments=ALIGNMENTS,

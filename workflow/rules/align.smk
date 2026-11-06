@@ -3,10 +3,10 @@ rule add_flanks:
 Only used when flank > 0; otherwise `_mafft_input` sends the RE-only FASTA to mafft.
 """
     input:
-        fa=RESULTS + "/fastas/{peak_id}.fa",
-        tsv=RESULTS + "/fastas/{peak_id}.tsv",
+        fa="<results>/fastas/{peak_id}.fa",
+        tsv="<results>/fastas/{peak_id}.tsv",
     output:
-        fa=temp(TEMP + "/flanked/{peak_id}.fa"),
+        fa=temp("<temp>/flanked/{peak_id}.fa"),
     group:
         "peak_chain"
     threads: 4
@@ -35,7 +35,7 @@ rule mafft:
         fa=_mafft_input,
     output:
         # Persisted: Stage 2's sequence source (re_variants, plasmid, plots).
-        fa=RESULTS + "/aligned/{peak_id}.fa",
+        fa="<results>/aligned/{peak_id}.fa",
     group:
         "peak_chain"
     threads: 4

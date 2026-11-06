@@ -57,11 +57,11 @@ actuation from haplotypes.parquet) -> unified parquet + tsv.gz + the plot manife
         phylo_mm=PHYLO_MM,
         peaks=PEAKS,
     output:
-        parquet=RESULTS + "/tables/re_variants.parquet",
-        tsv=RESULTS + "/tables/re_variants.tsv.gz",
-        drivers=RESULTS + "/tables/plot_drivers.txt",
-        heritable=RESULTS + "/tables/plot_heritable_no_driver.txt",
-        random=RESULTS + "/tables/plot_random.txt",
+        parquet="<results>/tables/re_variants.parquet",
+        tsv="<results>/tables/re_variants.tsv.gz",
+        drivers="<results>/tables/plot_drivers.txt",
+        heritable="<results>/tables/plot_heritable_no_driver.txt",
+        random="<results>/tables/plot_random.txt",
     threads: config.get("stage2_threads", 16)
     resources:
         mem_mb=32768,
@@ -86,7 +86,7 @@ rule peak_coords:
     input:
         src=config.get("input_table", ""),
     output:
-        RESULTS + "/tables/peak_coords.tsv",
+        "<results>/tables/peak_coords.tsv",
     threads: config.get("bgzip_threads", 8)
     resources:
         mem_mb=4096,
@@ -108,18 +108,18 @@ rule project_all:
         alignments=ALIGNMENTS,
         phylo_mm=PHYLO_MM,
         peaks=PEAKS,
-        coords=RESULTS + "/tables/peak_coords.tsv",
+        coords="<results>/tables/peak_coords.tsv",
     output:
-        variants=RESULTS + "/tables/variants.hg38.tsv.gz",
-        vcf=RESULTS + "/tables/variants.hg38.vcf.gz",
-        tbi=RESULTS + "/tables/variants.hg38.vcf.gz.tbi",
-        variants_bed=RESULTS + "/tables/variants.hg38.bed.gz",
-        variants_bed_tbi=RESULTS + "/tables/variants.hg38.bed.gz.tbi",
-        variants_chm13_bed=RESULTS + "/tables/variants.chm13.bed.gz",
-        variants_chm13_bed_tbi=RESULTS + "/tables/variants.chm13.bed.gz.tbi",
-        elements_bed=RESULTS + "/tables/elements.hg38.bed.gz",
-        elements_bed_tbi=RESULTS + "/tables/elements.hg38.bed.gz.tbi",
-        unlifted=RESULTS + "/tables/drivers.unlifted.tsv",
+        variants="<results>/tables/variants.hg38.tsv.gz",
+        vcf="<results>/tables/variants.hg38.vcf.gz",
+        tbi="<results>/tables/variants.hg38.vcf.gz.tbi",
+        variants_bed="<results>/tables/variants.hg38.bed.gz",
+        variants_bed_tbi="<results>/tables/variants.hg38.bed.gz.tbi",
+        variants_chm13_bed="<results>/tables/variants.chm13.bed.gz",
+        variants_chm13_bed_tbi="<results>/tables/variants.chm13.bed.gz.tbi",
+        elements_bed="<results>/tables/elements.hg38.bed.gz",
+        elements_bed_tbi="<results>/tables/elements.hg38.bed.gz.tbi",
+        unlifted="<results>/tables/drivers.unlifted.tsv",
     # Own knob: concurrent agc getctg calls SIGABRT under contention; keep it modest.
     threads: config.get("project_threads", 32)
     resources:
@@ -143,9 +143,9 @@ rule annotate_rsids:
     """Add dbSNP rs IDs to the hg38 VCF (bcftools annotate -c ID; allele-aware).
 Opt-in: set config['dbsnp'] to a tabix-indexed dbSNP VCF."""
     input:
-        vcf=RESULTS + "/tables/variants.hg38.vcf.gz",
+        vcf="<results>/tables/variants.hg38.vcf.gz",
     output:
-        vcf=RESULTS + "/tables/variants.hg38.rsid.vcf.gz",
+        vcf="<results>/tables/variants.hg38.rsid.vcf.gz",
     threads: config.get("bgzip_threads", 8)
     resources:
         mem_mb=8192,
@@ -164,12 +164,12 @@ rule significant_driver_rsids:
 plasmid significance table (locus, driver_id, beta, ...); needs config['dbsnp']."""
     input:
         sig=config.get("significant_loci") or "significant_loci_not_set",
-        tsv=RESULTS + "/tables/variants.hg38.tsv.gz",
-        vcf=RESULTS + "/tables/variants.hg38.rsid.vcf.gz",
-        unlifted=RESULTS + "/tables/drivers.unlifted.tsv",
+        tsv="<results>/tables/variants.hg38.tsv.gz",
+        vcf="<results>/tables/variants.hg38.rsid.vcf.gz",
+        unlifted="<results>/tables/drivers.unlifted.tsv",
     output:
-        tsv=RESULTS + "/phewas/significant_driver_rsids.tsv",
-        txt=RESULTS + "/phewas/significant_driver_rsids.txt",
+        tsv="<results>/phewas/significant_driver_rsids.tsv",
+        txt="<results>/phewas/significant_driver_rsids.txt",
     params:
         script=os.path.join(workflow.basedir, "scripts/significant_driver_rsids.py"),
     shell:
@@ -184,10 +184,10 @@ rule plasmid_all:
         haplotypes=HAP,
         alignments=ALIGNMENTS,
         phylo_mm=PHYLO_MM,
-        drivers=RESULTS + "/tables/plot_drivers.txt",
+        drivers="<results>/tables/plot_drivers.txt",
     output:
-        constructs=RESULTS + "/plasmid_fiberseq/plasmid_constructs.tsv",
-        fa=RESULTS + "/plasmid_fiberseq/plasmid_constructs.fa",
+        constructs="<results>/plasmid_fiberseq/plasmid_constructs.tsv",
+        fa="<results>/plasmid_fiberseq/plasmid_constructs.fa",
     resources:
         mem_mb=16384,
         runtime=120,
@@ -209,11 +209,11 @@ manifests -- one job over the subset, not per-peak."""
         alignments=ALIGNMENTS,
         phylo_mm=PHYLO_MM,
         trees=TREES,
-        drivers=RESULTS + "/tables/plot_drivers.txt",
-        heritable=RESULTS + "/tables/plot_heritable_no_driver.txt",
-        random=RESULTS + "/tables/plot_random.txt",
+        drivers="<results>/tables/plot_drivers.txt",
+        heritable="<results>/tables/plot_heritable_no_driver.txt",
+        random="<results>/tables/plot_random.txt",
     output:
-        done=touch(RESULTS + "/plots/.done"),
+        done=touch("<results>/plots/.done"),
     threads: config.get("stage2_threads", 16)
     resources:
         mem_mb=16384,

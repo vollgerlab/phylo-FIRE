@@ -14,9 +14,9 @@ include: "rules/stage1_common.smk"
 rule all:
     default_target: True
     input:
-        expand(RESULTS + "/aligned/{peak_id}.fa", peak_id=PEAK_IDS),
-        expand(RESULTS + "/trees/{peak_id}.rooted.nwk", peak_id=PEAK_IDS),
-        expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=PEAK_IDS),
+        expand("<results>/aligned/{peak_id}.fa", peak_id=PEAK_IDS),
+        expand("<results>/trees/{peak_id}.rooted.nwk", peak_id=PEAK_IDS),
+        expand("<results>/phylo_mm/{peak_id}.tsv", peak_id=PEAK_IDS),
         HAP,
         ALIGNMENTS,
         TREES,

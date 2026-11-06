@@ -47,7 +47,7 @@ def _run_peak_ids():
             for fa in src.glob("*.fa")
             if (src / f"{fa.stem}.tsv").exists()
         )
-    manifest = Path(PEAKS)
+    manifest = Path(workflow.pathvars.apply(PEAKS))
     if manifest.exists():
         return [ln.strip() for ln in manifest.read_text().splitlines() if ln.strip()]
     pi = config.get("peak_ids")
@@ -57,7 +57,7 @@ def _run_peak_ids():
             for ln in Path(pi).read_text().splitlines()
             if ln.strip()
         ]
-    return sorted(_sanitize_peak(fa.stem) for fa in Path(RESULTS).glob("fastas/*.fa"))
+    return sorted(_sanitize_peak(fa.stem) for fa in Path(workflow.pathvars.apply("<results>/fastas")).glob("*.fa"))
 
 
 PEAK_IDS = _run_peak_ids()
@@ -101,20 +101,20 @@ def iqtree_bootstrap(wildcards, input) -> str:
 def _mafft_input(wildcards):
     """RE-only FASTA, or the flanked FASTA when flanking is enabled."""
     if FLANKED:
-        return f"{TEMP}/flanked/{wildcards.peak_id}.fa"
-    return f"{RESULTS}/fastas/{wildcards.peak_id}.fa"
+        return f"<temp>/flanked/{wildcards.peak_id}.fa"
+    return f"<results>/fastas/{wildcards.peak_id}.fa"
 
 
 def _re_tree(wildcards):
     """RE-only rooted tree: the trimmed-then-rebuilt tree when flank>0, else
     the main tree (with no flank the RE *is* the whole alignment)."""
     if FLANKED:
-        return f"{TEMP}/re/trees/{wildcards.peak_id}.rooted.nwk"
-    return f"{RESULTS}/trees/{wildcards.peak_id}.rooted.nwk"
+        return f"<temp>/re/trees/{wildcards.peak_id}.rooted.nwk"
+    return f"<results>/trees/{wildcards.peak_id}.rooted.nwk"
 
 
 def _re_alignment(wildcards):
     """RE-only alignment paired with `_re_tree`."""
     if FLANKED:
-        return f"{TEMP}/re/aligned/{wildcards.peak_id}.fa"
-    return f"{RESULTS}/aligned/{wildcards.peak_id}.fa"
+        return f"<temp>/re/aligned/{wildcards.peak_id}.fa"
+    return f"<results>/aligned/{wildcards.peak_id}.fa"

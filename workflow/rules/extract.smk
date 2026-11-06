@@ -10,8 +10,8 @@ manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkp
         # Every requested peak is declared so the DAG is static. A peak that yields
         # nothing leaves a declared output missing; extract_fastas.py exits listing
         # those ids. fastas/ is temp; haplotypes.parquet is the persisted copy.
-        fa=temp(expand(RESULTS + "/fastas/{peak_id}.fa", peak_id=PEAK_IDS)),
-        tsv=temp(expand(RESULTS + "/fastas/{peak_id}.tsv", peak_id=PEAK_IDS)),
+        fa=temp(expand("<results>/fastas/{peak_id}.fa", peak_id=PEAK_IDS)),
+        tsv=temp(expand("<results>/fastas/{peak_id}.tsv", peak_id=PEAK_IDS)),
         manifest=PEAKS,
         haplotypes=HAP,
     threads: config.get("bgzip_threads", 16)

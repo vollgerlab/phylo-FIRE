@@ -5,9 +5,14 @@ import os
 from pathlib import Path
 
 # Namespace outputs per run (results/{run}, temp/{run}) so runs never clobber each other.
+# Write paths as "<results>/..." and "<temp>/..."; Snakemake expands them in
+# input/output/log. Plain Python (and params) needs workflow.pathvars.apply().
 RUN = config.get("run_name", "default")
-RESULTS = f"results/{RUN}"
-TEMP = f"temp/{RUN}"
+
+
+pathvars:
+    results=f"results/{RUN}",
+    temp=f"temp/{RUN}",
 
 
 def cfg_bool(key: str, default: bool) -> bool:
@@ -22,11 +27,11 @@ FLANKED = int(config.get("flank", 0)) > 0
 
 # Stage-1 outputs that Stage 2 reads: the contract between the two entry points.
 # Stage 2 reads only these, never the per-peak aligned/ trees/ phylo_mm/ dirs.
-HAP = RESULTS + "/tables/haplotypes.parquet"
-PEAKS = RESULTS + "/fastas/peak_ids.txt"
-ALIGNMENTS = RESULTS + "/tables/alignments.parquet"
-TREES = RESULTS + "/tables/trees.parquet"
-PHYLO_MM = RESULTS + "/tables/phylo_mm.parquet"
+HAP = "<results>/tables/haplotypes.parquet"
+PEAKS = "<results>/fastas/peak_ids.txt"
+ALIGNMENTS = "<results>/tables/alignments.parquet"
+TREES = "<results>/tables/trees.parquet"
+PHYLO_MM = "<results>/tables/phylo_mm.parquet"
 
 
 def _hg38_ok() -> bool:

@@ -21,7 +21,7 @@ manifest, or symlink a preextracted_dir (e.g. PARE paralog groups). Not a checkp
     params:
         script=script_path("extract_fastas.py"),
         ingest=script_path("ingest_preextracted.py"),
-        outdir=RESULTS + "/fastas",
+        outdir=lambda wc, output: os.path.dirname(output.manifest),
         preextracted=config.get("preextracted_dir") or "",
         min_seqs=config.get("min_seqs", 2),
         opt_args=_extract_opt_args,

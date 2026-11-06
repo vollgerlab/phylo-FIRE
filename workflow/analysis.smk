@@ -67,9 +67,9 @@ actuation from haplotypes.parquet) -> unified parquet + tsv.gz + the plot manife
         mem_mb=32768,
         runtime=240,
     params:
-        tables=TABLES,
+        tables=lambda wc, input: os.path.dirname(input.alignments),
         script=os.path.join(workflow.basedir, "scripts/re_variants_all.py"),
-        manifest_dir=RESULTS + "/tables",
+        manifest_dir=lambda wc, output: os.path.dirname(output.drivers),
         random_n=config.get("random_n", 100),
         seed=config.get("random_seed", 42),
     shell:
@@ -126,9 +126,9 @@ rule project_all:
         mem_mb=32768,
         runtime=480,
     params:
-        tables=TABLES,
+        tables=lambda wc, input: os.path.dirname(input.alignments),
         script=os.path.join(workflow.basedir, "scripts/project_variants_all.py"),
-        outdir=RESULTS + "/tables",
+        outdir=lambda wc, output: os.path.dirname(output.variants),
         agc=config.get("agc", ""),
         flank=config.get("flank", 0),
     shell:
@@ -192,7 +192,7 @@ rule plasmid_all:
         mem_mb=16384,
         runtime=120,
     params:
-        tables=TABLES,
+        tables=lambda wc, input: os.path.dirname(input.alignments),
         script=os.path.join(workflow.basedir, "scripts/build_plasmid_table.py"),
     shell:
         "python {params.script} --tables-dir {params.tables} "
@@ -219,10 +219,10 @@ manifests -- one job over the subset, not per-peak."""
         mem_mb=16384,
         runtime=480,
     params:
-        tables=TABLES,
+        tables=lambda wc, input: os.path.dirname(input.alignments),
         script=os.path.join(workflow.basedir, "scripts/plot_all.py"),
-        manifest_dir=RESULTS + "/tables",
-        outdir=RESULTS + "/plots",
+        manifest_dir=lambda wc, input: os.path.dirname(input.drivers),
+        outdir=lambda wc, output: os.path.dirname(output.done),
         flank=config.get("flank", 0),
         pclai_arg=_pclai_arg,
         plasmid_arg=("--plasmid" if PLASMID else ""),

@@ -49,10 +49,12 @@ after downloading it. See workflow/scripts/stage1_tables.py."""
         phylo_mm=expand(RESULTS + "/phylo_mm/{peak_id}.tsv", peak_id=PEAK_IDS),
         peaks=PEAKS,
     output:
-        ALIGNMENTS,
-        TREES,
-        PHYLO_MM,
+        alignments=ALIGNMENTS,
+        trees=TREES,
+        phylo_mm=PHYLO_MM,
     params:
         script=os.path.join(workflow.basedir, "scripts/stage1_tables.py"),
+        # results/{run}: the script reads aligned/ trees/ phylo_mm/ and writes tables/.
+        results=lambda wc, output: os.path.dirname(os.path.dirname(output.alignments)),
     shell:
-        "python {params.script} --results {RESULTS} --peaks {input.peaks}"
+        "python {params.script} --results {params.results} --peaks {input.peaks}"

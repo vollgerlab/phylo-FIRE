@@ -20,7 +20,7 @@ treating them as missing; coding rules are in scripts/encode_indels.py."""
     params:
         script=script_path("encode_indels.py"),
         peak_id=lambda wc: wc.peak_id,
-        out_dir=lambda wc: f"{TEMP}/coded/{wc.peak_id}",
+        out_dir=lambda wc, output: os.path.dirname(output.nex),
     shell:
         """
         python {params.script} \
@@ -48,7 +48,9 @@ rule iqtree:
         mem_mb=16384,
         runtime=120,
     params:
-        prefix=lambda wc: os.path.abspath(f"{TEMP}/trees/{wc.peak_id}"),
+        prefix=lambda wc, output: os.path.abspath(
+            output.treefile.removesuffix(".treefile")
+        ),
         peak_id=lambda wc: wc.peak_id,
         bootstrap=iqtree_bootstrap,
     shell:
@@ -120,8 +122,6 @@ use rule encode_indels as re_encode_indels with:
         nex=temp(TEMP + "/re/coded/{peak_id}/{peak_id}.nex"),
         nuc=temp(TEMP + "/re/coded/{peak_id}/{peak_id}_nucleic.phy"),
         indel=temp(TEMP + "/re/coded/{peak_id}/{peak_id}_indel.phy"),
-    params:
-        out_dir=lambda wc: f"{TEMP}/re/coded/{wc.peak_id}",
 
 
 rule re_iqtree:
@@ -142,7 +142,9 @@ tree is copied instead, which only needs the right tips since H²ₚ(RE) is then
         mem_mb=16384,
         runtime=120,
     params:
-        prefix=lambda wc: os.path.abspath(f"{TEMP}/re/trees/{wc.peak_id}"),
+        prefix=lambda wc, output: os.path.abspath(
+            output.treefile.removesuffix(".treefile")
+        ),
         peak_id=lambda wc: wc.peak_id,
         bootstrap=iqtree_bootstrap,
     shell:

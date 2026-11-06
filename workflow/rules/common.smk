@@ -24,10 +24,9 @@ FLANKED = int(config.get("flank", 0)) > 0
 # Stage 2 reads only these, never the per-peak aligned/ trees/ phylo_mm/ dirs.
 HAP = RESULTS + "/tables/haplotypes.parquet"
 PEAKS = RESULTS + "/fastas/peak_ids.txt"
-TABLES = RESULTS + "/tables"
-ALIGNMENTS = TABLES + "/alignments.parquet"
-TREES = TABLES + "/trees.parquet"
-PHYLO_MM = TABLES + "/phylo_mm.parquet"
+ALIGNMENTS = RESULTS + "/tables/alignments.parquet"
+TREES = RESULTS + "/tables/trees.parquet"
+PHYLO_MM = RESULTS + "/tables/phylo_mm.parquet"
 
 
 def _hg38_ok() -> bool:

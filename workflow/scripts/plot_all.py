@@ -109,7 +109,13 @@ def main() -> None:
                             fh.write(f">{name} anchor_leaf={anchor} type=plasmid "
                                      f"label={label}\n{seq}\n")
                     cmd += ["--panel", str(panel_fa)]
-            r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            try:
+                # A wedged kaleido/Chromium otherwise hangs the whole job.
+                r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
+            except subprocess.TimeoutExpired:
+                failed.append(peak)
+                print(f"[plot_all] {peak} FAILED: timed out after 600s", file=sys.stderr)
+                return
             if r.returncode != 0:
                 failed.append(peak)
                 print(f"[plot_all] {peak} FAILED: {r.stderr.strip()[-300:]}", file=sys.stderr)

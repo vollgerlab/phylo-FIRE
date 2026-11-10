@@ -63,5 +63,6 @@ pclai_bed: "resources/pclai/hprc_r2.bed.gz"
 # dbsnp: null               # tabix-indexed dbSNP VCF for rs IDs
 # significant_loci: null    # plasmid significance table (needs dbsnp)
 # stage2_threads: 16
+# plot_threads: 32         # concurrent plots; each runs its own headless Chromium
 # project_threads: 32
 # highlight_file: null      # TSV of sample haps to tag and highlight in plots

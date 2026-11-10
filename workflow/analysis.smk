@@ -200,7 +200,9 @@ manifests -- one job over the subset, not per-peak."""
         done=touch("<results>/plots/.done"),
     log:
         "<results>/logs/plot_all.log",
-    threads: config.get("stage2_threads", 16)
+    # Each plot launches its own headless Chromium (kaleido) with dozens of
+    # threads; 256 at once exhausts the per-user thread limit on Redwood.
+    threads: config.get("plot_threads", 32)
     resources:
         mem_mb=16384,
         runtime=480,
